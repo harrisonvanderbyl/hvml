@@ -586,6 +586,15 @@ class Tensor<void, rank> {
     }
 
     template <typename T>
+    operator T(){
+        if(get_dtype<T>() != dtype){
+            std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
+            throw std::runtime_error("Data type mismatch");
+        }
+        return *((T *)data);
+    }
+
+    template <typename T>
     operator Tensor<T, rank>(){
         if(get_dtype<T>() != dtype){
             std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;

@@ -244,3 +244,35 @@ struct float4
         return os;
     }
 };
+
+
+struct mat4
+{
+    float4 rows[4];
+
+    mat4(float4 row0, float4 row1, float4 row2, float4 row3):
+        rows{row0, row1, row2, row3}
+    {
+    };
+
+    mat4():
+        rows{float4(), float4(), float4(), float4()}
+    {
+    };
+
+    // print
+    friend std::ostream &operator<<(std::ostream &os, mat4 a)
+    {
+        os << "[";
+        for (int i = 0; i < 4; i++)
+        {
+            os << a.rows[i];
+            if (i != 3)
+            {
+                os << ", ";
+            }
+        }
+        os << "]";
+        return os;
+    }
+};

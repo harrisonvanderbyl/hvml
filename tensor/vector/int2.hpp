@@ -54,14 +54,14 @@ class uint84
         this->z = 0;
         this->w = 0;
     };
-    uint84 operator=(uint84 &other)
-    {
-        x = other.x;
-        y = other.y;
-        z = other.z;
-        w = other.w;
-        return *this;
-    };
+    // uint84 operator=(uint84 &other)
+    // {
+    //     x = other.x;
+    //     y = other.y;
+    //     z = other.z;
+    //     w = other.w;
+    //     return *this;
+    // };
     uint84 operator=(uint8_t other)
     {
         x = other;
