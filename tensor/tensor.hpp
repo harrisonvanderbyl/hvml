@@ -477,7 +477,7 @@ public:
         }
 
 
-        return {newshape, data, device_type};   
+        return Tensor<T, Z>{newshape, (T*)data, device_type};   
     }
 
     inline R& flatget(size_t i)
