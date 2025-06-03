@@ -120,6 +120,53 @@ createOp(operator/, div)
 
 createAlterOp(operator+=, plusequals)
 
+// Scalar operations
+template <typename T, int D>
+Tensor<T, D> operator+(Tensor<T, D> a, T scalar) {
+    Tensor<T, D> result(a.shape, a.device_type);
+    for (size_t i = 0; i < a.total_size; i++) {
+        result.flatget(i) = a.flatget(i) + scalar;
+    }
+    return result;
+}
+
+template <typename T, int D>
+Tensor<T, D> operator-(Tensor<T, D> a, T scalar) {
+    Tensor<T, D> result(a.shape, a.device_type);
+    for (size_t i = 0; i < a.total_size; i++) {
+        result.flatget(i) = a.flatget(i) - scalar;
+    }
+    return result;
+}
+
+template <typename T, int D>
+Tensor<T, D> operator*(Tensor<T, D> a, T scalar) {
+    Tensor<T, D> result(a.shape, a.device_type);
+    for (size_t i = 0; i < a.total_size; i++) {
+        result.flatget(i) = a.flatget(i) * scalar;
+    }
+    return result;
+}
+
+template <typename T, int D>
+Tensor<T, D> operator/(Tensor<T, D> a, T scalar) {
+    Tensor<T, D> result(a.shape, a.device_type);
+    for (size_t i = 0; i < a.total_size; i++) {
+        result.flatget(i) = a.flatget(i) / scalar;
+    }
+    return result;
+}
+
+// Unary minus operator
+template <typename T, int D>
+Tensor<T, D> operator-(Tensor<T, D> a) {
+    Tensor<T, D> result(a.shape, a.device_type);
+    for (size_t i = 0; i < a.total_size; i++) {
+        result.flatget(i) = -a.flatget(i);
+    }
+    return result;
+}
+
 // template <typename T>
 // Tensor<T> operator^(Ten<T>sor a, Ten<T>sor b)
 // {

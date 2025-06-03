@@ -52,6 +52,10 @@ public:
     Slice E;
     Slice F;
     Slice G;
+    // Constructor for single integer (most common case)
+    template <int R = reducedims, typename = std::enable_if_t<R == 1>>
+    SliceList(int idx) : A(Slice(idx)), B(), C(), D(), E(), F(), G() {}
+
     // make sure amount of ints is equal to reducedims
     template <typename a = Slice, typename b = Slice, typename c = Slice, typename d = Slice, typename e = Slice, typename f = Slice, typename g = Slice, typename = std::enable_if_t<std::is_same_v<a,int> + std::is_same_v<b,int> + std::is_same_v<c,int> + std::is_same_v<d,int> + std::is_same_v<e,int> + std::is_same_v<f,int> + std::is_same_v<g,int> == reducedims>>
     SliceList(a aa=Slice(), b ba=Slice(), c ca=Slice(), d da=Slice(), e ea=Slice(), f fa=Slice(), g ga=Slice())
@@ -360,6 +364,43 @@ public:
        return operator[](SliceList<1>({i}));
     }
 
+    // Const versions of operator[]
+    std::conditional_t<rank == 0, const R&, Tensor<R, std::max(rank - 0,-1)>>
+    operator[](SliceList<0> i) const
+    {
+        return const_cast<Tensor*>(this)->gather(i);
+    }
+
+    std::conditional_t<rank == 1, const R&, Tensor<R, std::max(rank - 1,-1)>>
+    operator[](SliceList<1> i) const
+    {
+        return const_cast<Tensor*>(this)->gather(i);
+    }
+
+    std::conditional_t<rank == 2, const R&, Tensor<R, std::max(rank - 2,-1)>>
+    operator[](SliceList<2> i) const
+    {
+        return const_cast<Tensor*>(this)->gather(i);
+    }
+    
+    std::conditional_t<rank == 3, const R&, Tensor<R, std::max(rank - 3,-1)>>
+    operator[](SliceList<3> i) const
+    {
+        return const_cast<Tensor*>(this)->gather(i);
+    }
+
+    std::conditional_t<rank == 4, const R&, Tensor<R, std::max(rank - 4,-1)>>
+    operator[](SliceList<4> i) const
+    {
+        return const_cast<Tensor*>(this)->gather(i);
+    }
+
+    std::conditional_t<rank == 1, const R&, Tensor<R, std::max(rank - 1,-1)>>
+    operator[](int i) const
+    {
+       return operator[](SliceList<1>({i}));
+    }
+
     // auto operator[](int i)
     // {
     //     return operator[](SliceList({i}));
@@ -481,6 +522,21 @@ public:
     }
 
     inline R& flatget(size_t i)
+    {
+        R *ptr = (R *)data;
+        for (int j = 1; j < shape.ndim()+1; j++)
+        {
+            int cstride = strides[-j];
+            int cshape = shape[-j];
+            int index = ((i%cshape) * cstride);
+
+            i = i / cshape;
+            ptr += index;       
+        }
+        return *ptr;
+    }
+
+    inline const R& flatget(size_t i) const
     {
         R *ptr = (R *)data;
         for (int j = 1; j < shape.ndim()+1; j++)

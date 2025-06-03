@@ -1,7 +1,19 @@
 
-#include <module/linear/linear.hpp>
-#include <models/rwkv7/timeshift/kernels.hpp>
+#ifndef RWKV7_MODEL_HPP
+#define RWKV7_MODEL_HPP
 
+#include "module/base/module.hpp"
+#include "module/embedding/embedding.hpp"
+#include "module/normalization/normalization.hpp"
+#include "module/linear/linear.hpp"
+#include "models/rwkv7/block.hpp"
+#include "models/rwkv7/timeshift/kernels.hpp"
+#include "file_loaders/safetensors.hpp"
+#include <vector>
+#include <memory>
+
+// Forward declaration
+std::map<std::string, Tensor<void, -1>> loadSafeTensors(const std::string& path);
 
 template <typename R = float>
 struct TimeShift: Module<Tensor<R, 2>>
@@ -9,7 +21,7 @@ struct TimeShift: Module<Tensor<R, 2>>
     public:
     Tensor<R,2> state;
     Tensor<R,1> buffer;
-    TimeShift(int batch, int dim): state({batch, dim}), buffer(Shape<1>{dim}), Module<Tensor<R,2>>({state, "state"}){
+    TimeShift(int batch, int dim): state({batch, dim}), buffer(Shape<1>{dim}), Module<Tensor<R,2>>(Submodule<Tensor<R,2>>(state, "state")){
 
     };
 
@@ -22,6 +34,263 @@ struct TimeShift: Module<Tensor<R, 2>>
     }
 
 };
+
+// Model parameter identification function
+struct ModelParams {
+    size_t n_layer;
+    size_t n_embd;
+    size_t n_head;
+    size_t head_size;
+    size_t dim_ffn;
+    size_t vocab_size;
+    size_t decay_lora;
+    size_t aaa_lora;
+    size_t mv_lora;
+    size_t gate_lora;
+};
+
+template <typename T = float>
+ModelParams identifyModelParams(const std::map<std::string, Tensor<void, -1>>& state_dict) {
+    ModelParams params;
+    
+    // Get vocab_size and n_embd from embedding weight
+    auto emb_it = state_dict.find("emb.weight");
+    if (emb_it != state_dict.end()) {
+        params.vocab_size = emb_it->second.shape[0];
+        params.n_embd = emb_it->second.shape[1];
+    }
+    
+    // Get dim_ffn from first block's ffn value weight
+    auto ffn_it = state_dict.find("blocks.0.ffn.value.weight");
+    if (ffn_it != state_dict.end()) {
+        params.dim_ffn = ffn_it->second.shape[1];
+    }
+    
+    // Get n_head from first block's r_k
+    auto rk_it = state_dict.find("blocks.0.att.r_k");
+    if (rk_it != state_dict.end()) {
+        params.n_head = rk_it->second.shape[0];
+        params.head_size = params.n_embd / params.n_head;
+    }
+    
+    // Count number of layers
+    params.n_layer = 0;
+    for (const auto& [key, tensor] : state_dict) {
+        if (key.find("blocks.") == 0 && key.find(".att.r_k") != std::string::npos) {
+            params.n_layer++;
+        }
+    }
+    
+    // Get LoRA dimensions
+    auto w1_it = state_dict.find("blocks.0.att.w1");
+    if (w1_it != state_dict.end()) {
+        params.decay_lora = w1_it->second.shape[1];
+    }
+    
+    auto a1_it = state_dict.find("blocks.0.att.a1");
+    if (a1_it != state_dict.end()) {
+        params.aaa_lora = a1_it->second.shape[1];
+    }
+    
+    auto v1_it = state_dict.find("blocks.1.att.v1");
+    if (v1_it != state_dict.end()) {
+        params.mv_lora = v1_it->second.shape[1];
+    }
+    
+    auto g1_it = state_dict.find("blocks.0.att.g1");
+    if (g1_it != state_dict.end()) {
+        params.gate_lora = g1_it->second.shape[1];
+    }
+    
+    return params;
+}
+
+template <typename T = float>
+struct RWKV7_Model : public Module<
+    Embedding<T>, LayerNorm<T>, LayerNorm<T>, Linear<T>
+>
+{
+    public:
+    ModelParams params;
+    
+    Embedding<T> emb;
+    std::vector<std::unique_ptr<RWKV7_Block<T>>> blocks;
+    LayerNorm<T> ln_in;
+    LayerNorm<T> ln_out;
+    Linear<T> head;
+    
+    RWKV7_Model(
+        const ModelParams& model_params,
+        DeviceType device_type = DeviceType::kCPU
+    ) : params(model_params),
+        emb(params.vocab_size, params.n_embd, device_type),
+        ln_in(params.n_embd, 1e-5, device_type),
+        ln_out(params.n_embd, 1e-5, device_type),
+        head(params.n_embd, params.vocab_size, false, device_type),
+        Module<Embedding<T>, LayerNorm<T>, LayerNorm<T>, Linear<T>>(
+            Submodule<Embedding<T>>(emb, "emb"), 
+            Submodule<LayerNorm<T>>(ln_in, "ln_in"), 
+            Submodule<LayerNorm<T>>(ln_out, "ln_out"), 
+            Submodule<Linear<T>>(head, "head")
+        )
+    {
+        // Create blocks
+        for (size_t i = 0; i < params.n_layer; i++) {
+            blocks.push_back(std::make_unique<RWKV7_Block<T>>(
+                i, params.n_layer, params.n_embd, params.n_head, params.head_size,
+                params.n_embd, params.dim_ffn, params.decay_lora, params.aaa_lora,
+                params.mv_lora, params.gate_lora, device_type
+            ));
+        }
+    }
+    
+    // Constructor from model file
+    RWKV7_Model(
+        const std::string& model_path,
+        DeviceType device_type = DeviceType::kCPU
+    ) : RWKV7_Model(identifyModelParams<T>(loadSafeTensors(model_path)), device_type)
+    {
+        loadStateDict(loadSafeTensors(model_path));
+    }
+    
+    void loadStateDict(const std::map<std::string, Tensor<void, -1>>& state_dict) {
+        // Load embedding
+        auto emb_it = state_dict.find("emb.weight");
+        if (emb_it != state_dict.end()) {
+            emb.weight = emb_it->second;
+        }
+        
+        // Load layer norms
+        auto ln_in_weight_it = state_dict.find("ln_in.weight");
+        auto ln_in_bias_it = state_dict.find("ln_in.bias");
+        if (ln_in_weight_it != state_dict.end()) ln_in.weight = ln_in_weight_it->second;
+        if (ln_in_bias_it != state_dict.end()) ln_in.bias = ln_in_bias_it->second;
+        
+        auto ln_out_weight_it = state_dict.find("ln_out.weight");
+        auto ln_out_bias_it = state_dict.find("ln_out.bias");
+        if (ln_out_weight_it != state_dict.end()) ln_out.weight = ln_out_weight_it->second;
+        if (ln_out_bias_it != state_dict.end()) ln_out.bias = ln_out_bias_it->second;
+        
+        // Load head
+        auto head_it = state_dict.find("head.weight");
+        if (head_it != state_dict.end()) {
+            head.weight = head_it->second;
+        }
+        
+        // Load blocks
+        for (size_t i = 0; i < params.n_layer; i++) {
+            std::string prefix = "blocks." + std::to_string(i) + ".";
+            
+            // Load layer norms
+            auto ln1_weight_it = state_dict.find(prefix + "ln1.weight");
+            auto ln1_bias_it = state_dict.find(prefix + "ln1.bias");
+            if (ln1_weight_it != state_dict.end()) blocks[i]->ln1.weight = ln1_weight_it->second;
+            if (ln1_bias_it != state_dict.end()) blocks[i]->ln1.bias = ln1_bias_it->second;
+            
+            auto ln2_weight_it = state_dict.find(prefix + "ln2.weight");
+            auto ln2_bias_it = state_dict.find(prefix + "ln2.bias");
+            if (ln2_weight_it != state_dict.end()) blocks[i]->ln2.weight = ln2_weight_it->second;
+            if (ln2_bias_it != state_dict.end()) blocks[i]->ln2.bias = ln2_bias_it->second;
+            
+            // Load attention parameters
+            std::string att_prefix = prefix + "att.";
+            auto load_param = [&](const std::string& name, auto& param) {
+                auto it = state_dict.find(att_prefix + name);
+                if (it != state_dict.end()) {
+                    param = it->second;
+                }
+            };
+            
+            load_param("x_r", blocks[i]->att.x_r);
+            load_param("x_w", blocks[i]->att.x_w);
+            load_param("x_k", blocks[i]->att.x_k);
+            load_param("x_v", blocks[i]->att.x_v);
+            load_param("x_a", blocks[i]->att.x_a);
+            load_param("x_g", blocks[i]->att.x_g);
+            load_param("w0", blocks[i]->att.w0);
+            load_param("w1", blocks[i]->att.w1);
+            load_param("w2", blocks[i]->att.w2);
+            load_param("a0", blocks[i]->att.a0);
+            load_param("a1", blocks[i]->att.a1);
+            load_param("a2", blocks[i]->att.a2);
+            load_param("k_k", blocks[i]->att.k_k);
+            load_param("k_a", blocks[i]->att.k_a);
+            load_param("r_k", blocks[i]->att.r_k);
+            
+            if (i != 0) {
+                load_param("v0", blocks[i]->att.v0);
+                load_param("v1", blocks[i]->att.v1);
+                load_param("v2", blocks[i]->att.v2);
+            }
+            
+            load_param("g1", blocks[i]->att.g1);
+            load_param("g2", blocks[i]->att.g2);
+            
+            // Load linear layers
+            load_param("receptance.weight", blocks[i]->att.receptance.weight);
+            load_param("key.weight", blocks[i]->att.key.weight);
+            load_param("value.weight", blocks[i]->att.value.weight);
+            load_param("output.weight", blocks[i]->att.output.weight);
+            
+            // Load group norm
+            load_param("ln_x.weight", blocks[i]->att.ln_x.weight);
+            load_param("ln_x.bias", blocks[i]->att.ln_x.bias);
+            
+            // Load FFN parameters
+            std::string ffn_prefix = prefix + "ffn.";
+            auto load_ffn_param = [&](const std::string& name, auto& param) {
+                auto it = state_dict.find(ffn_prefix + name);
+                if (it != state_dict.end()) {
+                    param = it->second;
+                }
+            };
+            
+            load_ffn_param("x_k", blocks[i]->ffn.x_k);
+            load_ffn_param("key.weight", blocks[i]->ffn.key.weight);
+            load_ffn_param("value.weight", blocks[i]->ffn.value.weight);
+        }
+    }
+    
+    Tensor<T, 3> forward(const Tensor<int, 2>& idx) {
+        // Embedding
+        auto x = emb.forward(idx);
+        
+        // Input layer norm
+        x = ln_in.forward(x);
+        
+        // Process through blocks
+        Tensor<T, 3> v_first = x;  // Initialize v_first for first layer
+        for (size_t i = 0; i < params.n_layer; i++) {
+            auto [x_out, v_first_out] = blocks[i]->forward(std::make_pair(x, v_first));
+            x = x_out;
+            v_first = v_first_out;
+        }
+        
+        // Output layer norm
+        x = ln_out.forward(x);
+        
+        // Head projection
+        auto logits = head.forward(x);
+        
+        return logits;
+    }
+    
+    // Convenience method for single token input
+    Tensor<T, 2> forward(const Tensor<int, 1>& idx) {
+        Shape<2> input_shape(1, idx.shape[0]);
+        Tensor<int, 2> input_2d(input_shape, idx.device_type);
+        
+        // Copy data from 1D to 2D tensor
+        for (size_t i = 0; i < idx.shape[0]; i++) {
+            input_2d[SliceList<1>(0)][SliceList<1>(i)] = idx[SliceList<1>(i)];
+        }
+        
+        auto output_3d = forward(input_2d);
+        return output_3d[SliceList<1>(0)];  // Remove batch dimension
+    }
+};
+
+#endif // RWKV7_MODEL_HPP
 
 // class RWKV_ChannelMix(nn.Module):
     

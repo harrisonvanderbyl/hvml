@@ -19,10 +19,11 @@ struct Shape
     template <typename... Args>
     Shape(Args... args)
     {
-        
+        static_assert(sizeof...(args) <= 7, "Too many dimensions");
         long *a = (long *)this;
         int i = 0;
-        for (auto arg : {args...})
+        std::initializer_list<long> init_list = {static_cast<long>(args)...};
+        for (auto arg : init_list)
         {
             a[i] = arg;
             i++;
@@ -30,7 +31,7 @@ struct Shape
     }
    
 
-    Shape(std::vector<size_t> a)
+    explicit Shape(std::vector<size_t> a)
     {
         for (int i = 0; i < a.size(); i++)
         {
@@ -89,6 +90,15 @@ struct Shape
     
 
     long& operator[](int i)
+    {      
+        if (i < 0){
+            auto ii = ndim();
+            i = (i + ii)%ii;
+        }
+        return ((long *)this)[i];
+    }
+
+    const long& operator[](int i) const
     {      
         if (i < 0){
             auto ii = ndim();

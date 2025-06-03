@@ -9,15 +9,24 @@
 template <typename R = float> 
 void timeshift_cpu(R* data, R* state, R* bufferdata, int B, int T, int C)
 {
-    int skipsize = (T-1)*C;
-    for (data+=skipsize; data < bufferdata; data+=skipsize+C)
-    {
-        // copy C entries from data into buffer
-        std::copy(data, data+C, bufferdata);
-        std::copy(data-skipsize,data,data-skipsize+C);
-        std::copy(state, state+C, data-skipsize);
-        std::copy(bufferdata, bufferdata+C, state);
-        state += C;
+    // For each batch
+    for (int b = 0; b < B; b++) {
+        R* batch_data = data + b * T * C;
+        R* batch_state = state + b * C;
+        
+        // Save the last timestep to buffer
+        std::copy(batch_data + (T-1) * C, batch_data + T * C, bufferdata);
+        
+        // Shift all timesteps forward by 1
+        for (int t = T-1; t > 0; t--) {
+            std::copy(batch_data + (t-1) * C, batch_data + t * C, batch_data + t * C);
+        }
+        
+        // Copy state to first timestep
+        std::copy(batch_state, batch_state + C, batch_data);
+        
+        // Update state with the saved last timestep
+        std::copy(bufferdata, bufferdata + C, batch_state);
     }
 }
 
