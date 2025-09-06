@@ -148,6 +148,11 @@ struct Shape
         return true;
     }
 
+    bool operator!=(const Shape &other) const
+    {
+        return !(*this == other);
+    }
+
     
 };
 

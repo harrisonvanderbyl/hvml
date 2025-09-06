@@ -14,7 +14,7 @@
 #include <cmath>
 #include "../tensor.hpp"
 #include "../vector/vectors.hpp"
-#include "../vector/uint84.hpp"
+// #include "../vector/uint84.hpp"
 #include "../file_loaders/gltf.hpp"
 #include "./display.hpp"
 #include <SDL2/SDL_opengl_glext.h>

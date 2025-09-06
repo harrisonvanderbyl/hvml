@@ -560,6 +560,38 @@ public:
         this->bitsize = other.bitsize;
         this->data = other.data;
     }
+
+    Tensor<R,rank> to(DeviceType device_type){
+        if(this->device_type == device_type){
+            return *this;
+        }
+        Tensor a = {shape, device_type};
+
+        if(strides != a.strides){
+            std::cerr << "Cannot convert non-contiguous tensor yet" << std::endl;
+            throw std::runtime_error("Cannot convert non-contiguous tensor yet");
+        }
+
+        if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
+            #if defined(__CUDACC__) || defined(__HIPCC__)
+            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyDeviceToHost);
+            #else
+            std::cerr << "CUDA not enabled" << std::endl;
+            throw std::runtime_error("CUDA not enabled");
+            #endif
+        }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
+            #if defined(__CUDACC__) || defined(__HIPCC__)
+            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyHostToDevice);
+            #else
+            std::cerr << "CUDA not enabled" << std::endl;
+            throw std::runtime_error("CUDA not enabled");
+            #endif
+        }else{
+            std::cerr << "Unsupported device type conversion" << std::endl;
+            throw std::runtime_error("Unsupported device type conversion");
+        }
+        return a;
+    }
 };
 
 
@@ -617,6 +649,8 @@ class Tensor<void, rank> {
         }
         return {shape, (T*)data, device_type};
     }
+
+    
 };
 
 #endif
