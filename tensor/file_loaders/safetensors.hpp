@@ -53,7 +53,7 @@ using json = nlohmann::json;
                 }
 
                 const auto& meta = metas.at(name);
-                char* data_begin = const_cast<char*>(storage) + meta.data_offsets.first;
+                void* data_begin = const_cast<char*>(storage) + meta.data_offsets.first;
                 // char* data_end = const_cast<char*>(storage.data()) + meta.data_offsets.second;
 
                 if (typeid(T)!=typeid(void)){
@@ -66,27 +66,27 @@ using json = nlohmann::json;
                 switch (meta.dtype)
                 {
                     case DataType::kFLOAT_32:
-                        return Tensor<float, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<float, rank>(meta.shape, (float*)data_begin, DeviceType::kCPU);
                     case DataType::kFLOAT_64:
-                        return Tensor<double, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<double, rank>(meta.shape, (double*)data_begin, DeviceType::kCPU);
                     case DataType::kINT_32:
-                        return Tensor<int32_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<int32_t, rank>(meta.shape, (int32_t*)data_begin, DeviceType::kCPU);
                     case DataType::kINT_64:
-                        return Tensor<int64_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<int64_t, rank>(meta.shape, (int64_t*)data_begin, DeviceType::kCPU);
                     case DataType::kINT_8:
-                        return Tensor<int8_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<int8_t, rank>(meta.shape, (int8_t*)data_begin, DeviceType::kCPU);
                     case DataType::kUINT_8:
-                        return Tensor<uint8_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<uint8_t, rank>(meta.shape, (uint8_t*)data_begin, DeviceType::kCPU);
                     case DataType::kUINT_16:
-                        return Tensor<uint16_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<uint16_t, rank>(meta.shape, (uint16_t*)data_begin, DeviceType::kCPU);
                     case DataType::kUINT_32:
-                        return Tensor<uint32_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<uint32_t, rank>(meta.shape, (uint32_t*)data_begin, DeviceType::kCPU);
                     case DataType::kUINT_64:
-                        return Tensor<uint64_t, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<uint64_t, rank>(meta.shape, (uint64_t*)data_begin, DeviceType::kCPU);
                     case DataType::kFLOAT_16:
-                        return Tensor<float16, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<float16, rank>(meta.shape, (float16*)data_begin, DeviceType::kCPU);
                     case DataType::kBFLOAT_16:
-                        return Tensor<bfloat16, rank>(meta.shape, data_begin, DeviceType::kCPU);
+                        return Tensor<bfloat16, rank>(meta.shape, (bfloat16*)data_begin, DeviceType::kCPU);
                     default:
                         std::cerr << "Unsupported data type" << std::endl;
                         exit(0);

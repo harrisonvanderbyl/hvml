@@ -18,7 +18,6 @@ struct TimeShift: Module<Tensor<R, 2>>
         if(x.device_type == kCPU){
             timeshift_cpu(x.data, state.data, buffer.data, x.shape[0], x.shape[1], x.shape[2]);
         }
-        if(x.device_type == k)
         return x;
     }
 

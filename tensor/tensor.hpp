@@ -200,7 +200,7 @@ public:
         if(
             shape.total_size() == ((Tensor*)(&other))->shape.total_size() && strides.total_size() == ((Tensor*)(&other))->strides.total_size()
         ){
-
+            std::cout << "Copying data from other tensor, both are same shape and strides" << std::endl;
             memcpy(data, other.data, total_bytes);
             return 0;
         }
@@ -219,7 +219,7 @@ public:
 
         if (shape.ndim() * other.shape.ndim() == 0)
         {
-            
+            std::cout << "One of the tensors has zero dimensions" << std::endl;
             auto bytes = bitsize;
             memcpy(data, other.data, bytes);
             return 0;
@@ -228,6 +228,7 @@ public:
     
         auto bcast = ((Tensor*)(&other))->broadcast(shape);
 
+        std::cout << "Broadcasting tensor of shape: " << bcast.shape << " to shape: " << shape << std::endl;
         for (int i = 0; i < shape[0]; i++)
         {
             auto bbx = bcast[i];
@@ -263,12 +264,12 @@ public:
         // }
         R* startingpointer = (R *)data;
         int ndim = shape.ndim();
-        int i = 1;
-        for (; i <= ndim ; i++)
+        int ii = 1;
+        for (; ii <= ndim ; ii++)
         {
-            int shapeofset = shape[-i];
-            int start = (inp[ndim-i].start + shapeofset) % shapeofset;
-            startingpointer += start * strides[-i];
+            int shapeofset = shape[-ii];
+            int start = (inp[ndim-ii].start + shapeofset) % shapeofset;
+            startingpointer += start * strides[-ii];
         }
         
         if constexpr (newrank == 0)
@@ -276,14 +277,14 @@ public:
             return *((R *)startingpointer);
         }
         else{
-        auto newshape = Shape<newrank>(INT64MAX);
+        auto newshape = Shape<newrank>();
         
-        auto newstrides = Shape<newrank>(INT64MAX);
+        auto newstrides = Shape<newrank>();
         int i = 0;
         int j= 0;
         int multiplier = 1;
         for(
-            ; i < shape.ndim(); i++
+            ; i < ndim; i+=1
         ){
             if (inp[i].is_slice)
             {
@@ -439,9 +440,14 @@ public:
         Shape<rank> newshape = shape.clone();
         float scale =  float(bitsize) / sizeof(T);
         float newlastdim = shape[-1] * scale;
-        assert (newlastdim == (int)newlastdim);
+        if (newlastdim != (int)newlastdim){
+            std::cout << "Last dimension is not divisible by " << sizeof(T) << std::endl;
+            std::cout << "Last dimension: " << shape[-1] << " Bitsize: " << bitsize << " New last dimension: " << newlastdim << std::endl;
+            std::cout << *this << std::endl;
+            throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
+        }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = {newshape, data, device_type};
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, device_type);
         return b;   
     }
 
@@ -477,7 +483,7 @@ public:
         }
 
 
-        return {newshape, data, device_type};   
+        return Tensor<T, Z>{newshape, (T*)data, device_type};   
     }
 
     inline R& flatget(size_t i)
@@ -554,6 +560,38 @@ public:
         this->bitsize = other.bitsize;
         this->data = other.data;
     }
+
+    Tensor<R,rank> to(DeviceType device_type){
+        if(this->device_type == device_type){
+            return *this;
+        }
+        Tensor a = {shape, device_type};
+
+        if(strides != a.strides){
+            std::cerr << "Cannot convert non-contiguous tensor yet" << std::endl;
+            throw std::runtime_error("Cannot convert non-contiguous tensor yet");
+        }
+
+        if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
+            #if defined(__CUDACC__) || defined(__HIPCC__)
+            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyDeviceToHost);
+            #else
+            std::cerr << "CUDA not enabled" << std::endl;
+            throw std::runtime_error("CUDA not enabled");
+            #endif
+        }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
+            #if defined(__CUDACC__) || defined(__HIPCC__)
+            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyHostToDevice);
+            #else
+            std::cerr << "CUDA not enabled" << std::endl;
+            throw std::runtime_error("CUDA not enabled");
+            #endif
+        }else{
+            std::cerr << "Unsupported device type conversion" << std::endl;
+            throw std::runtime_error("Unsupported device type conversion");
+        }
+        return a;
+    }
 };
 
 
@@ -586,13 +624,33 @@ class Tensor<void, rank> {
     }
 
     template <typename T>
+    operator T(){
+        if(get_dtype<T>() != dtype){
+            std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
+            throw std::runtime_error("Data type mismatch");
+        }
+        return *((T *)data);
+    }
+
+    template <typename T>
     operator Tensor<T, rank>(){
         if(get_dtype<T>() != dtype){
             std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
             throw std::runtime_error("Data type mismatch");
         }
-        return {shape, data, device_type};
+        return {shape, (T*)data, device_type};
     }
+
+    template <typename T>
+    operator Tensor<T, rank>() const{
+        if(get_dtype<T>() != dtype){
+            std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
+            throw std::runtime_error("Data type mismatch");
+        }
+        return {shape, (T*)data, device_type};
+    }
+
+    
 };
 
 #endif

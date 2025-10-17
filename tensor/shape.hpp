@@ -16,17 +16,11 @@ struct Shape
     long F = INT64MAX;
     long G = INT64MAX;
 
-    template <typename... Args>
-    Shape(Args... args)
+    template <typename T = long, typename TT = long, typename TTT = long, typename TTTT = long, typename TTTTT = long, typename TTTTTT = long, typename TTTTTTT = long>
+    Shape(T A = INT64MAX, TT B = INT64MAX, TTT C = INT64MAX, TTTT D = INT64MAX, TTTTT E = INT64MAX, TTTTTT F = INT64MAX, TTTTTTT G = INT64MAX)
+        : A(A), B(B), C(C), D(D), E(E), F(F), G(G)
     {
         
-        long *a = (long *)this;
-        int i = 0;
-        for (auto arg : {args...})
-        {
-            a[i] = arg;
-            i++;
-        }
     }
    
 
@@ -101,7 +95,7 @@ struct Shape
     {
         std::string s = "[";
         long *a = (long *)this;
-        for (int i = 0; a[i]!=INT64MAX; i++)
+        for (int i = 0; i<ndim(); i++)
         {
             s += std::to_string(a[i]);
             if (a[i + 1] != INT64MAX)
@@ -117,12 +111,8 @@ struct Shape
     {
         size_t total = 1;
         long *a = (long *)this;
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < ndim(); i++)
         {
-            if (a[i] == INT64MAX)
-            {
-                break;
-            }
             total *= a[i];
         }
         return total;
@@ -130,6 +120,10 @@ struct Shape
 
     size_t ndim() const
     {
+        if (length != -1)
+        {
+            return length;
+        }
         size_t total = 0;
         for (int i = 0; i < 10; i++)
         {
@@ -144,7 +138,7 @@ struct Shape
 
     bool operator==(const Shape &other) const
     {
-        for (int i = 0; i < 10; i++)
+        for (int i = 0; i < ndim(); i++)
         {
             if (((long *)this)[i] != ((long *)&other)[i])
             {
@@ -152,6 +146,11 @@ struct Shape
             }
         }
         return true;
+    }
+
+    bool operator!=(const Shape &other) const
+    {
+        return !(*this == other);
     }
 
     

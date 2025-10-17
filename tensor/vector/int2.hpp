@@ -33,15 +33,12 @@ struct int4
     };
 };
 
-class uint84 
+struct uint84 
 {
-    public:
-    uint8_t w;
-    uint8_t z;
-    uint8_t y;
     uint8_t x;
-    
-    
+    uint8_t y;
+    uint8_t z;
+    uint8_t w;
     uint84(uint8_t x, uint8_t y, uint8_t z, uint8_t w){
         this->x = x;
         this->y = y;
@@ -54,33 +51,13 @@ class uint84
         this->z = 0;
         this->w = 0;
     };
-    uint84 operator=(uint84 &other)
-    {
-        x = other.x;
-        y = other.y;
-        z = other.z;
-        w = other.w;
-        return *this;
+    uint84(uint32_t v){
+        this->x = (v >> 24) & 0xFF;
+        this->y = (v >> 16) & 0xFF;
+        this->z = (v >> 8) & 0xFF;
+        this->w = v & 0xFF;
     };
-    uint84 operator=(uint8_t other)
-    {
-        x = other;
-        y = other;
-        z = other;
-        w = other;
-        return *this;
-    };
-    uint84 operator=(uint84 other)
-    {
-        x = other.x;
-        y = other.y;
-        z = other.z;
-        w = other.w;
-        return *this;
-    };
-    
 };
-
 
 
 // uint8_t& uint84::r = &uint84::x;
