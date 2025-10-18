@@ -165,14 +165,14 @@ public:
                 mod->save_to_safetensors(tensors, keyname + ".");
         }else{
             // if can be cast to Tensor<void,-1> then save it
-            if constexpr (std::is_constructible<Tensor<void, -1>, IthType>::value) {
-                IthType& mod = *(IthType*)mods[I];
-                tensors.add(keyname.c_str(), mod);
-                // std::cout << "Saved " << keyname << " to safetensors" << std::endl;
-            }
-            else{
-                std::cout << "Failed to save " << keyname << " to safetensors" << std::endl;
-            }
+            // if constexpr (std::is_constructible<Tensor<void, -1>, IthType>::value) {
+            IthType& mod = *(IthType*)mods[I];
+            tensors.add(keyname.c_str(), mod);
+                 std::cout << "Saved " << keyname << " to safetensors" << std::endl;
+            //  }
+            //  else{
+                // std::cout << "Failed to save " << keyname << " to safetensors" << std::endl;
+            //  }
         }
        
         

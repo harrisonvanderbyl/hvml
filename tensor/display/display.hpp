@@ -196,6 +196,7 @@ public:
     bool borderless = false;
     bool alpha_enabled = false;
     bool is_fullscreen = false;
+    bool clickthrough = true;
     CurrentScreenInputInfo current_screen_input_info;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
@@ -205,8 +206,8 @@ public:
     // Multi-display support
     MultiDisplayManager display_manager;
     
-    VectorDisplay(Shape<2> shape = 0, bool borderless = true, bool enable_alpha = true, bool fullscreen = true)
-        : Tensor<uint84, 2>(shape), borderless(borderless), alpha_enabled(enable_alpha), is_fullscreen(fullscreen), display_manager(nullptr) {
+    VectorDisplay(Shape<2> shape = 0, bool borderless = true, bool enable_alpha = true, bool fullscreen = true, bool clickthrough = true)
+        : Tensor<uint84, 2>(shape), borderless(borderless), alpha_enabled(enable_alpha), is_fullscreen(fullscreen), display_manager(nullptr), clickthrough(clickthrough) {
         
         // Initialize the display with a black background
         for (int y = 0; y < shape[0]; y++) {
@@ -263,24 +264,41 @@ public:
 // Create window with proper input transparency
         XSetWindowAttributes attrs;
         attrs.colormap = colormap;
+        if (borderless)
         attrs.border_pixel = 0;
         attrs.background_pixel = 0;
-        attrs.event_mask = NoEventMask; // No events
-        attrs.override_redirect = True; // Bypass window manager
-        attrs.do_not_propagate_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
-
         unsigned long mask = CWColormap | CWBorderPixel | CWBackPixel | CWOverrideRedirect | CWDontPropagate;
 
+    
+        if (clickthrough)
+        
+        {
+            attrs.event_mask = NoEventMask; // No events
+        
+        
+            attrs.override_redirect = True; // Bypass window manager
+            attrs.do_not_propagate_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
+            
+        } else {
+            attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
+            attrs.override_redirect = False;
+            attrs.do_not_propagate_mask = 0;
+            mask |= CWEventMask;
+        }
+        
         // Create window
         window = XCreateWindow(display, RootWindow(display, screen),
                             0, 0, shape[1], shape[0], 0, depth, InputOutput,
                             visual, mask, &attrs);
 
         // CRITICAL: Set input region to empty to make window completely click-through
-        XserverRegion empty_region = XFixesCreateRegion(display, nullptr, 0);
-        XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, empty_region);
-        XFixesDestroyRegion(display, empty_region);
+        if (clickthrough) {
+                
+            XserverRegion empty_region = XFixesCreateRegion(display, nullptr, 0);
+            XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, empty_region);
+            XFixesDestroyRegion(display, empty_region);
 
+        }
         // Set window properties for overlay behavior
         XStoreName(display, window, "Vector Display");
 
@@ -302,25 +320,28 @@ public:
                 XChangeProperty(display, window, motifHints, motifHints, 32,
                             PropModeReplace, (unsigned char*)&hints, 5);
             }
+
+            Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
+            Atom netWmStateAbove = XInternAtom(display, "_NET_WM_STATE_ABOVE", False);
+            Atom netWmStateSkipTaskbar = XInternAtom(display, "_NET_WM_STATE_SKIP_TASKBAR", False);
+            Atom netWmStateSkipPager = XInternAtom(display, "_NET_WM_STATE_SKIP_PAGER", False);
+
+            Atom states[] = { netWmStateAbove, netWmStateSkipTaskbar, netWmStateSkipPager };
+            XChangeProperty(display, window, netWmState, XA_ATOM, 32, 
+                            PropModeReplace, (unsigned char*)states, 3);
+
+            // Set window type to overlay/dock for proper stacking
+            Atom windowType = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+            Atom windowTypeDock = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DOCK", False);
+            XChangeProperty(display, window, windowType, XA_ATOM, 32,
+                            PropModeReplace, (unsigned char*)&windowTypeDock, 1);
         }
 
         // Set window to stay on top
-        Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
-        Atom netWmStateAbove = XInternAtom(display, "_NET_WM_STATE_ABOVE", False);
-        Atom netWmStateSkipTaskbar = XInternAtom(display, "_NET_WM_STATE_SKIP_TASKBAR", False);
-        Atom netWmStateSkipPager = XInternAtom(display, "_NET_WM_STATE_SKIP_PAGER", False);
-
-        Atom states[] = { netWmStateAbove, netWmStateSkipTaskbar, netWmStateSkipPager };
-        XChangeProperty(display, window, netWmState, XA_ATOM, 32, 
-                        PropModeReplace, (unsigned char*)states, 3);
-
-        // Set window type to overlay/dock for proper stacking
-        Atom windowType = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
-        Atom windowTypeDock = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DOCK", False);
-        XChangeProperty(display, window, windowType, XA_ATOM, 32,
-                        PropModeReplace, (unsigned char*)&windowTypeDock, 1);
+        
 
         // Ensure no input events are selected
+        if (clickthrough)
         XSelectInput(display, window, NoEventMask);
                 
         // Create graphics context
@@ -334,23 +355,26 @@ public:
         XFlush(display);
 
         // Set initial screen size based on current display
-        const DisplayInfo* current_display = display_manager.getCurrentDisplay();
-        if (current_display) {
-            current_screen_input_info.setScreenSize(current_display->x, current_display->y, 
-                                                   current_display->width, current_display->height);
-            
-            // Position window on current display
-            XMoveResizeWindow(display, window, current_display->x, current_display->y, 
-                            current_display->width, current_display->height);
-        } else {
-            // Fallback for single display
-            XWindowAttributes attr;
-            XGetWindowAttributes(display, window, &attr);
-            int x, y;
-            unsigned int width, height, border_width, depth;
-            Window root;
-            XGetGeometry(display, window, &root, &x, &y, &width, &height, &border_width, &depth);
-            current_screen_input_info.setScreenSize(x, y, width, height);
+        if (fullscreen) {
+        
+            const DisplayInfo* current_display = display_manager.getCurrentDisplay();
+            if (current_display) {
+                current_screen_input_info.setScreenSize(current_display->x, current_display->y, 
+                                                    current_display->width, current_display->height);
+                
+                // Position window on current display
+                XMoveResizeWindow(display, window, current_display->x, current_display->y, 
+                                current_display->width, current_display->height);
+            } else {
+                // Fallback for single display
+                XWindowAttributes attr;
+                XGetWindowAttributes(display, window, &attr);
+                int x, y;
+                unsigned int width, height, border_width, depth;
+                Window root;
+                XGetGeometry(display, window, &root, &x, &y, &width, &height, &border_width, &depth);
+                current_screen_input_info.setScreenSize(x, y, width, height);
+            }
         }
 
         current_screen_input_info.selected_text_reader = new SelectedTextReader(display, window);
