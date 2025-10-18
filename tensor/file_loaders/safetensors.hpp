@@ -223,6 +223,7 @@ using json = nlohmann::json;
             inline void save(const char* filename) {
                 std::ofstream bin(filename, std::ios::binary);
                 save(bin);
+                bin.close();
             }
     };
 
