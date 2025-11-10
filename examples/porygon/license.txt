@@ -1,0 +1,11 @@
+Model Information:
+* title:	Pokémon #137 - Porygon
+* source:	https://sketchfab.com/3d-models/pokemon-137-porygon-5ccc6c23e0b64e72b967b67851314ee1
+* author:	Nihkolic (https://sketchfab.com/nihkolic)
+
+Model License:
+* license type:	CC-BY-SA-4.0 (http://creativecommons.org/licenses/by-sa/4.0/)
+* requirements:	Author must be credited. Modified versions must have the same license. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Pokémon #137 - Porygon" (https://sketchfab.com/3d-models/pokemon-137-porygon-5ccc6c23e0b64e72b967b67851314ee1) by Nihkolic (https://sketchfab.com/nihkolic) licensed under CC-BY-SA-4.0 (http://creativecommons.org/licenses/by-sa/4.0/)

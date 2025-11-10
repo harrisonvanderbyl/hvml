@@ -1,0 +1,1 @@
+g++ tensor/vector/simd/simd.arm.cpp -I./tensor -o arm.o -c 

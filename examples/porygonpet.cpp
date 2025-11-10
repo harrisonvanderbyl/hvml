@@ -28,7 +28,7 @@ int main(){
         vecview[i] = float4(i%512, i/512, 0, 1); // x, y, z, w
     }
 
-    gltf d3model = gltf("3dmodel","scene.gltf");
+    gltf d3model = gltf("porygon","scene.gltf");
     std::cout << d3model << std::endl;
 
     OpenGLRenderer display(512,512);

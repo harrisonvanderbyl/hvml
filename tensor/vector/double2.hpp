@@ -1,6 +1,5 @@
 
 #define pows(x) (pow(float(x), 2))
-#include "immintrin.h"
 #include "tensor.hpp"
 struct double2
 {
@@ -19,7 +18,51 @@ struct double2
         this->y = 0;
     };
 
-    double2 operator+(double2 &other)
+    
+
+
+    double2 copy()
+    {
+        double2 out;
+        out.x = x;
+        out.y = y;
+        return out;
+    };
+
+    static double2 random()
+    {
+        double2 out;
+        out.x = (rand() % 10000) / 10000.0 - 0.5;
+        out.y = (rand() % 10000) / 10000.0 - 0.5;
+        return out;
+    };
+
+    double2 operator=(double2 &other)
+    {
+        x = other.x;
+        y = other.y;
+        return *this;
+    };
+
+    double2 operator=(double other)
+    {
+        x = other;
+        y = other;
+        return *this;
+    };
+
+    double2 operator=(double2 other)
+    {
+        x = other.x;
+        y = other.y;
+        return *this;
+    };
+
+    
+};
+
+#if 0
+double2 operator+(double2 &other)
     {
         double2 out;
         _mm_storeu_pd((double *)&out, _mm_add_pd(_mm_loadu_pd((double *)&other), _mm_loadu_pd((double *)this)));
@@ -122,44 +165,4 @@ struct double2
         _mm_storeu_pd((double *)this, _mm_sub_pd(_mm_set1_pd(other), _mm_loadu_pd((double *)this)));
         return *this;
     };
-
-
-    double2 copy()
-    {
-        double2 out;
-        out.x = x;
-        out.y = y;
-        return out;
-    };
-
-    static double2 random()
-    {
-        double2 out;
-        out.x = (rand() % 10000) / 10000.0 - 0.5;
-        out.y = (rand() % 10000) / 10000.0 - 0.5;
-        return out;
-    };
-
-    double2 operator=(double2 &other)
-    {
-        x = other.x;
-        y = other.y;
-        return *this;
-    };
-
-    double2 operator=(double other)
-    {
-        x = other;
-        y = other;
-        return *this;
-    };
-
-    double2 operator=(double2 other)
-    {
-        x = other.x;
-        y = other.y;
-        return *this;
-    };
-
-    
-};
+#endif

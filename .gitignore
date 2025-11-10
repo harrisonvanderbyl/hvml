@@ -1,2 +1,4 @@
 /.vscode
-*.safetensors
+**/*.safetensors
+**/*.out
+**/*.o

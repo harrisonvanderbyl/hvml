@@ -41,11 +41,11 @@ int main(){
     mod.state = 0;
     std::cout << mod << std::endl;
 
-    safetensors tensors("timeshift.safetensors");
+    safetensors tensors;
 
     mod.save_to_safetensors(tensors, "timeshift.");
 
-    tensors.save("timeshift.safetensors");
+    tensors.save("safetensors.st");
 
     mod.load_from_safetensors(tensors, "timeshift.");
 
