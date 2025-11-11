@@ -197,6 +197,11 @@ public:
 
         return tensors;
     }
+
+    void save_to_safetensors(const char* filename, std::string key = "") {
+        safetensors tensors = to_safetensors(safetensors(), key);
+        tensors.save(filename);
+    }
     
     
 };
