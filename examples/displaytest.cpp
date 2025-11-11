@@ -20,7 +20,12 @@ int main(){
     Tensor<float4,1> particles({512},kCPU);
     Tensor<float4,2> particleField({512,512}, kCPU);
     
+    for(int i = 0; i < 20; i++){
+        for(int j = 0; j < 20; j++){
+            particles[i*20+j] = {i,j,0,0};
 
+        }
+    }
     // std::cout << display;
         
     display.add_on_update([&](CurrentScreenInputInfo& input_info) {
@@ -30,7 +35,12 @@ int main(){
         display[{{}}] = 0;
         for(int i = 0; i < 512; i++){
             // std::cout << i << particles[i] << "\n";
-            display[particles[i].x, particles[i].y] = 0xffffffff;
+            
+            display[{particles[i].x, particles[i].y}] = 0xffffffff;
+
+            display[{particles[i].x+1, particles[i].y}] = 0xffffffff;
+            display[{particles[i].x, particles[i].y+1}] = 0xffffffff;
+            display[{particles[i].x+1, particles[i].y+1}] = 0xffffffff;
         }
     });
 

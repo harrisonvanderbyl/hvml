@@ -591,7 +591,14 @@ public:
             throw std::runtime_error("Unsupported device type conversion");
         }
         return a;
-    }
+    };
+
+    
+    // template <int output>//, typename std::enable_if<(rank == -1)>::type* = nullptr>
+    // operator Tensor<R,output>(){
+    //     assert(this->shape.ndim() == output);// "Output not correct ndims"
+    //     return *this;
+    // }
 };
 
 

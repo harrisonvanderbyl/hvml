@@ -31,13 +31,25 @@ struct TimeShiftmod: Module<Tensor<R, 2>>
 
 };
 
+
+
+class EinObj{
+    Tensor<float,2> rearange(){
+
+    }
+};
+
 int main(){
 
 
-    Tensor<float, 2> myobjects({4, 4}, DeviceType::kCPU);
+    Tensor<float, -1> myobjects({4, 4}, DeviceType::kCPU);
+    Tensor<float, 2> myobjects2({4, 4}, DeviceType::kCPU);
     std::cout << myobjects << std::endl;
 
     auto mod = TimeShift(4, 512);
+
+    auto output = EinObj({a,b},{ab}).rearange(myobjects2);
+    std::cout << myobjects;
     mod.state = 0;
     std::cout << mod << std::endl;
 
