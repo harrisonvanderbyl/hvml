@@ -48,7 +48,7 @@ int main(){
 
     auto mod = TimeShift(4, 512);
 
-    auto output = EinObj({a,b},{ab}).rearange(myobjects2);
+    // auto output = EinObj({a,b},{ab}).rearange(myobjects2);
     std::cout << myobjects;
     mod.state = 0;
     std::cout << mod << std::endl;
