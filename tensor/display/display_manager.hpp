@@ -189,8 +189,8 @@ public:
     }
 
     // get global size, ie, the bounding box of all displays
-    float4 getGlobalSize() const {
-        if (displays.empty()) return float4(0, 0, 0, 0);
+    float32x4 getGlobalSize() const {
+        if (displays.empty()) return float32x4(0, 0, 0, 0);
         
         int min_x = displays[0].x;
         int min_y = displays[0].y;
@@ -204,7 +204,7 @@ public:
             max_y = std::max(max_y, display.y + display.height);
         }
         
-        return float4(min_x, min_y, max_x - min_x, max_y - min_y);
+        return float32x4(min_x, min_y, max_x - min_x, max_y - min_y);
     }
 };
 

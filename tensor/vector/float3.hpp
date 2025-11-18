@@ -1,68 +1,68 @@
 
 #define pows(x) (pow(float(x), 2))
-#ifndef FLOAT3_HPP
-#define FLOAT3_HPP
+#ifndef float32x3_HPP
+#define float32x3_HPP
 #include "cmath"
-struct float2 {
+struct float32x32x2 {
     float x;
     float y;
 
     template <typename T, typename TT>
-    float2(T x, TT y)
+    float32x32x2(T x, TT y)
     {
         this->x = x;
         this->y = y;
     };
 
     template <typename T>
-    float2(T xy)
+    float32x32x2(T xy)
     {
         this->x = xy;
         this->y = xy;
     };
 
-    float2()
+    float32x32x2()
     {
         this->x = 0;
         this->y = 0;
     };
 
-    float2 operator+(float2 other)
+    float32x32x2 operator+(float32x32x2 other)
     {
-        float2 out = {
+        float32x32x2 out = {
             x + other.x,
             y + other.y
         };
         return out;
     };
-    float2 operator-(float2 other)
+    float32x32x2 operator-(float32x32x2 other)
     {
-        float2 out = {
+        float32x32x2 out = {
             x - other.x,
             y - other.y
         };
         return out;
     };
-    float2 operator/(float2 &other)
+    float32x32x2 operator/(float32x32x2 &other)
     {
-        float2 out = {
+        float32x32x2 out = {
             x / other.x,
             y / other.y
         };
         return out;
     };
 
-    float2 operator -()
+    float32x32x2 operator -()
     {
-        float2 out;
+        float32x32x2 out;
         out.x = -x;
         out.y = -y;
         return out;
     };
 
-    float2 operator*(float2 other)
+    float32x32x2 operator*(float32x32x2 other)
     {
-        float2 out = {
+        float32x32x2 out = {
             x * other.x,
             y * other.y
         };
@@ -72,14 +72,14 @@ struct float2 {
     
 };
 
-struct float3
+struct float32x3
 {
     float x;
     float y;
     float z;
 
     template <typename T,typename TT,typename TTT>
-    float3(T x, TT y, TTT z)
+    float32x3(T x, TT y, TTT z)
     {
         this->x = x;
         this->y = y;
@@ -87,52 +87,52 @@ struct float3
     };
 
     template <typename T>
-    float3(T xyz)
+    float32x3(T xyz)
     {
         this->x = xyz;
         this->y = xyz;
         this->z = xyz;
     };
 
-    float3()
+    float32x3()
     {
         this->x = 0;
         this->y = 0;
         this->z = 0;
     };
 
-    float2& xy()
+    float32x32x2& xy()
     {
-        return *(float2 *)this;
+        return *(float32x32x2 *)this;
     };
 
-    float2& yz()
+    float32x32x2& yz()
     {
-        return *(float2 *)&y;
+        return *(float32x32x2 *)&y;
     };
 
     
 
 
-    float3 copy()
+    float32x3 copy()
     {
-        float3 out;
+        float32x3 out;
         out.x = x;
         out.y = y;
         out.z = z;
         return out;
     };
 
-    static float3 random()
+    static float32x3 random()
     {
-        float3 out;
+        float32x3 out;
         out.x = (rand() % 10000) / 10000.0 - 0.5;
         out.y = (rand() % 10000) / 10000.0 - 0.5;
         out.z = (rand() % 10000) / 10000.0 - 0.5;
         return out;
     };
 
-    float3 operator=(float3 other)
+    float32x3 operator=(float32x3 other)
     {
         x = other.x;
         y = other.y;
@@ -140,7 +140,7 @@ struct float3
         return *this;
     };
 
-    float3 operator=(float other)
+    float32x3 operator=(float other)
     {
         x = other;
         y = other;
@@ -149,9 +149,9 @@ struct float3
     };
 
 
-    float3 operator+(float3 other)
+    float32x3 operator+(float32x3 other)
     {
-        float3 out = {
+        float32x3 out = {
             x + other.x,
             y + other.y,
             z + other.z
@@ -159,9 +159,9 @@ struct float3
         return out;
     };
 
-    float3 operator-(float3 other)
+    float32x3 operator-(float32x3 other)
     {
-        float3 out = {
+        float32x3 out = {
             x - other.x,
             y - other.y,
             z - other.z
@@ -169,9 +169,9 @@ struct float3
         return out;
     };
 
-    float3 operator-()
+    float32x3 operator-()
     {
-        float3 out;
+        float32x3 out;
         out.x = -x;
         out.y = -y;
         out.z = -z;
@@ -196,54 +196,54 @@ struct float3
 
     //math
 
-    float3 operator+(const float3& other) const;
+    float32x3 operator+(const float32x3& other) const;
 
     __attribute__((weak))
-    float3 operator-(const float3& other) const {
-        return float3(this->x - other.x, this->y - other.y, this->z - other.z);
+    float32x3 operator-(const float32x3& other) const {
+        return float32x3(this->x - other.x, this->y - other.y, this->z - other.z);
    
     }
 
     __attribute__((weak))
-    float3 operator*(const float3& other) const {
-       return float3(this->x * other.x, this->y * other.y, this->z * other.z);
+    float32x3 operator*(const float32x3& other) const {
+       return float32x3(this->x * other.x, this->y * other.y, this->z * other.z);
    
     }
 
     __attribute__((weak))
-    float3 operator/(const float3& other) const {
-        return float3(this->x / other.x, this->y / other.y, this->z / other.z);
+    float32x3 operator/(const float32x3& other) const {
+        return float32x3(this->x / other.x, this->y / other.y, this->z / other.z);
    
     }
 
     __attribute__((weak))
-    float3 operator*(float scalar) const {
-       return float3(this->x *scalar, this->y *scalar, this->z *scalar);
+    float32x3 operator*(float scalar) const {
+       return float32x3(this->x *scalar, this->y *scalar, this->z *scalar);
    
     }
 
     __attribute__((weak))
-    float3 operator/(float scalar) const {
+    float32x3 operator/(float scalar) const {
        return *this * (1/scalar);
    
     }
 
     __attribute__((weak))
-    float3 operator+=(const float3& other) {
+    float32x3 operator+=(const float32x3& other) {
         *this = *this + other;
         return *this;
     }
 
     __attribute__((weak))
-    float3 operator-=(const float3& other) {
+    float32x3 operator-=(const float32x3& other) {
          *this = *this - other;
         return *this;
     }
 
     __attribute__((weak))
-    float3 cross(float3 b)
+    float32x3 cross(float32x3 b)
     {
-        return float3(
+        return float32x3(
             this->y * b.z - this->z * b.y,
             this->z * b.x - this->x * b.z,
             this->x * b.y - this->y * b.x
@@ -251,15 +251,15 @@ struct float3
     }
     
     __attribute__((weak))
-    float3 normalize()
+    float32x3 normalize()
     {
         float length = sqrt(this->x * this->x + this->y * this->y + this->z * this->z);
-        if (length == 0) return float3(0, 0, 0);
+        if (length == 0) return float32x3(0, 0, 0);
         return *this / length;
 }
 
     // print
-    friend std::ostream &operator<<(std::ostream &os, float3 a)
+    friend std::ostream &operator<<(std::ostream &os, float32x3 a)
     {
         os << "(" << a.x << ", " << a.y << ", " << a.z << ")";
         return os;

@@ -98,9 +98,9 @@ PFNGLUNIFORM1IPROC glUniform1i = nullptr;
 
 
 struct Camera {
-    float3 position;
-    float3 target;
-    float3 up;
+    float32x3 position;
+    float32x3 target;
+    float32x3 up;
     float fov;
     float aspect;
     float near_plane;
@@ -116,17 +116,17 @@ struct Camera {
         mat4 result;
         float tanHalfFov = tan(fov * 0.5f * M_PI / 180.0f);
         
-        result.rows[0] = float4(1.0f / (aspect * tanHalfFov), 0, 0, 0);
-        result.rows[1] = float4(0, 1.0f / tanHalfFov, 0, 0);
-        result.rows[2] = float4(0, 0, -(far_plane + near_plane) / (far_plane - near_plane), -1);
-        result.rows[3] = float4(0, 0, -(2.0f * far_plane * near_plane) / (far_plane - near_plane), 0);
+        result.rows[0] = float32x4(1.0f / (aspect * tanHalfFov), 0, 0, 0);
+        result.rows[1] = float32x4(0, 1.0f / tanHalfFov, 0, 0);
+        result.rows[2] = float32x4(0, 0, -(far_plane + near_plane) / (far_plane - near_plane), -1);
+        result.rows[3] = float32x4(0, 0, -(2.0f * far_plane * near_plane) / (far_plane - near_plane), 0);
         
         return result;
     }
     
     mat4 getViewMatrix() {
         // Simple lookAt implementation
-        float3 f = target; // forward
+        float32x3 f = target; // forward
         f.x -= position.x;
         f.y -= position.y;
         f.z -= position.z;
@@ -136,7 +136,7 @@ struct Camera {
         f.x /= length; f.y /= length; f.z /= length;
         
         // Right = f x up
-        float3 r;
+        float32x3 r;
         r.x = f.y * up.z - f.z * up.y;
         r.y = f.z * up.x - f.x * up.z;
         r.z = f.x * up.y - f.y * up.x;
@@ -146,16 +146,16 @@ struct Camera {
         r.x /= length; r.y /= length; r.z /= length;
         
         // Up = r x f
-        float3 u;
+        float32x3 u;
         u.x = r.y * f.z - r.z * f.y;
         u.y = r.z * f.x - r.x * f.z;
         u.z = r.x * f.y - r.y * f.x;
         
         mat4 result;
-        result.rows[0] = float4(r.x, u.x, -f.x, 0);
-        result.rows[1] = float4(r.y, u.y, -f.y, 0);
-        result.rows[2] = float4(r.z, u.z, -f.z, 0);
-        result.rows[3] = float4(
+        result.rows[0] = float32x4(r.x, u.x, -f.x, 0);
+        result.rows[1] = float32x4(r.y, u.y, -f.y, 0);
+        result.rows[2] = float32x4(r.z, u.z, -f.z, 0);
+        result.rows[3] = float32x4(
             -(r.x * position.x + r.y * position.y + r.z * position.z),
             -(u.x * position.x + u.y * position.y + u.z * position.z),
             f.x * position.x + f.y * position.y + f.z * position.z,
@@ -518,7 +518,7 @@ public:
         }
         
         // Create framebuffer for off-screen rendering
-        float4 totalscreensallsize = current_screen_input_info.getDisplayManager()->getGlobalSize();
+        float32x4 totalscreensallsize = current_screen_input_info.getDisplayManager()->getGlobalSize();
         if (!createFramebuffer(int(totalscreensallsize.z), int(totalscreensallsize.w))) {
             std::cerr << "Failed to create framebuffer!" << std::endl;
             return;
@@ -600,33 +600,33 @@ public:
                 // Process positions
                 auto pos_it = primitive.attributes.find("POSITION");
                 if (pos_it != primitive.attributes.end()) {
-                    Tensor<float3,1>  positions = pos_it->second;
+                    Tensor<float32x3,1>  positions = pos_it->second;
                     glGenBuffers(1, &render_mesh.VBO_positions);
                     glBindBuffer(GL_ARRAY_BUFFER, render_mesh.VBO_positions);
-                    glBufferData(GL_ARRAY_BUFFER, positions.shape[0] * sizeof(float3), positions.data, GL_STATIC_DRAW);
-                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float3), (void*)0);
+                    glBufferData(GL_ARRAY_BUFFER, positions.shape[0] * sizeof(float32x3), positions.data, GL_STATIC_DRAW);
+                    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float32x3), (void*)0);
                     glEnableVertexAttribArray(0);
                 }
                 
                 // Process normals
                 auto norm_it = primitive.attributes.find("NORMAL");
                 if (norm_it != primitive.attributes.end()) {
-                    Tensor<float3,1> normals = norm_it->second;
+                    Tensor<float32x3,1> normals = norm_it->second;
                     glGenBuffers(1, &render_mesh.VBO_normals);
                     glBindBuffer(GL_ARRAY_BUFFER, render_mesh.VBO_normals);
-                    glBufferData(GL_ARRAY_BUFFER, normals.shape[0] * sizeof(float3), normals.data, GL_STATIC_DRAW);
-                    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float3), (void*)0);
+                    glBufferData(GL_ARRAY_BUFFER, normals.shape[0] * sizeof(float32x3), normals.data, GL_STATIC_DRAW);
+                    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float32x3), (void*)0);
                     glEnableVertexAttribArray(1);
                 }
                 
                 // Process texture coordinates
                 auto tex_it = primitive.attributes.find("TEXCOORD_0");
                 if (tex_it != primitive.attributes.end()) {
-                    Tensor<float2,1>  texcoords = tex_it->second;
+                    Tensor<float32x32x2,1>  texcoords = tex_it->second;
                     glGenBuffers(1, &render_mesh.VBO_texcoords);
                     glBindBuffer(GL_ARRAY_BUFFER, render_mesh.VBO_texcoords);
-                    glBufferData(GL_ARRAY_BUFFER, texcoords.shape[0] * sizeof(float2), texcoords.data, GL_STATIC_DRAW);
-                    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float2), (void*)0);
+                    glBufferData(GL_ARRAY_BUFFER, texcoords.shape[0] * sizeof(float32x32x2), texcoords.data, GL_STATIC_DRAW);
+                    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x32x2), (void*)0);
                     glEnableVertexAttribArray(2);
                 }
 
@@ -676,7 +676,7 @@ public:
         return true;
     }
     
-    void setCamera(const float3& position, const float3& target, const float3& up = float3(0, 1, 0)) {
+    void setCamera(const float32x3& position, const float32x3& target, const float32x3& up = float32x3(0, 1, 0)) {
         camera.position = position;
         camera.target = target;
         camera.up = up;
@@ -745,16 +745,16 @@ public:
             glBindVertexArray(mesh.VAO);
             // Bind vertex buffers
             glBindBuffer(GL_ARRAY_BUFFER, mesh.VBO_positions);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float3), (void*)0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float32x3), (void*)0);
             glEnableVertexAttribArray(0);
             if (mesh.VBO_normals) {
                 glBindBuffer(GL_ARRAY_BUFFER, mesh.VBO_normals);
-                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float3), (void*)0);
+                glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float32x3), (void*)0);
                 glEnableVertexAttribArray(1);
             }
             if (mesh.VBO_texcoords) {
                 glBindBuffer(GL_ARRAY_BUFFER, mesh.VBO_texcoords);
-                glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float2), (void*)0);
+                glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x32x2), (void*)0);
                 glEnableVertexAttribArray(2);
             }
             if (mesh.BBO) {

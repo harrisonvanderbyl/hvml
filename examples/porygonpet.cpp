@@ -12,7 +12,7 @@
 #include "tensor/display/opengl_renderer.hpp"
 
 class pixel {
-    float32x32x4 offset;
+    float32x4 offset;
     mat4* parent;
 };
 
@@ -23,9 +23,9 @@ class eventQueue {
 int main(){
     int objects = 4;
     Tensor<float, 2> myobjects({objects, 4}, DeviceType::kCPU);
-    Tensor vecview = myobjects.view<float32x32x4,1>({objects});
+    Tensor vecview = myobjects.view<float32x4,1>({objects});
     for (int i = 0; i < objects; i++) {
-        vecview[i] = float32x32x4(i%512, i/512, 0, 1); // x, y, z, w
+        vecview[i] = float32x4(i%512, i/512, 0, 1); // x, y, z, w
     }
 
     gltf d3model = gltf("porygon","scene.gltf");
@@ -61,7 +61,7 @@ int main(){
         mouseposition = (((input_info.getSelectedArea().xy() / ss)) - float32x32x2(0.5, 0.5)) * 2.0;
         float32x3 mouseposition3 = float32x3(mouseposition.x, mouseposition.y, 0.0); // Convert to 3D position
         // use inverse camera matrix to convert mouse position to world coordinates
-        mouseposition3 = (display.getCamera().getViewProjectionMatrix().inverse() * float32x32x4(mouseposition3.x, mouseposition3.y, mouseposition3.z, 0.0)).xyz();
+        mouseposition3 = (display.getCamera().getViewProjectionMatrix().inverse() * float32x4(mouseposition3.x, mouseposition3.y, mouseposition3.z, 0.0)).xyz();
         // mouseposition3.z = 
         float32x3 dirdir = normalize(mouseposition3 - duckposition); // Calculate the direction vector
         float randomnumber = (rand() % 10000) / 10000.0 ; // Generate a random number between -0.5 and 0.5
@@ -110,12 +110,12 @@ int main(){
         d3model.skeletons[0][i++] = inbetweenturn.translated(duckposition);
 
 
-        float32x32x4 duckpositionscreen = display.getCamera().getProjectionViewMatrix().transpose() * float32x32x4(duckposition.x, duckposition.y, duckposition.z, 1.0f); // Convert to screen coordinates
+        float32x4 duckpositionscreen = display.getCamera().getProjectionViewMatrix().transpose() * float32x4(duckposition.x, duckposition.y, duckposition.z, 1.0f); // Convert to screen coordinates
         duckpositionscreen = duckpositionscreen / duckpositionscreen.w;
-        duckpositionscreen = duckpositionscreen * float32x32x4(0.5, 0.5, 0.5, 1.0); // Convert to normalized device coordinates
-        duckpositionscreen = duckpositionscreen + float32x32x4(0.5, 0.5, 0.5, 0.0); // Convert to normalized device coordinates
-        duckpositionscreen = duckpositionscreen * float32x32x4(ss.x,ss.y, 1.0, 1.0); // Scale to screen size
-        // duckpositionscreen = duckpositionscreen * float32x32x4(input_info.getCurrentDisplayInfo()->width, input_info.getCurrentDisplayInfo()->height, 1.0, 1.0); // Scale to screen size
+        duckpositionscreen = duckpositionscreen * float32x4(0.5, 0.5, 0.5, 1.0); // Convert to normalized device coordinates
+        duckpositionscreen = duckpositionscreen + float32x4(0.5, 0.5, 0.5, 0.0); // Convert to normalized device coordinates
+        duckpositionscreen = duckpositionscreen * float32x4(ss.x,ss.y, 1.0, 1.0); // Scale to screen size
+        // duckpositionscreen = duckpositionscreen * float32x4(input_info.getCurrentDisplayInfo()->width, input_info.getCurrentDisplayInfo()->height, 1.0, 1.0); // Scale to screen size
         // float32x32x2 duckpositionscreenpixel = float32x32x2(duckpositionscreen.x, duckpositionscreen.y) ; // Convert to screen coordinates
         auto duckondisplay = input_info.getDisplayManager()->getDisplayContaining(int(duckpositionscreen.x), int(duckpositionscreen.y));
         if(duckondisplay == nullptr){

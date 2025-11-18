@@ -26,8 +26,8 @@ private:
     bool mouse_wheel_left = false;
     bool mouse_wheel_right = false;
     bool key_pressed[KEY_MAX] = {false};
-    float4 selectedarea = float4(0, 0, 0, 0);
-    float2 lastClicked = float2(0, 0);
+    float32x4 selectedarea = float32x4(0, 0, 0, 0);
+    float32x32x2 lastClicked = float32x32x2(0, 0);
     
     // Raw input tracking
     std::map<int, bool> raw_key_states;
@@ -47,7 +47,7 @@ public:
         accumulated_mouse_y = (new_y-y);
     }
 
-    float4 getSelectedArea() const {
+    float32x4 getSelectedArea() const {
         return selectedarea;
     }
     
@@ -59,9 +59,9 @@ public:
                 if(pressed) {
                     lastClicked = getGlobalMousePosition();
                 }else{
-                    float2 mx = getGlobalMousePosition();
+                    float32x32x2 mx = getGlobalMousePosition();
                     if (sqrt(pow(mx.x - lastClicked.x, 2) + pow(mx.y - lastClicked.y, 2)) > 5.0f) {
-                        selectedarea = float4(lastClicked.x, lastClicked.y, mx.x - lastClicked.x, mx.y - lastClicked.y);
+                        selectedarea = float32x4(lastClicked.x, lastClicked.y, mx.x - lastClicked.x, mx.y - lastClicked.y);
                     }
                     std::cout << "Selected area: " << selectedarea.x << ", " << selectedarea.y << ", " 
                               << selectedarea.z << ", " << selectedarea.w << std::endl;
@@ -112,9 +112,9 @@ public:
     bool isFullscreen() const { return is_fullscreen; }
     int getMouseX() const { return mouse_x; }
     int getMouseY() const { return mouse_y; }
-    float2 getMousePosition() const { return float2(mouse_x, mouse_y); }
-    float2 getMouseMove() const { return float2(mouse_move_x, mouse_move_y); }
-    float4 getScreenSize() const { return float4(x, y, width, height); }
+    float32x32x2 getMousePosition() const { return float32x32x2(mouse_x, mouse_y); }
+    float32x32x2 getMouseMove() const { return float32x32x2(mouse_move_x, mouse_move_y); }
+    float32x4 getScreenSize() const { return float32x4(x, y, width, height); }
     int getMouseMoveX() const { return mouse_move_x; }
     int getMouseMoveY() const { return mouse_move_y; }
     bool isMouseLeftButtonPressed() const { return mouse_left_button; }
@@ -169,15 +169,15 @@ public:
     }
 
     // global coordinates for mouse position
-    float2 getGlobalMousePosition() const {
+    float32x32x2 getGlobalMousePosition() const {
         if (display_manager) {
             const DisplayInfo* display = display_manager->getCurrentDisplay();
             if (display) {
                 auto local_pos = display->localToGlobal(mouse_x, mouse_y);
-                return float2(local_pos.first, local_pos.second);
+                return float32x32x2(local_pos.first, local_pos.second);
             }
         }
-        return float2(mouse_x, mouse_y);
+        return float32x32x2(mouse_x, mouse_y);
     }
     
 };

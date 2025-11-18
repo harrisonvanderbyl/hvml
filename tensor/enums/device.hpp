@@ -54,6 +54,7 @@ struct DeviceAllocator<DeviceType::kCUDA>{
     }
 };
 #elif defined(__HIPCC__)
+#include <hip/hip_runtime.h>
 template <>
 struct DeviceAllocator<DeviceType::kHIP>{
     static constexpr DeviceType device_type = DeviceType::kHIP;

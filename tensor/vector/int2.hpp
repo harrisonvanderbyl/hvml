@@ -1,31 +1,31 @@
-struct int2 
+struct int32x2 
 {
     int x;
     int y;
-    int2(int x, int y){
+    int32x2(int x, int y){
         this->x = x;
         this->y = y;
     };
-    int2(){
+    int32x2(){
         this->x = 0;
         this->y = 0;
     };
 };
 
 
-struct int4 
+struct int32x4 
 {
     int x;
     int y;
     int z;
     int w;
-    int4(int x, int y, int z, int w){
+    int32x4(int x, int y, int z, int w){
         this->x = x;
         this->y = y;
         this->z = z;
         this->w = w;
     };
-    int4(){
+    int32x4(){
         this->x = 0;
         this->y = 0;
         this->z = 0;

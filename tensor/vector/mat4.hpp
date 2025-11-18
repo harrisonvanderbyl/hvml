@@ -2,15 +2,15 @@
 #include "float3.hpp"
 struct mat4
 {
-    float4 rows[4];
+    float32x4 rows[4];
 
-    mat4(float4 row0, float4 row1, float4 row2, float4 row3):
+    mat4(float32x4 row0, float32x4 row1, float32x4 row2, float32x4 row3):
         rows{row0, row1, row2, row3}
     {
     };
 
     mat4():
-        rows{float4(), float4(), float4(), float4()}
+        rows{float32x4(), float32x4(), float32x4(), float32x4()}
     {
     };
 
@@ -27,37 +27,37 @@ struct mat4
         return result;
     };
 
-    void set_rotate(float angle, float3 axis)
+    void set_rotate(float angle, float32x3 axis)
     {
         float c = cos(angle);
         float s = sin(angle);
         float t = 1 - c;
 
-        rows[0] = float4(
+        rows[0] = float32x4(
             t * axis.x * axis.x + c,
             t * axis.x * axis.y - s * axis.z,
             t * axis.x * axis.z + s * axis.y,
             0
         );
 
-        rows[1] = float4(
+        rows[1] = float32x4(
             t * axis.x * axis.y + s * axis.z,
             t * axis.y * axis.y + c,
             t * axis.y * axis.z - s * axis.x,
             0
         );
 
-        rows[2] = float4(
+        rows[2] = float32x4(
             t * axis.x * axis.z - s * axis.y,
             t * axis.y * axis.z + s * axis.x,
             t * axis.z * axis.z + c,
             0
         );
 
-        rows[3] = float4(0, 0, 0, 1);
+        rows[3] = float32x4(0, 0, 0, 1);
     };
 
-    void rotate(float angle, float3 axis)
+    void rotate(float angle, float32x3 axis)
     {
         mat4 rotation;
         rotation.set_rotate(angle, axis);
@@ -77,21 +77,21 @@ struct mat4
         *this = result;
     };
 
-    void point_towards_direction(float3 direction, float3 up = float3(0, 1, -1))
+    void point_towards_direction(float32x3 direction, float32x3 up = float32x3(0, 1, -1))
     {
         // Normalize the direction vector
-        float3 dir = direction.normalize();
+        float32x3 dir = direction.normalize();
         
         // Calculate the right and up vectors
-        // float3 up = float3(0, 1, -1); // Assuming Y is up
-        float3 right = up.cross(dir).normalize();
+        // float32x3 up = float32x3(0, 1, -1); // Assuming Y is up
+        float32x3 right = up.cross(dir).normalize();
         up = dir.cross(right); // Recalculate up to ensure orthogonality
 
         // Set the rotation matrix
-        rows[0] = float4(right.x, up.x, -dir.x, 0);
-        rows[1] = float4(right.y, up.y, -dir.y, 0);
-        rows[2] = float4(right.z, up.z, -dir.z, 0);
-        rows[3] = float4(0, 0, 0, 1);
+        rows[0] = float32x4(right.x, up.x, -dir.x, 0);
+        rows[1] = float32x4(right.y, up.y, -dir.y, 0);
+        rows[2] = float32x4(right.z, up.z, -dir.z, 0);
+        rows[3] = float32x4(0, 0, 0, 1);
 
         
         // Set the translation part to zero
@@ -106,12 +106,12 @@ struct mat4
 
     };
 
-    mat4 pointed_towards_direction(float3 direction, float3 up = float3(0, 1, -1))
+    mat4 pointed_towards_direction(float32x3 direction, float32x3 up = float32x3(0, 1, -1))
     {
         mat4 change = mat4::identity(); // Create an identity matrix for rotation
         
         mat4 myinverse = this->inverse(); // Get the inverse of the current matrix
-        float3 relativedir =(myinverse * float4(direction.x, direction.y, direction.z, 0.0f)).xyz(); // Transform the direction to the local space
+        float32x3 relativedir =(myinverse * float32x4(direction.x, direction.y, direction.z, 0.0f)).xyz(); // Transform the direction to the local space
 
         change.point_towards_direction(relativedir, up); // Set the rotation
 
@@ -119,16 +119,16 @@ struct mat4
         return result;
     };
 
-    void set_translate(float3 translation)
+    void set_translate(float32x3 translation)
     {
-        rows[0] = float4(1, 0, 0, translation.x);
-        rows[1] = float4(0, 1, 0, translation.y);
-        rows[2] = float4(0, 0, 1, translation.z);
-        rows[3] = float4(0, 0, 0, 1);
+        rows[0] = float32x4(1, 0, 0, translation.x);
+        rows[1] = float32x4(0, 1, 0, translation.y);
+        rows[2] = float32x4(0, 0, 1, translation.z);
+        rows[3] = float32x4(0, 0, 0, 1);
 
     };
 
-    void translate(float3 translation)
+    void translate(float32x3 translation)
     {
         mat4 translation_matrix;
         translation_matrix.set_translate(translation);
@@ -138,15 +138,15 @@ struct mat4
         *this = result;
     };
 
-    void set_scale(float3 scale)
+    void set_scale(float32x3 scale)
     {
-        rows[0] = float4(scale.x, 0, 0, 0);
-        rows[1] = float4(0, scale.y, 0, 0);
-        rows[2] = float4(0, 0, scale.z, 0);
-        rows[3] = float4(0, 0, 0, 1);
+        rows[0] = float32x4(scale.x, 0, 0, 0);
+        rows[1] = float32x4(0, scale.y, 0, 0);
+        rows[2] = float32x4(0, 0, scale.z, 0);
+        rows[3] = float32x4(0, 0, 0, 1);
     };
 
-    void scale(float3 scale)
+    void scale(float32x3 scale)
     {
         mat4 scale_matrix;
         scale_matrix.set_scale(scale);
@@ -170,14 +170,14 @@ struct mat4
     static mat4 identity()
     {
         return mat4(
-            float4(1, 0, 0, 0),
-            float4(0, 1, 0, 0),
-            float4(0, 0, 1, 0),
-            float4(0, 0, 0, 1)
+            float32x4(1, 0, 0, 0),
+            float32x4(0, 1, 0, 0),
+            float32x4(0, 0, 1, 0),
+            float32x4(0, 0, 0, 1)
         );
     };
 
-    mat4 translated(float3 translation)
+    mat4 translated(float32x3 translation)
     {
         mat4 change = mat4::identity(); // Create an identity matrix for translation
         change.set_translate(translation); // Set the translation
@@ -186,7 +186,7 @@ struct mat4
         return result;
     };
 
-    mat4 scaled(float3 scale)
+    mat4 scaled(float32x3 scale)
     {
         mat4 change = mat4::identity(); // Create an identity matrix for scaling
         change.set_scale(scale); // Set the scale
@@ -195,7 +195,7 @@ struct mat4
         return result;
     };
 
-    mat4 rotated(float angle, float3 axis)
+    mat4 rotated(float angle, float32x3 axis)
     {
         mat4 change = mat4::identity(); // Create an identity matrix for rotation
         change.set_rotate(angle, axis); // Set the rotation
@@ -247,7 +247,7 @@ struct mat4
         // Calculate the inverse using the adjugate method
         // This is a simplified version and may not be numerically stable for all matrices
         inv = {
-            float4(
+            float32x4(
                 (rows[1].y * (rows[2].z * rows[3].w - rows[2].w * rows[3].z) -
                  rows[1].z * (rows[2].y * rows[3].w - rows[2].w * rows[3].y) +
                  rows[1].w * (rows[2].y * rows[3].z - rows[2].z * rows[3].y)) / det,
@@ -261,7 +261,7 @@ struct mat4
                   rows[0].z * (rows[1].y * rows[2].w - rows[1].w * rows[2].y) +
                   rows[0].w * (rows[1].y * rows[2].z - rows[1].z * rows[2].y)) / det
             ),
-            float4(
+            float32x4(
                 -(rows[1].x * (rows[2].z * rows[3].w - rows[2].w * rows[3].z) -
                   rows[1].z * (rows[2].x * rows[3].w - rows[2].w * rows[3].x) +
                   rows[1].w * (rows[2].x * rows[3].z - rows[2].z * rows[3].x)) / det,
@@ -275,7 +275,7 @@ struct mat4
                  rows[0].z * (rows[1].x * rows[2].w - rows[1].w * rows[2].x) +
                  rows[0].w * (rows[1].x * rows[2].z - rows[1].z * rows[2].y)) / det
             ),
-            float4(
+            float32x4(
                 (rows[1].x * (rows[2].y * rows[3].w - rows[2].w * rows[3].y) -
                  rows[1].y * (rows[2].x * rows[3].w - rows[2].w * rows[3].x) +
                  rows[1].w * (rows[2].x * rows[3].y - rows[2].y * rows[3].x)) / det,
@@ -289,7 +289,7 @@ struct mat4
                   rows[0].y * (rows[1].x * rows[2].w - rows[1].w * rows[2].x) +
                   rows[0].w * (rows[1].x * rows[2].y - rows[1].y * rows[2].x)) / det
             ),
-            float4(
+            float32x4(
                 -(rows[1].x * (rows[2].y * rows[3].z - rows[2].z * rows[3].y) -
                   rows[1].y * (rows[2].x * rows[3].z - rows[2].z * rows[3].x) +
                   rows[1].z * (rows[2].x * rows[3].y - rows[2].y * rows[3].x)) / det,
@@ -308,9 +308,9 @@ struct mat4
         return inv;
     };
 
-    float4 operator * (float4 vec)
+    float32x4 operator * (float32x4 vec)
     {
-        float4 result;
+        float32x4 result;
         result.x = rows[0].x * vec.x + rows[0].y * vec.y + rows[0].z * vec.z + rows[0].w * vec.w;
         result.y = rows[1].x * vec.x + rows[1].y * vec.y + rows[1].z * vec.z + rows[1].w * vec.w;
         result.z = rows[2].x * vec.x + rows[2].y * vec.y + rows[2].z * vec.z + rows[2].w * vec.w;
@@ -318,10 +318,10 @@ struct mat4
         return result;
     };
 
-    float3 operator * (float3 vec)
+    float32x3 operator * (float32x3 vec)
     {
-        float4 result = *this * float4(vec.x, vec.y, vec.z, 1.0f);
-        return float3(result.x, result.y, result.z);
+        float32x4 result = *this * float32x4(vec.x, vec.y, vec.z, 1.0f);
+        return float32x3(result.x, result.y, result.z);
     };
 
     // print

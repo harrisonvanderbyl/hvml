@@ -13,7 +13,7 @@
 
 
 int main(){
-    float4 a (0,0,0,0);
+    float32x4 a (0,0,0,0);
     std::cout << a << "\n";
     std::cout << a+1 << "\n";
     a+=1;
@@ -23,8 +23,8 @@ int main(){
     std::cout << a*a << "\n";
     std::cout << a/a << "\n";
 
-    auto aa = Tensor<float4,1>({10000},kCPU);
-    auto b = Tensor<float4,1>({10000},kCPU);
+    auto aa = Tensor<float32x4,1>({10000},kCPU);
+    auto b = Tensor<float32x4,1>({10000},kCPU);
 
     auto t = time(NULL);
     for (int i = 0; i < 10000; i++){

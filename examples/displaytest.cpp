@@ -17,8 +17,8 @@ int main(){
 
 
     VectorDisplay display({512,512}, false, false, false, false);
-    Tensor<float32x32x4,1> particles({512},kCPU);
-    Tensor<float32x32x4,2> particleField({512,512}, kCPU);
+    Tensor<float32x4,1> particles({512},kCPU);
+    Tensor<float32x4,2> particleField({512,512}, kCPU);
     
     for(int i = 0; i < 20; i++){
         for(int j = 0; j < 20; j++){

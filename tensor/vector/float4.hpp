@@ -1,10 +1,10 @@
 
 #define pows(x) (pow(float(x), 2))
-#ifndef FLOAT4_HPP
-#define FLOAT4_HPP
+#ifndef float32x4_HPP
+#define float32x4_HPP
 #include "float3.hpp"
 
-struct float4
+struct float32x4
 {
     float x;
     float y;
@@ -12,7 +12,7 @@ struct float4
     float w;
 
     template <typename T,typename TT,typename TTT,typename TTTT>
-    float4(T x, TT y, TTT z, TTTT w)
+    float32x4(T x, TT y, TTT z, TTTT w)
     {
         this->x = x;
         this->y = y;
@@ -21,14 +21,14 @@ struct float4
     };
 
     template <typename T>
-    float4(T x){
+    float32x4(T x){
         this->x = x;
         this->y = x;
         this->z = x;
         this->w = x;
     }
 
-    float4()
+    float32x4()
     {
         this->x = 0;
         this->y = 0;
@@ -36,35 +36,35 @@ struct float4
         this->w = 0;
     };
 
-    float2& xy()
+    float32x32x2& xy()
     {
-        return *(float2 *)this;
+        return *(float32x32x2 *)this;
     };
 
-    float2& yz()
+    float32x32x2& yz()
     {
-        return *(float2 *)&y;
+        return *(float32x32x2 *)&y;
     };
 
-    float2& zw()
+    float32x32x2& zw()
     {
-        return *(float2 *)&z;
+        return *(float32x32x2 *)&z;
     };
 
-    float3& xyz()
+    float32x3& xyz()
     {
-        return *(float3 *)this;
+        return *(float32x3 *)this;
     };
 
-    float3& yzw()
+    float32x3& yzw()
     {
-        return *(float3 *)&y;
+        return *(float32x3 *)&y;
     };
 
 
-    float4 copy()
+    float32x4 copy()
     {
-        float4 out;
+        float32x4 out;
         out.x = x;
         out.y = y;
         out.z = z;
@@ -72,9 +72,9 @@ struct float4
         return out;
     };
 
-    static float4 random()
+    static float32x4 random()
     {
-        float4 out;
+        float32x4 out;
         out.x = (rand() % 10000) / 10000.0 - 0.5;
         out.y = (rand() % 10000) / 10000.0 - 0.5;
         out.z = (rand() % 10000) / 10000.0 - 0.5;
@@ -82,7 +82,7 @@ struct float4
         return out;
     };
 
-    float4 operator=(const float4& other)
+    float32x4 operator=(const float32x4& other)
     {
         x = other.x;
         y = other.y;
@@ -91,7 +91,7 @@ struct float4
         return *this;
     };
 
-    float4 operator=(const float& other)
+    float32x4 operator=(const float& other)
     {
         x = other;
         y = other;
@@ -121,21 +121,21 @@ struct float4
     };
 
     // print
-    friend std::ostream &operator<<(std::ostream &os, float4 a)
+    friend std::ostream &operator<<(std::ostream &os, float32x4 a)
     {
         os << "(" << a.x << ", " << a.y << ", " << a.z << ", " << a.w << ")";
         return os;
     }
 
 
-    float4 operator+(const float4& other) const;
-    float4 operator-(const float4& other) const;
-    float4 operator*(const float4& other) const;
-    float4 operator/(const float4& other) const;
-    float4& operator+=(const float4& other);
-    float4& operator-=(const float4& other);
-    float4& operator*=(const float4& other);
-    float4& operator/=(const float4& other);
+    float32x4 operator+(const float32x4& other) const;
+    float32x4 operator-(const float32x4& other) const;
+    float32x4 operator*(const float32x4& other) const;
+    float32x4 operator/(const float32x4& other) const;
+    float32x4& operator+=(const float32x4& other);
+    float32x4& operator-=(const float32x4& other);
+    float32x4& operator*=(const float32x4& other);
+    float32x4& operator/=(const float32x4& other);
     
 };
 

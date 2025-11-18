@@ -573,14 +573,14 @@ public:
         }
 
         if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
-            #if defined(__CUDACC__) || defined(__HIPCC__)
+            #if defined(__CUDACC__) 
             cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyDeviceToHost);
             #else
             std::cerr << "CUDA not enabled" << std::endl;
             throw std::runtime_error("CUDA not enabled");
             #endif
         }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
-            #if defined(__CUDACC__) || defined(__HIPCC__)
+            #if defined(__CUDACC__) 
             cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyHostToDevice);
             #else
             std::cerr << "CUDA not enabled" << std::endl;

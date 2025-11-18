@@ -1,0 +1,1 @@
+hipcc ./rocmtest.cpp -I./tensor -o rocmtest

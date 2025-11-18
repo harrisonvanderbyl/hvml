@@ -23,6 +23,7 @@ struct TimeShift: Module<Tensor<R, 2>>
 
 };
 
+
 // class RWKV_ChannelMix(nn.Module):
     
 //     def __init__(self, layer_id, n_layer, n_embd, dim_ffn):
@@ -38,6 +39,38 @@ struct TimeShift: Module<Tensor<R, 2>>
         
 //     def forward(self, x):
  
+
+
+template <typename T = float>
+struct FFN : public Module<TimeShift<T>,Linear<T>,Linear<T>>
+{
+    public:
+    TimeShift<T> shift;
+    Linear<T, RELU_SQUARED> key;
+    Linear<T> value;
+    
+    FFN(
+        size_t max_batch,
+        size_t n_dim,
+        size_t ffn_dim,
+        DeviceType device_type = DeviceType::kCPU
+    ):
+    key(n_dim, ffn_dim, device_type), 
+    value(ffn_dim, n_dim, device_type), 
+    shift(max_batch,n_dim), 
+    Module<TimeShift<T>,Linear<T>,Linear<T>>({shift, "shift"},{key, "key"}, {value, "value"})
+    {
+        
+    }
+     
+    Tensor <T> forward(Tensor<T> input)
+    {
+        auto k = key(input);
+        // Apply ReLU squared activation
+        return value(k);
+    }
+    
+};
     
 //         xx = self.shift(x)
         

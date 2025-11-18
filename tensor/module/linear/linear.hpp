@@ -1,52 +1,67 @@
 #ifndef MODULE_LINEAR_HPP
 #define MODULE_LINEAR_HPP
 #include "module/base/module.hpp"
+#include "models/rwkv7/linear/kernels.hpp"
 
-template <typename T = float>
-struct Linear : public Module<Tensor<T>>
+enum ActivationFunction
+{
+    NONE,
+    RELU,
+    RELU_SQUARED,
+    SIGMOID,
+    TANH
+};
+
+template <typename T = float, ActivationFunction ACT = NONE>
+struct Linear : public Module<Tensor<T,2>>
 {
 
     public:
-    Tensor<T> weight;
+    Tensor<T,2> weight;
     
     
     Linear(
         size_t in_features,
         size_t out_features,
         DeviceType device_type = DeviceType::kCPU
-    ):weight({in_features,out_features}, device_type), Module<Tensor<T>>({weight, "weight"})
+    ):weight({in_features,out_features}, device_type), Module<Tensor<T,2>>({weight, "weight"})
     {
         
     }
      
-    Tensor <T> forward(Tensor<T> input)
+    template <int rank = 2>
+    Tensor <T,rank> forward(Tensor<T,rank> input)
     {
-        return input;
+        Tensor<T,2> reshaped_input = input.view(Shape<2>{-1, this->weight.shape[0]});
+
+        Shape<rank> out_shape = input.shape;
+        out_shape[out_shape.ndim()-1] = this->weight.shape[1];
+        Tensor<T, rank> output(out_shape, input.device_type);
+        
+        if constexpr (ACT == RELU_SQUARED){
+            linear_relu_squared_cpu(
+                input.data,
+                weight.data,
+                weight.shape[0],
+                weight.shape[1],
+                output.data,
+                reshaped_input.shape[0]
+            );
+        }else{
+            linear_cpu(
+                input.data,
+                weight.data,
+                weight.shape[0],
+                weight.shape[1],
+                output.data,
+                reshaped_input.shape[0]
+            );
+        }
+        
+        return output;
     }
     
 };
 
-template <typename T = float>
-struct FFN : public Module<Linear<T>,Linear<T>>
-{
-    public:
-    Linear<T> key;
-    Linear<T> value;
-    
-    FFN(
-        size_t n_dim,
-        size_t ffn_dim,
-        DeviceType device_type = DeviceType::kCPU
-    ):key(n_dim, ffn_dim, device_type), value(ffn_dim, n_dim, device_type), Module<Linear<T>,Linear<T>>({key, "key"}, {value, "value"})
-    {
-        
-    }
-     
-    Tensor <T> forward(Tensor<T> input)
-    {
-        return value(key(input));
-    }
-    
-};
 
 #endif //MODULE_LINEAR_HPP

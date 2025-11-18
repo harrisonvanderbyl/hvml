@@ -318,11 +318,11 @@ public:
                                     if (componentType == 5126)
                                     { // FLOAT
                                         if(Accessor["type"] == "VEC3"){
-                                        primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float3)}}].view<float3>()));
+                                        primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x3)}}].view<float32x3>()));
                                         }else if(Accessor["type"] == "VEC2"){
-                                          primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float2)}}].view<float2>()));
+                                          primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x32x2)}}].view<float32x32x2>()));
                                         }else if(Accessor["type"] == "VEC4"){
-                                           primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float4)}}].view<float4>()));
+                                           primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x4)}}].view<float32x4>()));
                                         }else if(Accessor["type"] == "SCALAR"){
                                            primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float)}}].view<float>()));
                                         }
