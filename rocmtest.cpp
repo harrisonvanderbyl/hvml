@@ -9,34 +9,37 @@
 #include "display/display.hpp"
 #include "module/linear/linear.hpp"
 #include "models/rwkv7/rwkv7.hpp"
-
+#include "module/layernorm/layernorm.hpp"
 
 
 int main(){
 
 
-    Linear<float, NONE> linear(4, 4, DeviceType::kCPU);
-    std::cout << linear << std::endl;
-    linear.weight[0][0] = 1.0f;
-    linear.weight[1][1] = 1.0f;
-    linear.weight[2][2] = 1.0f;
-    linear.weight[3][3] = 1.0f;
+    
 
-    Tensor<float,2> input({2,4}, DeviceType::kCPU);
-    input[0][0] = 1.0f;
-    input[0][1] = 2.0f;
-    input[0][2] = 3.0f;
-    input[0][3] = 4.0f;
-    input[1][0] = 5.0f;
-    input[1][1] = 6.0f;
-    input[1][2] = 7.0f;
-    input[1][3] = 8.0f;
-    auto output = linear.forward(input);
+    auto layernorm = LayerNorm<float>(1024, DeviceType::kHIP);
+    layernorm.weight = 1.0f;
+    layernorm.bias = 0.0f;
+    // std::cout << layernorm << std::endl;
+
+    Tensor<float,2> input({2,1024}, DeviceType::kCPU);
+    for(int i = 0; i < input.total_size; i++){
+        input.flatget(i) = (rand() % 10000) / 10000.0f;
+    }
+
+    auto input_cuda = input.to(DeviceType::kHIP);
+    auto output_cuda = layernorm.forward(input_cuda);
+    auto output = output_cuda.to(DeviceType::kCPU);
     std::cout << "Input: " << input << std::endl;
     std::cout << "Output: " << output << std::endl;
 
-    
 
+    auto layernorm_cpu = LayerNorm<float>(1024, DeviceType::kCPU);
+    layernorm_cpu.weight = 1.0f;
+    layernorm_cpu.bias = 0.0f;
+    auto output_cpu = layernorm_cpu.forward(input);
+    std::cout << "Output CPU: " << output_cpu << std::endl;
+    
     
 
 }

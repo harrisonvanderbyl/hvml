@@ -586,6 +586,21 @@ public:
             std::cerr << "CUDA not enabled" << std::endl;
             throw std::runtime_error("CUDA not enabled");
             #endif
+        }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
+            #if defined(__HIPCC__)
+            hipMemcpy(a.data, this->data, a.total_bytes, hipMemcpyDeviceToHost);
+            #else
+            std::cerr << "HIP not enabled" << std::endl;
+            throw std::runtime_error("HIP not enabled");
+            #endif
+        }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
+            #if defined(__HIPCC__)
+            hipMemcpy(a.data, this->data, a.total_bytes, hipMemcpyHostToDevice
+            );
+            #else
+            std::cerr << "HIP not enabled" << std::endl;
+            throw std::runtime_error("HIP not enabled");
+            #endif
         }else{
             std::cerr << "Unsupported device type conversion" << std::endl;
             throw std::runtime_error("Unsupported device type conversion");
