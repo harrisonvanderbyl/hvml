@@ -1,0 +1,1 @@
+nvcc ./cudakernelexamples.cu -o cudakernelexamples -I./tensor
