@@ -320,7 +320,7 @@ public:
                                         if(Accessor["type"] == "VEC3"){
                                         primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x3)}}].view<float32x3>()));
                                         }else if(Accessor["type"] == "VEC2"){
-                                          primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x32x2)}}].view<float32x32x2>()));
+                                          primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x2)}}].view<float32x2>()));
                                         }else if(Accessor["type"] == "VEC4"){
                                            primitive.attributes.emplace(std::pair(attrName,bufferView[{{byteOffset, byteOffset + count * sizeof(float32x4)}}].view<float32x4>()));
                                         }else if(Accessor["type"] == "SCALAR"){

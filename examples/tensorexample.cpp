@@ -46,7 +46,7 @@ int main(){
     //     // Update the model's position or any other properties here
     //     // if(input_info.isMouseLeftButtonPressed()){
     //     //     // set pixel at mouse position to white
-    //     //     float32x32x2 mouse_pos = input_info.getGlobalMousePosition();
+    //     //     float32x2 mouse_pos = input_info.getGlobalMousePosition();
     //     //     int mx = static_cast<int>(mouse_pos.x);
     //     //     int my = static_cast<int>(mouse_pos.y);
     //     //     if(mx >=0 && mx < display.shape[1] && my >=0 && my

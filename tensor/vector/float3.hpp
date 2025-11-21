@@ -3,66 +3,66 @@
 #ifndef float32x3_HPP
 #define float32x3_HPP
 #include "cmath"
-struct float32x32x2 {
+struct float32x2 {
     float x;
     float y;
 
     template <typename T, typename TT>
-    float32x32x2(T x, TT y)
+    float32x2(T x, TT y)
     {
         this->x = x;
         this->y = y;
     };
 
     template <typename T>
-    float32x32x2(T xy)
+    float32x2(T xy)
     {
         this->x = xy;
         this->y = xy;
     };
 
-    float32x32x2()
+    float32x2()
     {
         this->x = 0;
         this->y = 0;
     };
 
-    float32x32x2 operator+(float32x32x2 other)
+    float32x2 operator+(float32x2 other)
     {
-        float32x32x2 out = {
+        float32x2 out = {
             x + other.x,
             y + other.y
         };
         return out;
     };
-    float32x32x2 operator-(float32x32x2 other)
+    float32x2 operator-(float32x2 other)
     {
-        float32x32x2 out = {
+        float32x2 out = {
             x - other.x,
             y - other.y
         };
         return out;
     };
-    float32x32x2 operator/(float32x32x2 &other)
+    float32x2 operator/(float32x2 &other)
     {
-        float32x32x2 out = {
+        float32x2 out = {
             x / other.x,
             y / other.y
         };
         return out;
     };
 
-    float32x32x2 operator -()
+    float32x2 operator -()
     {
-        float32x32x2 out;
+        float32x2 out;
         out.x = -x;
         out.y = -y;
         return out;
     };
 
-    float32x32x2 operator*(float32x32x2 other)
+    float32x2 operator*(float32x2 other)
     {
-        float32x32x2 out = {
+        float32x2 out = {
             x * other.x,
             y * other.y
         };
@@ -101,14 +101,14 @@ struct float32x3
         this->z = 0;
     };
 
-    float32x32x2& xy()
+    float32x2& xy()
     {
-        return *(float32x32x2 *)this;
+        return *(float32x2 *)this;
     };
 
-    float32x32x2& yz()
+    float32x2& yz()
     {
-        return *(float32x32x2 *)&y;
+        return *(float32x2 *)&y;
     };
 
     

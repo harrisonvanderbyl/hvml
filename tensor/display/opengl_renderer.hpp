@@ -622,11 +622,11 @@ public:
                 // Process texture coordinates
                 auto tex_it = primitive.attributes.find("TEXCOORD_0");
                 if (tex_it != primitive.attributes.end()) {
-                    Tensor<float32x32x2,1>  texcoords = tex_it->second;
+                    Tensor<float32x2,1>  texcoords = tex_it->second;
                     glGenBuffers(1, &render_mesh.VBO_texcoords);
                     glBindBuffer(GL_ARRAY_BUFFER, render_mesh.VBO_texcoords);
-                    glBufferData(GL_ARRAY_BUFFER, texcoords.shape[0] * sizeof(float32x32x2), texcoords.data, GL_STATIC_DRAW);
-                    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x32x2), (void*)0);
+                    glBufferData(GL_ARRAY_BUFFER, texcoords.shape[0] * sizeof(float32x2), texcoords.data, GL_STATIC_DRAW);
+                    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x2), (void*)0);
                     glEnableVertexAttribArray(2);
                 }
 
@@ -754,7 +754,7 @@ public:
             }
             if (mesh.VBO_texcoords) {
                 glBindBuffer(GL_ARRAY_BUFFER, mesh.VBO_texcoords);
-                glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x32x2), (void*)0);
+                glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(float32x2), (void*)0);
                 glEnableVertexAttribArray(2);
             }
             if (mesh.BBO) {

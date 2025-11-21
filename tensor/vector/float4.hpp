@@ -36,19 +36,19 @@ struct float32x4
         this->w = 0;
     };
 
-    float32x32x2& xy()
+    float32x2& xy()
     {
-        return *(float32x32x2 *)this;
+        return *(float32x2 *)this;
     };
 
-    float32x32x2& yz()
+    float32x2& yz()
     {
-        return *(float32x32x2 *)&y;
+        return *(float32x2 *)&y;
     };
 
-    float32x32x2& zw()
+    float32x2& zw()
     {
-        return *(float32x32x2 *)&z;
+        return *(float32x2 *)&z;
     };
 
     float32x3& xyz()

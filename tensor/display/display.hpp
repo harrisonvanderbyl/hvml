@@ -27,7 +27,7 @@ private:
     bool mouse_wheel_right = false;
     bool key_pressed[KEY_MAX] = {false};
     float32x4 selectedarea = float32x4(0, 0, 0, 0);
-    float32x32x2 lastClicked = float32x32x2(0, 0);
+    float32x2 lastClicked = float32x2(0, 0);
     
     // Raw input tracking
     std::map<int, bool> raw_key_states;
@@ -59,7 +59,7 @@ public:
                 if(pressed) {
                     lastClicked = getGlobalMousePosition();
                 }else{
-                    float32x32x2 mx = getGlobalMousePosition();
+                    float32x2 mx = getGlobalMousePosition();
                     if (sqrt(pow(mx.x - lastClicked.x, 2) + pow(mx.y - lastClicked.y, 2)) > 5.0f) {
                         selectedarea = float32x4(lastClicked.x, lastClicked.y, mx.x - lastClicked.x, mx.y - lastClicked.y);
                     }
@@ -112,8 +112,8 @@ public:
     bool isFullscreen() const { return is_fullscreen; }
     int getMouseX() const { return mouse_x; }
     int getMouseY() const { return mouse_y; }
-    float32x32x2 getMousePosition() const { return float32x32x2(mouse_x, mouse_y); }
-    float32x32x2 getMouseMove() const { return float32x32x2(mouse_move_x, mouse_move_y); }
+    float32x2 getMousePosition() const { return float32x2(mouse_x, mouse_y); }
+    float32x2 getMouseMove() const { return float32x2(mouse_move_x, mouse_move_y); }
     float32x4 getScreenSize() const { return float32x4(x, y, width, height); }
     int getMouseMoveX() const { return mouse_move_x; }
     int getMouseMoveY() const { return mouse_move_y; }
@@ -169,15 +169,15 @@ public:
     }
 
     // global coordinates for mouse position
-    float32x32x2 getGlobalMousePosition() const {
+    float32x2 getGlobalMousePosition() const {
         if (display_manager) {
             const DisplayInfo* display = display_manager->getCurrentDisplay();
             if (display) {
                 auto local_pos = display->localToGlobal(mouse_x, mouse_y);
-                return float32x32x2(local_pos.first, local_pos.second);
+                return float32x2(local_pos.first, local_pos.second);
             }
         }
-        return float32x32x2(mouse_x, mouse_y);
+        return float32x2(mouse_x, mouse_y);
     }
     
 };
