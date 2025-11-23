@@ -3,7 +3,8 @@
 #include "shape.hpp"
 
 
-
+#ifndef KERNELS_INTERFACE_HPP
+#define KERNELS_INTERFACE_HPP
 // Order determines fallback priority
 
 
@@ -19,11 +20,18 @@ class KernelBufferAllocator {
     }
 
     // Will not allocate if buffer allready allocated
+
+    template <int i = sizeof...(returnTypes)>
     void Allocate(){
-        for(int i = 0; i < sizeof...(returnTypes); i++){
-            if(pointers[i] == nullptr){
-                pointers[i] = DeviceAllocator<dtype>::allocate(sizes[i]);
+        if constexpr (i > 0){
+            if(pointers[i-1] == nullptr){
+                size_t size = sizes[i-1];
+                // make sure is unallocated
+                if(pointers[i-1] == nullptr){
+                   pointers[i-1] = DeviceAllocator<dtype>::allocate(size * sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
+                }
             }
+            Allocate<i-1>();
         }
     }
 
@@ -53,7 +61,14 @@ public:
         call(args...); // For GPUs etc.
     }
 
+    template<typename... ResponseArgs>
+    KernelBufferAllocator<device_type, ResponseArgs...> CreateBuffers(Shape<sizeof...(ResponseArgs)> sizes){
+        return KernelBufferAllocator<device_type, ResponseArgs...>(sizes);
+    }
+
     
 };
 
 
+
+#endif //KERNELS_INTERFACE_HPP

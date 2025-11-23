@@ -4,7 +4,6 @@
 #include "dtypes/complex32.hpp"
 #include "file_loaders/safetensors.hpp"
 // #include "file_loaders/gltf.hpp"
-#include <ops/ops.h>
 #include <string>
 
 

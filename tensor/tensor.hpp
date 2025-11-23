@@ -424,10 +424,15 @@ public:
                 std::cerr << "Shape: " << shape[-i%shape.ndim()] << " Broadcast shape: " << a[-i%a.ndim()] << std::endl;
                 throw std::runtime_error("Incompatible shapes for broadcast");
             }
-
             if (shape.ndim() < i || shape[-i] == 1)
             {
-                b.strides[i] = 0;
+                b.strides[-i] = 0;
+                if(i < shape.ndim()){
+                    for (size_t j = i+1; j < a.ndim()+1; j++)
+                    {
+                        b.strides[-j] = b.strides[-j]/ shape[-j];
+                    }
+                }
             }
         }
 
