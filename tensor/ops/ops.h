@@ -105,6 +105,7 @@ __global__ void binaryOpCudaKernel(A* a_data, long ndim, const long* shape,
     if (idx >= total_size) return;
 
     long rem = idx;
+    
     long offset_a = 0;
     long offset_b = 0;
 
@@ -144,11 +145,16 @@ public:
         int threads = 256;
         int blocks = (total_size + threads - 1) / threads;
 
+        long* strides = (long*)DeviceAllocator<DeviceType::kCUDA>::allocate(sizeof(long) * ndim * 3);
+        cudaMemcpy(strides, a_strides, sizeof(long) * ndim, cudaMemcpyHostToDevice);
+        cudaMemcpy(strides + ndim, b_strides, sizeof(long) * ndim, cudaMemcpyHostToDevice);
+        cudaMemcpy(strides + 2*ndim, shape, sizeof(long) * ndim, cudaMemcpyHostToDevice);
+
         binaryOpCudaKernel<A, B, Out, OP>
             <<<blocks, threads>>>(
-                a_data, ndim, shape,
-                a_strides,
-                b_data, b_strides,
+                a_data, ndim, strides + 2*ndim,
+                strides,
+                b_data, strides + ndim,
                 out, total_size
             );
         cudaDeviceSynchronize();

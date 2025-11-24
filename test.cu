@@ -25,6 +25,8 @@ int main(){
     std::cout << acuda*bcuda << std::endl;
     std::cout << acuda/bcuda << std::endl;
     std::cout << acuda-bcuda << std::endl;
+    std::cout << acuda << std::endl; 
+    std::cout << bcuda << std::endl; 
     
 
 }
