@@ -63,6 +63,9 @@ public:
 
     template<typename... ResponseArgs>
     KernelBufferAllocator<device_type, ResponseArgs...> CreateBuffers(Shape<sizeof...(ResponseArgs)> sizes){
+
+        // create needed buffers
+
         return KernelBufferAllocator<device_type, ResponseArgs...>(sizes);
     }
 
