@@ -237,6 +237,8 @@ Tensor<Out, std::max(AD,BD)> func_name(Tensor<A, AD> a, Tensor<B, BD> b)        
     }                                                                              \
 }
 
+
+
 // ================================================================
 // User-Facing Tensor Operators
 // ================================================================
@@ -244,4 +246,38 @@ CREATE_BINARY_OP(operator+, Add);
 CREATE_BINARY_OP(operator-, Sub);
 CREATE_BINARY_OP(operator*, Mul);
 CREATE_BINARY_OP(operator/, Div);
+
+template <typename A, typename B, int AD, int BD>
+Tensor<typename std::common_type<A,B>::type, std::max(AD,BD)>
+operator-=(Tensor<A, AD>& a, Tensor<B, BD> b)
+{
+    a = a - b;
+    return a;
+}
+
+template <typename A, typename B, int AD, int BD>
+Tensor<typename std::common_type<A,B>::type, std::max(AD,BD)>
+operator+=(Tensor<A, AD>& a, Tensor<B, BD> b)
+{
+    a = a + b;
+    return a;
+}
+
+template <typename A, typename B, int AD, int BD>
+Tensor<typename std::common_type<A,B>::type, std::max(AD,BD)>
+operator*=(Tensor<A, AD>& a, Tensor<B, BD> b)
+{
+    a = a * b;
+    return a;
+}
+
+template <typename A, typename B, int AD, int BD>
+Tensor<typename std::common_type<A,B>::type, std::max(AD,BD)>
+operator/=(Tensor<A, AD>& a, Tensor<B, BD> b)
+{
+    a = a / b;
+    return a;
+}
+
+
 
