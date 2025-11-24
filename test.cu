@@ -14,11 +14,17 @@ int main(){
         a[{0,i}] = i+1;
         b[{i,0}] = (i+1)*10;
     }
-    std::cout << a << std::endl;
-    std::cout << b << std::endl;
+
     std::cout << a+b << std::endl;
     std::cout << a*b << std::endl;
     std::cout << a/b << std::endl;
     std::cout << a-b << std::endl;
+    auto acuda = a.to(DeviceType::kCUDA);
+    auto bcuda = b.to(DeviceType::kCUDA);
+    std::cout << acuda+bcuda << std::endl;
+    std::cout << acuda*bcuda << std::endl;
+    std::cout << acuda/bcuda << std::endl;
+    std::cout << acuda-bcuda << std::endl;
+    
 
 }

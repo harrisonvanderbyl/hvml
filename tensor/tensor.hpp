@@ -507,13 +507,14 @@ public:
     }
 
     // print tensor
-    friend std::ostream &operator<<(std::ostream &os, Tensor<R, rank> tensor)
+    friend std::ostream &operator<<(std::ostream &os, Tensor<R, rank> tensorin)
     {
+        auto tensor = tensorin.to(DeviceType::kCPU);
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
-        os << "shape=" << tensor.shape << ", ";
-        os << "strides=" << tensor.strides << ", ";
-        os << "device_type=" << tensor.device_type << "";
+        os << "shape=" << tensorin.shape << ", ";
+        os << "strides=" << tensorin.strides << ", ";
+        os << "device_type=" << tensorin.device_type << "";
         os << ")" << "[";
         if(tensor.total_size <= 4){
             for (int i = 0; i < tensor.total_size; i++)
