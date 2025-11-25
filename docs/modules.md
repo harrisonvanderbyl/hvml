@@ -13,7 +13,7 @@ Modules allow for the reuse of code, specifically around saving and loading weig
 struct SubModule: public Module<Tensor<float, 1>> {
 public:
     Tensor<float,1> weight;
-    SubModule(int size): weight({size}, kCPU), Module<Tensor<float,1>>({
+    SubModule(int size): weight({size}, kCPU), Module({
         weight, "weight"
     }) {
         weight = 1.0f;
@@ -31,7 +31,7 @@ public:
     ModuleExample(int size)
     : submod(size),
         bias({size}, kCPU),
-        Module<SubModule, Tensor<float,1>>(
+        Module(
         {
             submod, "submod"
         }, {
