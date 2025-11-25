@@ -1,5 +1,6 @@
 #include <string.h>
 #include "file_loaders/json.hpp"
+#include <iostream>
 #ifndef DEVICE_TYPE
 #define DEVICE_TYPE
 enum DeviceType

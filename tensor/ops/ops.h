@@ -48,7 +48,20 @@ struct BinaryOp {
 // ================================================================
 template <DeviceType device, Operation OP,
           typename A, typename B, typename Out>
-class BinaryKernel;
+class BinaryKernel: public Kernel<device, A*, long, long*, long*, B*, long*, Out*> 
+{
+    // Specializations will be defined below
+    void call(A* a_data,
+              long ndim,
+              long* shape,
+              long* a_strides,
+              B* b_data,
+              long* b_strides,
+              Out* out) override 
+    {
+        throw std::runtime_error("BinaryKernel not implemented for this device type");
+    }
+};
 
 template <Operation OP, typename A, typename B, typename Out>
 class BinaryKernel<DeviceType::kCPU, OP, A, B, Out>
