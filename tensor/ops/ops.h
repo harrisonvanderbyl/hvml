@@ -2,6 +2,8 @@
 #include "tensor.hpp"
 #include "kernels/interface.hpp"
 
+// THESE ARE INEFFICIENT KERNELS FOR SIMPLE BINARY OPERATIONS
+
 #ifndef __host__
 #define __host__
 #define __device__
