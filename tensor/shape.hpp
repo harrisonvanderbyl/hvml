@@ -22,6 +22,8 @@ struct Shape
     {
         
     }
+    
+    
    
 
     Shape(std::vector<size_t> a)
@@ -82,13 +84,14 @@ struct Shape
 
     
 
-    long& operator[](int i)
+    long& operator[](const int& i) const
     {      
-        if (i < 0){
+        int d = i;
+        if (d < 0){
             auto ii = ndim();
-            i = (i + ii)%ii;
+            d = (d + ii)%ii;
         }
-        return ((long *)this)[i];
+        return ((long *)this)[d];
     }
 
     operator std::string()
@@ -122,7 +125,7 @@ struct Shape
     {
         if (length != -1)
         {
-            return length;
+            return (size_t)length;
         }
         size_t total = 0;
         for (int i = 0; i < 10; i++)
@@ -136,7 +139,8 @@ struct Shape
         return total;
     }
 
-    bool operator==(const Shape &other) const
+    template <int newrank = length>
+    bool operator==(const Shape<newrank> &other) const
     {
         for (int i = 0; i < ndim(); i++)
         {
@@ -148,11 +152,26 @@ struct Shape
         return true;
     }
 
-    bool operator!=(const Shape &other) const
+    template <int newrank = length>
+    bool operator!=(const Shape<newrank> &other) const
     {
         return !(*this == other);
     }
 
+    template <int newrank>
+    Shape operator=(const Shape<newrank> &other)
+    {
+        if(newrank != length){
+            std::cerr << "Cannot assign shapes of different ranks" << std::endl;
+            throw std::runtime_error("Cannot assign shapes of different ranks");
+        }
+
+        for (int i = 0; i < other.ndim(); i++)
+        {
+            ((long *)this)[i] = ((long *)&other)[i];
+        }
+        return *this;
+    }
     
 };
 

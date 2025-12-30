@@ -42,6 +42,12 @@ struct DeviceAllocator{
         std::cout << "DeviceAllocator not implemented for this device type" << std::endl;
         throw std::runtime_error("DeviceAllocator not implemented for this device type");
     }
+
+    template <typename U>
+    static void memset(U* ptr, U value, size_t values){
+        std::cout << "DeviceAllocator memset not implemented for this device type" << std::endl;
+        throw std::runtime_error("DeviceAllocator memset not implemented for this device type");
+    }
 };
 
 #if defined(__CUDACC__)
@@ -52,6 +58,11 @@ struct DeviceAllocator<DeviceType::kCUDA>{
         void* ptr;
         cudaMalloc(&ptr, size);
         return ptr;
+    }
+
+    template <typename U>
+    static void memset(U* ptr, U value, size_t values){
+        cudaMemcpy(ptr, &value, sizeof(U)*values, cudaMemcpyHostToDevice);
     }
 };
 #elif defined(__HIPCC__)
@@ -64,6 +75,11 @@ struct DeviceAllocator<DeviceType::kHIP>{
         hipMalloc(&ptr, size);
         return ptr;
     }
+
+    template <typename U>
+    static void memset(U* ptr, U value, size_t values){
+        hipMemset(ptr, value, sizeof(U)*values);
+    }
 };
 #endif
 
@@ -72,6 +88,13 @@ struct DeviceAllocator<DeviceType::kCPU>{
     static constexpr DeviceType device_type = DeviceType::kCPU;
     static void* allocate(size_t size){
         return malloc(size);
+    }
+
+    template <typename U>
+    static void memset(U* ptr, U value, size_t values){
+        for (size_t i = 0; i < values; i++){
+            ptr[i] = value;
+        }
     }
 };
 

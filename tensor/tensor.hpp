@@ -154,6 +154,28 @@ public:
         this->data = datain;
     }
 
+    Tensor(DeviceType device_type, R item){
+        this->device_type = device_type;
+        this->bitsize = sizeof(R);
+        this->shape = Shape<rank>(1);
+        this->strides = Shape<rank>(1);
+        calculate_metadata();
+        if(device_type == DeviceType::kCPU){
+            data = (R*)DeviceAllocator<DeviceType::kCPU>::allocate(total_bytes);
+            DeviceAllocator<DeviceType::kCPU>::memset<R>(data, item, 1);
+        }else if(device_type == DeviceType::kCUDA){
+            data = (R*)DeviceAllocator<DeviceType::kCUDA>::allocate(total_bytes);
+            DeviceAllocator<DeviceType::kCUDA>::memset<R>(data, item, 1);
+        }
+        else if(device_type == DeviceType::kHIP){
+            data = (R*)DeviceAllocator<DeviceType::kHIP>::allocate(total_bytes);
+            DeviceAllocator<DeviceType::kHIP>::memset<R>(data, item, 1);
+        }
+
+        
+        
+    }
+
     // Tensor(R a)
     // {
     //     this->device_type = DeviceType::kCPU;
@@ -165,24 +187,31 @@ public:
     // }
 
     template <typename M>
-    inline int operator=(M a)
+    inline Tensor<R, rank> operator=(M a)
     {
-        for (int i = 0; i < total_size; i++)
-        {
-           flatget(i) = a;
-        }
-            
-        return 0;
+        
+        tensor_copy(*this, a);
+        return *this;
+        
     }
 
     template <typename M>
-    inline int operator=(Tensor<M>& other)
+    inline Tensor<R> operator=(const Tensor<M>& other)
     {
-        if (data == NULL)
+        if (data == nullptr)
         {
-            data = other.data;
-            shape = other.shape;
-            strides = other.strides;
+            data = (R*)other.data;
+            shape = Shape<rank>();
+            for (int i = 0; i < rank; i++)
+            {
+                shape[i] = other.shape[i];
+            }
+
+            strides = Shape<rank>();
+            for (int i = 0; i < rank; i++)
+            {
+                strides[i] = other.strides[i];
+            }
             bitsize = other.bitsize;
             device_type = other.device_type;
             total_size = other.total_size;
@@ -191,58 +220,13 @@ public:
             return 0;
         }
         
-        if (typeid(R) != typeid(M))
-        {
-            std::cerr << "Data types do not match" << std::endl;
-            throw std::runtime_error("Data types do not match");
-        }
-
-        if(
-            shape.total_size() == ((Tensor*)(&other))->shape.total_size() && strides.total_size() == ((Tensor*)(&other))->strides.total_size()
-        ){
-            std::cout << "Copying data from other tensor, both are same shape and strides" << std::endl;
-            memcpy(data, other.data, total_bytes);
-            return 0;
-        }
-
-        if(
-            other.shape.ndim() == 0 || (other.shape[0] == 1 && other.shape.ndim() == 1)
-        ){
-            auto bytes = sizeof(R);
-            std::cout << "Bytes: " << bytes * total_size << std::endl;
-            std::cout << "Total bits: " << total_size << std::endl;
-            std::fill_n((uint8_t *)data, total_size, *((uint8_t *)other.data));
-            
-                
-            return 0;
-        }
-
-        if (shape.ndim() * other.shape.ndim() == 0)
-        {
-            std::cout << "One of the tensors has zero dimensions" << std::endl;
-            auto bytes = bitsize;
-            memcpy(data, other.data, bytes);
-            return 0;
-
-        }
-    
-        auto bcast = ((Tensor*)(&other))->broadcast(shape);
-
-        std::cout << "Broadcasting tensor of shape: " << bcast.shape << " to shape: " << shape << std::endl;
-        for (int i = 0; i < shape[0]; i++)
-        {
-            auto bbx = bcast[i];
-            auto aax = this->gather(i);
-            aax = bbx;
-        }
-        
-        return 0;
+        return tensor_copy(*this, other);
     }
 
     template <typename X = SliceList<-1>, int newrank = X::reducedims<0?-1:std::max(rank-X::reducedims,-1)>
     // result of operator[] is a tensor of rank - T::reducedims if rank-T::reducedims > 0 else it is a scalar of type R
     inline std::conditional_t<newrank == 0, R&, Tensor<R, newrank>>
-    gather(X inp)
+    gather(X inp) const
     {
         // return *this;
         // Slice i = inp.args.args[0];
@@ -281,11 +265,12 @@ public:
         
         auto newstrides = Shape<newrank>();
         int i = 0;
-        int j= 0;
-        int multiplier = 1;
+        int j = 0;
+        // int multiplier = 1;
         for(
             ; i < ndim; i+=1
         ){
+            
             if (inp[i].is_slice)
             {
                 if (inp[i].is_empty)
@@ -300,6 +285,9 @@ public:
                     newstrides[j] = this->strides[i] * inp[i].step;
                     // std::cout << "not implemented" << std::endl;
                 }
+
+                // std::cout << "Stride " << i << ": " << newstrides[j] << std::endl;
+                // std::cout << "Shape " << i << ": " << newshape[j] << std::endl;
                 j++;
             }
             else
@@ -319,44 +307,45 @@ public:
         
         // // std::cout << "Shape: " << b.shape << std::endl;
         // b.data = (void *)((uint8_t *)b.data + i.start * strides[0] * bitsize);
-        
-        
+        // std::cout << b.strides[newrank-1] << std::endl;
+        // std::cout << newstrides[newrank-1] << std::endl;
+        // std::cout << X::reducedims << ":" << newrank << std::endl;
 
         return b;
         }
     }
 
     std::conditional_t<rank == 0, R&, Tensor<R, std::max(rank - 0,-1)>>
-    operator[](SliceList<0> i)
+    operator[](const SliceList<0>& i) const
     {
         return gather(i);
     }
 
     std::conditional_t<rank == 1, R&, Tensor<R, std::max(rank - 1,-1)>>
-    operator[](SliceList<1> i)
+    operator[](const SliceList<1>& i) const
     {
         return gather(i);
     }
 
     std::conditional_t<rank == 2, R&, Tensor<R, std::max(rank - 2,-1)>>
-    operator[](SliceList<2> i)
+    operator[](const SliceList<2>& i) const
     {
         return gather(i);
     }
     std::conditional_t<rank == 3, R&, Tensor<R, std::max(rank - 3,-1)>>
-    operator[](SliceList<3> i)
+    operator[](const SliceList<3>& i) const
     {
         return gather(i);
     }
 
     std::conditional_t<rank == 4, R&, Tensor<R, std::max(rank - 4,-1)>>
-    operator[](SliceList<4> i)
+    operator[](const SliceList<4>& i) const
     {
         return gather(i);
     }
 
     std::conditional_t<rank == 1, R&, Tensor<R, std::max(rank - 1,-1)>>
-    operator[](int i)
+    operator[](const int& i) const
     {
        return operator[](SliceList<1>({i}));
     }
@@ -412,9 +401,23 @@ public:
 
 
     template <int v = rank>
-    Tensor<R, v> broadcast(Shape<v>& a)
+    Tensor<R, v> broadcast(const Shape<v>& a) const
     {
+
+        // if shapes are equal, return self
+        
+        
+    
+
+
         Tensor<R, v> b{a, data, device_type};
+
+        if (shape == a)
+        {
+            b.strides = strides;
+            return b;
+        }
+
         for (size_t i = 1; i < a.ndim()+1; i++)
         {
             if(shape.ndim() > i && a[-i%a.ndim()] != shape[-i%shape.ndim()] && shape[-i%shape.ndim()] != 1){
@@ -440,7 +443,7 @@ public:
     }
 
     template <typename T = R>
-    inline Tensor<T, rank> view()
+    inline Tensor<T, rank> view() const
     {
         Shape<rank> newshape = shape.clone();
         float scale =  float(bitsize) / sizeof(T);
@@ -457,7 +460,7 @@ public:
     }
 
     template <typename T = R, int Z = -1>
-    inline Tensor<T, Z> view(Shape<Z> newshape)
+    inline Tensor<T, Z> view(Shape<Z> newshape) const
     {
         bool has_neg = false;
         for(int i = 0; i < newshape.ndim(); i++){
@@ -504,6 +507,17 @@ public:
             ptr += index;       
         }
         return *ptr;
+    }
+
+    template <typename M>
+    inline Tensor<M, rank> astype()
+    {
+        Tensor<M, rank> a = {shape, device_type};
+        for (int i = 0; i < total_size; i++)
+        {
+            a.flatget(i) = (M)flatget(i);
+        }
+        return a;
     }
 
     // print tensor

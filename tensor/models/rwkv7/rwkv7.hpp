@@ -9,7 +9,7 @@ struct TimeShift: Module<Tensor<R, 2>>
     public:
     Tensor<R,2> state;
     Tensor<R,1> buffer;
-    TimeShift(int batch, int dim): state({batch, dim}), buffer(Shape<1>{dim}), Module<Tensor<R,2>>({state, "state"}){
+    TimeShift(int batch, int dim): state({batch, dim}), buffer(Shape<1>{dim}), Module({state, "state"}){
 
     };
 
@@ -42,7 +42,7 @@ struct TimeShift: Module<Tensor<R, 2>>
 
 
 template <typename T = float>
-struct FFN : public Module<TimeShift<T>,Linear<T>,Linear<T>>
+struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
 {
     public:
     TimeShift<T> shift;
@@ -58,14 +58,15 @@ struct FFN : public Module<TimeShift<T>,Linear<T>,Linear<T>>
     key(n_dim, ffn_dim, device_type), 
     value(ffn_dim, n_dim, device_type), 
     shift(max_batch,n_dim), 
-    Module<TimeShift<T>,Linear<T>,Linear<T>>({shift, "shift"},{key, "key"}, {value, "value"})
+    Module({shift, "shift"},{key, "key"}, {value, "value"})
     {
         
     }
      
     Tensor <T> forward(Tensor<T> input)
     {
-        auto k = key(input);
+        auto x = shift(input);
+        auto k = key(x);
         // Apply ReLU squared activation
         return value(k);
     }
