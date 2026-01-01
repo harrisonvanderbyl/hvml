@@ -460,7 +460,7 @@ private:
 public:
  //Platform-specific transparency setup
     float time = 0.0f;
-    OpenGLRenderer(int width = 800, int height = 600) : VectorDisplay(Shape<2>{height, width}), 
+    OpenGLRenderer(int width = 800, int height = 600, WindowPropertiesFlags props = WindowProperties(0)) : VectorDisplay(Shape<2>{height, width}, props), 
                    sdl_window(nullptr), gl_context(nullptr), shader_program(0),
                    color_texture(0), depth_renderbuffer(0) {
         

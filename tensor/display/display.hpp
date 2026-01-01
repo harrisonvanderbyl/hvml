@@ -735,6 +735,7 @@ public:
     
     // Direct input reading
     DirectInputReader input_reader;
+
     
     // Multi-display support
     MultiDisplayManager display_manager;
@@ -1134,7 +1135,7 @@ public:
             }
             
             updateDisplay();
-            usleep(11111); // ~90 FPS
+            // usleep(11111); // ~90 FPS
             updateMousePositionFromRoot();
         }
         

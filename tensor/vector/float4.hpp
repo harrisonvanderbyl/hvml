@@ -12,7 +12,7 @@ struct float32x4
     float w;
 
     template <typename T,typename TT,typename TTT,typename TTTT>
-    float32x4(T x, TT y, TTT z, TTTT w)
+    __host__ __device__ float32x4(T x, TT y, TTT z, TTTT w)
     {
         this->x = x;
         this->y = y;
@@ -21,14 +21,14 @@ struct float32x4
     };
 
     template <typename T>
-    float32x4(T x){
+    __host__ __device__ float32x4(T x){
         this->x = x;
         this->y = x;
         this->z = x;
         this->w = x;
     }
 
-    float32x4()
+    __host__ __device__ float32x4()
     {
         this->x = 0;
         this->y = 0;
@@ -82,7 +82,7 @@ struct float32x4
         return out;
     };
 
-    float32x4 operator=(const float32x4& other)
+    __host__ __device__ float32x4 operator=(const float32x4& other)
     {
         x = other.x;
         y = other.y;
@@ -91,7 +91,7 @@ struct float32x4
         return *this;
     };
 
-    float32x4 operator=(const float& other)
+    __host__ __device__ float32x4 operator=(const float& other)
     {
         x = other;
         y = other;
@@ -103,7 +103,7 @@ struct float32x4
 
     
 
-    float& operator [](int index)
+    __host__ __device__ float& operator [](int index)
     {
         switch (index)
         {
@@ -116,7 +116,7 @@ struct float32x4
         case 3:
             return w;
         default:
-            throw "Index out of range";
+            return w; // throw "Index out of range";
         }
     };
 
@@ -128,14 +128,14 @@ struct float32x4
     }
 
 
-    float32x4 operator+(const float32x4& other) const;
-    float32x4 operator-(const float32x4& other) const;
-    float32x4 operator*(const float32x4& other) const;
-    float32x4 operator/(const float32x4& other) const;
-    float32x4& operator+=(const float32x4& other);
-    float32x4& operator-=(const float32x4& other);
-    float32x4& operator*=(const float32x4& other);
-    float32x4& operator/=(const float32x4& other);
+    __host__ __device__ float32x4 operator+(const float32x4& other) const;
+    __host__ __device__ float32x4 operator-(const float32x4& other) const;
+    __host__ __device__ float32x4 operator*(const float32x4& other) const;
+    __host__ __device__ float32x4 operator/(const float32x4& other) const;
+    __host__ __device__ float32x4& operator+=(const float32x4& other);
+    __host__ __device__ float32x4& operator-=(const float32x4& other);
+    __host__ __device__ float32x4& operator*=(const float32x4& other);
+    __host__ __device__ float32x4& operator/=(const float32x4& other);
     
 };
 

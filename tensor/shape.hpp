@@ -17,7 +17,7 @@ struct Shape
     long G = INT64MAX;
 
     template <typename T = long, typename TT = long, typename TTT = long, typename TTTT = long, typename TTTTT = long, typename TTTTTT = long, typename TTTTTTT = long>
-    Shape(T A = INT64MAX, TT B = INT64MAX, TTT C = INT64MAX, TTTT D = INT64MAX, TTTTT E = INT64MAX, TTTTTT F = INT64MAX, TTTTTTT G = INT64MAX)
+    __host__ __device__ Shape(T A = INT64MAX, TT B = INT64MAX, TTT C = INT64MAX, TTTT D = INT64MAX, TTTTT E = INT64MAX, TTTTTT F = INT64MAX, TTTTTTT G = INT64MAX)
         : A(A), B(B), C(C), D(D), E(E), F(F), G(G)
     {
         
@@ -26,7 +26,7 @@ struct Shape
     
    
 
-    Shape(std::vector<size_t> a)
+    __host__ __device__ Shape(std::vector<size_t> a)
     {
         for (int i = 0; i < a.size(); i++)
         {
@@ -62,7 +62,7 @@ struct Shape
     }
    
 
-    Shape()
+     __host__ __device__ Shape()
     {
         
     }
@@ -72,10 +72,10 @@ struct Shape
     //     return *(Shape<std::max(length - 1, -1)>*)(((long*)this)+1);
     // }
 
-    template <int numslice = 1> 
-    Shape<std::max(length - numslice, -1)> slice(){
-        return *(Shape<std::max(length - numslice, -1)>*)(((long*)this)+numslice);
-    }
+    // template <int numslice = 1> 
+    // Shape<std::max(length - numslice, -1)> slice(){
+    //     return *(Shape<std::max(length - numslice, -1)>*)(((long*)this)+numslice);
+    // }
 
     inline Shape clone()
     {
@@ -84,7 +84,7 @@ struct Shape
 
     
 
-    long& operator[](const int& i) const
+    __host__ __device__ long& operator[](const int& i) const
     {      
         int d = i;
         if (d < 0){
@@ -110,7 +110,7 @@ struct Shape
         return s;
     }
 
-    size_t total_size() const
+    __host__ __device__ size_t total_size() const
     {
         size_t total = 1;
         long *a = (long *)this;
@@ -121,7 +121,7 @@ struct Shape
         return total;
     }
 
-    size_t ndim() const
+    __host__ __device__ size_t ndim() const
     {
         if (length != -1)
         {
@@ -161,7 +161,7 @@ struct Shape
     template <int newrank>
     Shape operator=(const Shape<newrank> &other)
     {
-        if(newrank != length){
+        if(newrank != length && length != -1){
             std::cerr << "Cannot assign shapes of different ranks" << std::endl;
             throw std::runtime_error("Cannot assign shapes of different ranks");
         }

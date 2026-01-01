@@ -107,6 +107,7 @@ public:
     size_t total_size = 0;
     size_t total_bytes = 0;
     DeviceType device_type = DeviceType::kCPU;
+    unsigned long* indexer = nullptr;
 
     void calculate_metadata()
     {
@@ -195,32 +196,12 @@ public:
         
     }
 
-    template <typename M>
-    inline Tensor<R> operator=(const Tensor<M>& other)
+    template <typename M, int V>
+    inline Tensor<R, rank> operator=(Tensor<M,V>& other)
     {
-        if (data == nullptr)
-        {
-            data = (R*)other.data;
-            shape = Shape<rank>();
-            for (int i = 0; i < rank; i++)
-            {
-                shape[i] = other.shape[i];
-            }
-
-            strides = Shape<rank>();
-            for (int i = 0; i < rank; i++)
-            {
-                strides[i] = other.strides[i];
-            }
-            bitsize = other.bitsize;
-            device_type = other.device_type;
-            total_size = other.total_size;
-            total_bytes = other.total_bytes;
-
-            return 0;
-        }
         
-        return tensor_copy(*this, other);
+        tensor_copy(*this, other);
+        return *this;
     }
 
     template <typename X = SliceList<-1>, int newrank = X::reducedims<0?-1:std::max(rank-X::reducedims,-1)>
@@ -270,7 +251,6 @@ public:
         for(
             ; i < ndim; i+=1
         ){
-            
             if (inp[i].is_slice)
             {
                 if (inp[i].is_empty)
@@ -398,6 +378,34 @@ public:
         return a;
     }
 
+    inline Tensor<R,(rank == -1 ? -1 : rank+1)> unsqueeze(const int& dim) const
+    {
+        Shape<(rank == -1 ? -1 : rank+1)> newshape;
+        Shape<(rank == -1 ? -1 : rank+1)> newstrides;
+        int ndim = shape.ndim();
+        for (int i = 0; i < ndim + 1; i++)
+        {
+            if (i < dim)
+            {
+                newshape[i] = shape[i];
+                newstrides[i] = strides[i];
+            }
+            else if (i == dim)
+            {
+                newshape[i] = 1;
+                newstrides[i] = 0;
+            }
+            else
+            {
+                newshape[i] = shape[i - 1];
+                newstrides[i] = strides[i - 1];
+            }
+        }
+        Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, device_type};
+        b.strides = newstrides;
+        return b;
+    }
+
 
 
     template <int v = rank>
@@ -438,6 +446,17 @@ public:
                 }
             }
         }
+
+        return b;
+    }
+
+    template <int v = rank>
+    Tensor<R, 1> tensor_index(const Tensor<unsigned long, v>& index_tensor) const
+    {
+        // Tensor<R, newrank> b{index_tensor.shape, device_type};
+        Tensor<R, 1> b{{index_tensor.shape[0]}, data, device_type};
+        
+        b.indexer = index_tensor.data;
 
         return b;
     }
@@ -496,17 +515,33 @@ public:
 
     inline R& flatget(size_t i)
     {
-        R *ptr = (R *)data;
-        for (int j = 1; j < shape.ndim()+1; j++)
-        {
-            int cstride = strides[-j];
-            int cshape = shape[-j];
-            int index = ((i%cshape) * cstride);
+        if(indexer == nullptr){
+            R *ptr = (R *)data;
+            for (int j = 1; j < shape.ndim()+1; j++)
+            {
+                int cstride = strides[-j];
+                int cshape = shape[-j];
+                int index = ((i%cshape) * cstride);
 
-            i = i / cshape;
-            ptr += index;       
+                i = i / cshape;
+                ptr += index;       
+            }
+            return *ptr;
         }
-        return *ptr;
+        else{
+            unsigned long *ptr = indexer;
+            for (int j = 1; j < shape.ndim()+1; j++)
+            {
+                int cstride = strides[-j];
+                int cshape = shape[-j];
+                int index = ((i%cshape) * cstride);
+
+                i = i / cshape;
+                ptr += index;       
+            }
+            return *(data + *ptr);
+        }
+        
     }
 
     template <typename M>
@@ -523,12 +558,18 @@ public:
     // print tensor
     friend std::ostream &operator<<(std::ostream &os, Tensor<R, rank> tensorin)
     {
-        auto tensor = tensorin.to(DeviceType::kCPU);
+        
+        // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
+        // tensorc = tensorin;
+        Tensor<R, rank> tensor = tensorin.to(DeviceType::kCPU);
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
         os << "shape=" << tensorin.shape << ", ";
         os << "strides=" << tensorin.strides << ", ";
         os << "device_type=" << tensorin.device_type << "";
+        if(tensorin.indexer != nullptr){
+            os << ", indexed";
+        }
         os << ")" << "[";
         if(tensor.total_size <= 4){
             for (int i = 0; i < tensor.total_size; i++)
@@ -579,6 +620,7 @@ public:
         this->strides = other.strides;
         this->bitsize = other.bitsize;
         this->data = other.data;
+        this->indexer = other.indexer;
     }
 
     Tensor<R,rank> to(DeviceType device_type){
@@ -586,36 +628,41 @@ public:
             return *this;
         }
         Tensor a = {shape, device_type};
+        
 
-        if(strides != a.strides){
-            std::cerr << "Cannot convert non-contiguous tensor yet" << std::endl;
-            throw std::runtime_error("Cannot convert non-contiguous tensor yet");
+        auto from = (void*)this->data;
+
+        if(indexer != nullptr || strides != a.strides){
+            
+            Tensor temp = {shape, this->device_type};
+            temp = *this;
+            from = (void*)temp.data;
         }
 
         if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
             #if defined(__CUDACC__) 
-            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyDeviceToHost);
+            cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
             #else
             std::cerr << "CUDA not enabled" << std::endl;
             throw std::runtime_error("CUDA not enabled");
             #endif
         }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
             #if defined(__CUDACC__) 
-            cudaMemcpy(a.data, this->data, a.total_bytes, cudaMemcpyHostToDevice);
+            cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
             #else
             std::cerr << "CUDA not enabled" << std::endl;
             throw std::runtime_error("CUDA not enabled");
             #endif
         }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
             #if defined(__HIPCC__)
-            hipMemcpy(a.data, this->data, a.total_bytes, hipMemcpyDeviceToHost);
+            hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
             #else
             std::cerr << "HIP not enabled" << std::endl;
             throw std::runtime_error("HIP not enabled");
             #endif
         }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
             #if defined(__HIPCC__)
-            hipMemcpy(a.data, this->data, a.total_bytes, hipMemcpyHostToDevice
+            hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
             );
             #else
             std::cerr << "HIP not enabled" << std::endl;
