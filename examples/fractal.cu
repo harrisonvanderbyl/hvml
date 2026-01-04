@@ -215,66 +215,55 @@ int main(){
     int size = 1024;
     int horizontal_size = 1536;
 
-    unsigned long indexerdata[2] = {2,1};
-    Tensor<unsigned long, 1> indexertest = Tensor<unsigned long, 1>({2}, (unsigned long *)indexerdata, DeviceType::kCPU);
-    std::cout << "indexertest: " << indexertest << std::endl;
-    float testdata[12] = {10.0f,1.0f, 20.0f,1.0f, 30.0f,1.0f, 40.0f,1.0f, 50.0f,1.0f, 60.0f,1.0f};
-    Tensor<float, 2> testtensor = Tensor<float, 2>({6,2}, (float *)testdata, DeviceType::kCPU);
-    std::cout << "testtensor before: " << testtensor << std::endl;
-    Tensor<float,1> gathered = testtensor.tensor_index(indexertest);
-    std::cout << "gathered: " << gathered << std::endl;
+    VectorDisplay<kCUDA> display({size,horizontal_size});
 
-    // move everything to CUDA
-    std::cout << "gathered->CUDA:" << std::endl;
-    std::cout << "gathered: " << gathered.to(DeviceType::kCUDA) << std::endl;
-    auto indexertest_cuda = indexertest.to(DeviceType::kCUDA);
-    auto testtensor_cuda = testtensor.to(DeviceType::kCUDA);
-    auto gathered_cuda = testtensor_cuda.tensor_index(indexertest_cuda);
-    std::cout << "gathered_cuda: " << gathered_cuda << std::endl;
+    using QT = Quaternion<SuperReal2>;
 
+    Tensor<QT,2> tensorCPU({size,horizontal_size}, DeviceType::kCPU);
 
-    // using QT = Quaternion<SuperReal2>;
-
-   Tensor<float32x4, 2> patch = Tensor<float32x4, 2>({10,10}, DeviceType::kCPU);
-    for(int i = 0; i < 10; i++){
-        for(int j = 0; j < 10; j++){
-            patch[{i,j}] = float32x4(i, j, 0.0f, 1.0f); // 10 by 10 block of particles
+    for (int i = 0; i < size; i++) {
+        for (int j = 0; j < horizontal_size; j++) {
+            tensorCPU[{i, j}] = QT(
+                SuperReal2((float)(i - size / 2) / (size / 2)),
+                SuperReal2((float)(j - horizontal_size / 2) / (horizontal_size / 2)),
+                SuperReal2(0.0f, 0.0f),
+                SuperReal2(0.0f, 0.0f)
+            );
         }
     }
-    auto patchcuda = patch.view(Shape<1>{-1}).to(DeviceType::kCUDA);
-    
-    
-    VectorDisplay<kCUDA> display({size,horizontal_size});
-    Tensor<float32x4,2> Field = Tensor<float32x4,2>({size,horizontal_size}, DeviceType::kCUDA);
+    auto tensor = tensorCPU.to(DeviceType::kCUDA);
+    Tensor<QT,2> main_tensor({size, horizontal_size}, DeviceType::kCUDA);
+    main_tensor = tensorCPU.to(DeviceType::kCUDA);
 
+    // std::cout << "tensor: " << tensor << std::endl;
+    // std::cout << "main_tensor: " << main_tensor << std::endl;
+    
+
+    
+    
     display[{{}}] = 0x00000000; // Black background
     // display.view<uint8_t,3>({size,horizontal_size,4})[{{},{},3}] = (uint8_t)0xff; // Alpha channel
-    
+       
 
-    Tensor<float32x4, 1> particles = Tensor<float32x4, 1>({100}, DeviceType::kCUDA);
-    particles[{{}}] = patchcuda;
-    
-    Tensor<unsigned long, 1> particleindex = Tensor<unsigned long, 1>({100}, DeviceType::kCUDA);
-
-    
-    
-    auto MappedDisplay = display.view<uint84,1>({-1}).tensor_index(particleindex);
-    auto FieldMapped = Field.view<float32x4,1>({-1}).tensor_index(particleindex);
-
-    int i = 0;
     display.add_on_update([&](CurrentScreenInputInfo& info){
-        i++;
-        particles+=float32x4(2.0f, 0.5f, 0.0f, 0.0f); // Move particles right and down
 
+        main_tensor = main_tensor + tensor;
+        main_tensor = main_tensor * main_tensor;
         
-        display[{{}}] = 0x00000000; // Black background
-        auto particleOffsets = particles.view<float, 2>({-1,4})[{{},0}] * horizontal_size;
-        auto particleHeights = particles.view<float, 2>({-1,4})[{{},1}] ;
-        particleindex = (particleOffsets + particleHeights);
+
+        auto reshaped = main_tensor.view<float,3>({size, horizontal_size, 8}); // real
+        auto reshaped_squared = reshaped * reshaped;
+        auto distance = min(pow(reshaped_squared[{{}, {}, 1}] + reshaped_squared[{{}, {}, 3}],0.5)/4,1.0);
 
 
-        MappedDisplay = 0xFF000000; // Red particles at particle positions
-    });
+        display.view<uint8_t,3>({size,horizontal_size,4})[{{},{},0}] = distance*255; // R
+        display.view<uint8_t,3>({size,horizontal_size,4})[{{},{},1}] = distance*255; // G
+        display.view<uint8_t,3>({size,horizontal_size,4})[{{},{},2}] = distance*255; // B
+    })
+    ;
+
+    
+    
 
     display.displayLoop();
 

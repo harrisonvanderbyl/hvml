@@ -1,20 +1,36 @@
-
 #include "display/display_manager.hpp"
 #include "display/selected_text.hpp"
-// include opengl headers
 
+// X11 headers
+#include <X11/X.h>
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/shape.h>
+
+// OpenGL headers
 #include <GL/gl.h>
 #include <GL/glext.h>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_opengl.h>
-#include <SDL2/SDL_syswm.h>
-#include <cuda_gl_interop.h>
-#include <SDL2/SDL_opengl_glext.h>
-// OpenGL function pointers for modern OpenGL functions
-
-//glXSwapBuffers
 #include <GL/glx.h>
 
+// SDL headers
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
+
+// CUDA headers
+#include <cuda_gl_interop.h>
+#include <cuda_runtime.h>
+
+// Standard headers
+#include <iostream>
+#include <stdexcept>
+#include <cmath>
+#include <unistd.h>
+
+
+
+// OpenGL function pointer typedefs
 typedef GLuint (APIENTRY *PFNGLCREATESHADERPROC)(GLenum type);
 typedef void (APIENTRY *PFNGLSHADERSOURCEPROC)(GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length);
 typedef void (APIENTRY *PFNGLCOMPILESHADERPROC)(GLuint shader);
@@ -42,33 +58,8 @@ typedef GLint (APIENTRY *PFNGLGETUNIFORMLOCATIONPROC)(GLuint program, const GLch
 typedef void (APIENTRY *PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
 typedef void (APIENTRY *PFNGLUNIFORM3FVPROC)(GLint location, GLsizei count, const GLfloat *value);
 typedef void (APIENTRY *PFNGLUNIFORM1FPROC)(GLint location, GLfloat value);
-
-// Framebuffer function pointers
-typedef void (APIENTRY *PFNGLGENFRAMEBUFFERSPROC)(GLsizei n, GLuint *framebuffers);
-typedef void (APIENTRY *PFNGLBINDFRAMEBUFFERPROC)(GLenum target, GLuint framebuffer);
-typedef void (APIENTRY *PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
-typedef GLenum (APIENTRY *PFNGLCHECKFRAMEBUFFERSTATUSPROC)(GLenum target);
-typedef void (APIENTRY *PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint *framebuffers);
-typedef void (APIENTRY *PFNGLGENTEXTURESPROC)(GLsizei n, GLuint *textures);
-typedef void (APIENTRY *PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
-typedef void (APIENTRY *PFNGLTEXIMAGE2DPROC)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels);
-typedef void (APIENTRY *PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
-typedef void (APIENTRY *PFNGLDELETETEXTURESPROC)(GLsizei n, const GLuint *textures);
-typedef void (APIENTRY *PFNGLREADPIXELSPROC)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels);
-typedef void (APIENTRY *PFNGLGENRENDERBUFFERSPROC)(GLsizei n, GLuint *renderbuffers);
-typedef void (APIENTRY *PFNGLBINDRENDERBUFFERPROC)(GLenum target, GLuint renderbuffer);
-typedef void (APIENTRY *PFNGLRENDERBUFFERSTORAGEPROC)(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
-typedef void (APIENTRY *PFNGLFRAMEBUFFERRENDERBUFFERPROC)(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
-typedef void (APIENTRY *PFNGLDELETERENDERBUFFERSPROC)(GLsizei n, const GLuint *renderbuffers);
-typedef void (APIENTRY *PFNGLGENTEXTURESPROC)(GLsizei n, GLuint *textures);
-typedef void (APIENTRY *PFNGLBINDTEXTUREPROC)(GLenum target, GLuint texture);
-typedef void (APIENTRY *PFNGLTEXIMAGE2DPROC)(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels);
-typedef void (APIENTRY *PFNGLTEXPARAMETERIPROC)(GLenum target, GLenum pname, GLint param);
-typedef void (APIENTRY *PFNGLDELETETEXTURESPROC)(GLsizei n, const GLuint *textures);
-typedef void (APIENTRY *PFNGLREADPIXELSPROC)(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels);
 typedef void (APIENTRY *PFNGLUNIFORM1IPROC)(GLint location, GLint value);
-typedef void (APIENTRY *PFNGLACTIVETEXTUREPROC)(GLenum texture);
-
+typedef GLboolean (APIENTRY *PFNGLUNMAPBUFFERPROC)(GLenum target);
 
 // Global function pointers
 PFNGLCREATESHADERPROC glCreateShader = nullptr;
@@ -99,227 +90,189 @@ PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv = nullptr;
 PFNGLUNIFORM3FVPROC glUniform3fv = nullptr;
 PFNGLUNIFORM1FPROC glUniform1f = nullptr;
 PFNGLUNIFORM1IPROC glUniform1i = nullptr;
+PFNGLMAPBUFFERPROC glMapBuffer = nullptr;
+PFNGLUNMAPBUFFERPROC glUnmapBuffer = nullptr;
 
+void loadGLFunctions() {
+    glCreateShader = (PFNGLCREATESHADERPROC)SDL_GL_GetProcAddress("glCreateShader");
+    glShaderSource = (PFNGLSHADERSOURCEPROC)SDL_GL_GetProcAddress("glShaderSource");
+    glCompileShader = (PFNGLCOMPILESHADERPROC)SDL_GL_GetProcAddress("glCompileShader");
+    glGetShaderiv = (PFNGLGETSHADERIVPROC)SDL_GL_GetProcAddress("glGetShaderiv");
+    glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)SDL_GL_GetProcAddress("glGetShaderInfoLog");
+    glCreateProgram = (PFNGLCREATEPROGRAMPROC)SDL_GL_GetProcAddress("glCreateProgram");
+    glAttachShader = (PFNGLATTACHSHADERPROC)SDL_GL_GetProcAddress("glAttachShader");
+    glLinkProgram = (PFNGLLINKPROGRAMPROC)SDL_GL_GetProcAddress("glLinkProgram");
+    glGetProgramiv = (PFNGLGETPROGRAMIVPROC)SDL_GL_GetProcAddress("glGetProgramiv");
+    glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)SDL_GL_GetProcAddress("glGetProgramInfoLog");
+    glDeleteShader = (PFNGLDELETESHADERPROC)SDL_GL_GetProcAddress("glDeleteShader");
+    glDeleteProgram = (PFNGLDELETEPROGRAMPROC)SDL_GL_GetProcAddress("glDeleteProgram");
+    glUseProgram = (PFNGLUSEPROGRAMPROC)SDL_GL_GetProcAddress("glUseProgram");
+    glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glGenVertexArrays");
+    glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)SDL_GL_GetProcAddress("glBindVertexArray");
+    glDeleteVertexArrays = (PFNGLDELETEVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glDeleteVertexArrays");
+    glGenBuffers = (PFNGLGENBUFFERSPROC)SDL_GL_GetProcAddress("glGenBuffers");
+    glBindBuffer = (PFNGLBINDBUFFERPROC)SDL_GL_GetProcAddress("glBindBuffer");
+    glBufferData = (PFNGLBUFFERDATAPROC)SDL_GL_GetProcAddress("glBufferData");
+    glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)SDL_GL_GetProcAddress("glDeleteBuffers");
+    glVertexAttribPointer = (PFNGLVERTEXATTRIBPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribPointer");
+    glVertexAttribIPointer = (PFNGLVERTEXATTRIBIPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribIPointer");
+    glEnableVertexAttribArray = (PFNGLENABLEVERTEXATTRIBARRAYPROC)SDL_GL_GetProcAddress("glEnableVertexAttribArray");
+    glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)SDL_GL_GetProcAddress("glGetUniformLocation");
+    glUniformMatrix4fv = (PFNGLUNIFORMMATRIX4FVPROC)SDL_GL_GetProcAddress("glUniformMatrix4fv");
+    glUniform3fv = (PFNGLUNIFORM3FVPROC)SDL_GL_GetProcAddress("glUniform3fv");
+    glUniform1f = (PFNGLUNIFORM1FPROC)SDL_GL_GetProcAddress("glUniform1f");
+    glUniform1i = (PFNGLUNIFORM1IPROC)SDL_GL_GetProcAddress("glUniform1i");
+    glMapBuffer = (PFNGLMAPBUFFERPROC)SDL_GL_GetProcAddress("glMapBuffer");
+    glUnmapBuffer = (PFNGLUNMAPBUFFERPROC)SDL_GL_GetProcAddress("glUnmapBuffer");
+}
 
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
 
-class PresentBackend {
+
+
+template <DeviceType device>
+class GLBackend {
 public:
-    virtual ~PresentBackend() = default;
-    virtual void* initialize(Display* dpy, Window win, int width, int height, Visual* visual = nullptr, int depth = 24, Colormap colormap = 0) = 0;
-    virtual DeviceType getDeviceType() const = 0;
-    virtual void resize(int w, int h) = 0;
-    virtual void present() = 0;
-    virtual void preinit() = 0;
-};
-
-class XImageBackend : public PresentBackend {
-public:
-    XImage* ximage;
-    GC gc;
-    Display* dpy;
-    Window win;
-    void* pixels;
-    // visual
-    Visual* visual;
-    int depth = 24;
-
-    void preinit() override {
-        // No pre-initialization needed for XImageBackend
-    }
-
-    void* initialize(Display* dpy, Window win, int width, int height, Visual* visual, int depth, Colormap colormap) override {
-        this->dpy = dpy;
-        this->win = win;
-        gc = XCreateGC(dpy, win, 0, nullptr);
-        this->visual = visual;
-        this->depth = depth;
-        int bitmap_pad = (depth > 16) ? 32 : (depth > 8) ? 16 : 8;
-
-
-        pixels = DeviceAllocator<DeviceType::kCPU>::allocate(width * height * sizeof(uint32_t));
-
-        // set all pixels to black
-        // memset(pixels, 0, width * height * sizeof(uint32_t));
-        
-        ximage = XCreateImage(dpy, visual, depth, ZPixmap, 0,
-                             (char*)pixels, width, height,
-                             bitmap_pad, width * sizeof(uint84));
-        
-        
-        if (!ximage) {
-            throw std::runtime_error("Failed to create XImage");
-        }
-        
-        
-        ximage->data = (char*)pixels;
-        ximage->byte_order = LSBFirst;
-        ximage->bitmap_bit_order = LSBFirst;
-        return pixels;
-    }
-
-    void present() override {
-        XPutImage(dpy, win, gc, ximage, 0, 0, 0, 0,
-                  ximage->width, ximage->height);
-    }
-
-    void resize(int w, int h) override {
-        if (ximage) {
-            ximage->data = nullptr;
-            XDestroyImage(ximage);
-        }
-        ximage = XCreateImage(dpy, DefaultVisual(dpy, DefaultScreen(dpy)),
-                              DefaultDepth(dpy, DefaultScreen(dpy)),
-                              ZPixmap, 0, nullptr, w, h, 32, 0);;
-        // pixels = new uint32_t[w * h];
-        // ximage->data = //(char*)pixels;
-        ximage->byte_order = LSBFirst;
-        ximage->bitmap_bit_order = LSBFirst;
-    }
-
-    DeviceType getDeviceType() const override {
-        return DeviceType::kCPU;
-    }
-};
-
-
-class GLBackend : public PresentBackend {
-public:
-    Display* dpy = nullptr;
-    Window win = 0;
-    GLXContext ctx = nullptr;
+    SDL_Window* window = nullptr;
+    SDL_GLContext glctx = nullptr;
 
     GLuint tex = 0;
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint program = 0;
-    GLuint pbo = 0;  // Pixel Buffer Object for efficient transfers
-
-    void* cudaDevPtr = nullptr;
 
     int width = 0;
     int height = 0;
 
-    void preinit() override {
-        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-            printf("SDL_Init failed: %s\n", SDL_GetError());
+    cudaGraphicsResource* cudaTex = nullptr;
+    cudaArray_t cudaArray = nullptr;
+    void* cudaDevPtr = nullptr;
+    bool resourcesMapped = false;
+
+    void preinit() {
+        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+            throw std::runtime_error("Failed to initialize SDL: " + std::string(SDL_GetError()));
         }
 
+        // Request OpenGL 3.3 Core profile
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-
-        if (SDL_GL_LoadLibrary(nullptr) < 0) {
-            std::cerr << "SDL_GL_LoadLibrary failed: " << SDL_GetError() << std::endl;
-        }
         
-        // Load OpenGL function pointers using SDL
-        glCreateShader = (PFNGLCREATESHADERPROC)SDL_GL_GetProcAddress("glCreateShader");
-        glShaderSource = (PFNGLSHADERSOURCEPROC)SDL_GL_GetProcAddress("glShaderSource");
-        glCompileShader = (PFNGLCOMPILESHADERPROC)SDL_GL_GetProcAddress("glCompileShader");
-        glGetShaderiv = (PFNGLGETSHADERIVPROC)SDL_GL_GetProcAddress("glGetShaderiv");
-        glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)SDL_GL_GetProcAddress("glGetShaderInfoLog");
-        glCreateProgram = (PFNGLCREATEPROGRAMPROC)SDL_GL_GetProcAddress("glCreateProgram");
-        glAttachShader = (PFNGLATTACHSHADERPROC)SDL_GL_GetProcAddress("glAttachShader");
-        glLinkProgram = (PFNGLLINKPROGRAMPROC)SDL_GL_GetProcAddress("glLinkProgram");
-        glGetProgramiv = (PFNGLGETPROGRAMIVPROC)SDL_GL_GetProcAddress("glGetProgramiv");
-        glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)SDL_GL_GetProcAddress("glGetProgramInfoLog");
-        glDeleteShader = (PFNGLDELETESHADERPROC)SDL_GL_GetProcAddress("glDeleteShader");
-        glDeleteProgram = (PFNGLDELETEPROGRAMPROC)SDL_GL_GetProcAddress("glDeleteProgram");
-        glUseProgram = (PFNGLUSEPROGRAMPROC)SDL_GL_GetProcAddress("glUseProgram");
-        glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glGenVertexArrays");
-        glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)SDL_GL_GetProcAddress("glBindVertexArray");
-        glDeleteVertexArrays = (PFNGLDELETEVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glDeleteVertexArrays");
-        glGenBuffers = (PFNGLGENBUFFERSPROC)SDL_GL_GetProcAddress("glGenBuffers");
-        glBindBuffer = (PFNGLBINDBUFFERPROC)SDL_GL_GetProcAddress("glBindBuffer");
-        glBufferData = (PFNGLBUFFERDATAPROC)SDL_GL_GetProcAddress("glBufferData");
-        glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)SDL_GL_GetProcAddress("glDeleteBuffers");
-        glVertexAttribPointer = (PFNGLVERTEXATTRIBPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribPointer");
-        glVertexAttribIPointer = (PFNGLVERTEXATTRIBIPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribIPointer");
-        glEnableVertexAttribArray = (PFNGLENABLEVERTEXATTRIBARRAYPROC)SDL_GL_GetProcAddress("glEnableVertexAttribArray");
-        glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)SDL_GL_GetProcAddress("glGetUniformLocation");
-        glUniformMatrix4fv = (PFNGLUNIFORMMATRIX4FVPROC)SDL_GL_GetProcAddress("glUniformMatrix4fv");
-        glUniform3fv = (PFNGLUNIFORM3FVPROC)SDL_GL_GetProcAddress("glUniform3fv");
-        glUniform1f = (PFNGLUNIFORM1FPROC)SDL_GL_GetProcAddress("glUniform1f");
-        glUniform1i = (PFNGLUNIFORM1IPROC)SDL_GL_GetProcAddress("glUniform1i");
+        // Enable double buffering
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
         
-        // Check if all functions were loaded successfully
-        if (!glCreateShader || !glShaderSource || !glCompileShader || !glGetShaderiv ||
-            !glGetShaderInfoLog || !glCreateProgram || !glAttachShader || !glLinkProgram ||
-            !glGetProgramiv || !glGetProgramInfoLog || !glDeleteShader || !glDeleteProgram ||
-            !glUseProgram || !glGenVertexArrays || !glBindVertexArray || !glDeleteVertexArrays ||
-            !glGenBuffers || !glBindBuffer || !glBufferData || !glDeleteBuffers ||
-            !glVertexAttribPointer || !glEnableVertexAttribArray || !glGetUniformLocation ||
-            !glUniformMatrix4fv || !glUniform3fv || !glUniform1f || !glVertexAttribIPointer ||
-            !glUniform1i) {
-            std::cerr << "Failed to load one or more OpenGL functions!" << std::endl;
-        }
+        // Ensure we get an accelerated context
+        SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
     }
 
-    void* initialize(Display* dpy, Window win, int width, int height,
-                     Visual* visual = nullptr, int depth = 24, Colormap colormap = 0) override {
-        this->dpy = dpy;
-        this->win = win;
-        this->width = width;
-        this->height = height;
+    void initialize(void* ptr, SDL_Window* win, int w, int h, Visual* visual = nullptr, int depth = 24, Colormap colormap = 0) {
+        cudaDevPtr = ptr;
+        width = w;
+        height = h;
+        window = win;
 
-        // Create GLX context
-        static int attribs[] = {
-            GLX_RGBA,
-            GLX_DOUBLEBUFFER,
-            GLX_DEPTH_SIZE, 24,
-            None
-        };
-
-        XVisualInfo* vi = glXChooseVisual(dpy, DefaultScreen(dpy), attribs);
-        if (!vi) {
-            throw std::runtime_error("Failed to choose GLX visual");
+        if (!window) {
+            throw std::runtime_error("Failed to create SDL window");
         }
 
-        ctx = glXCreateContext(dpy, vi, nullptr, GL_TRUE);
-        if (!ctx) {
-            XFree(vi);
-            throw std::runtime_error("Failed to create GLX context");
+        glctx = SDL_GL_CreateContext(window);
+        if (!glctx) {
+            std::string error = SDL_GetError();
+            throw std::runtime_error("Failed to create OpenGL context: " + error);
         }
+        
+        // if (SDL_GL_MakeCurrent(window, glctx) != 0) {
+        //     // std::string error = SDL_GetError();
+        //     // throw std::runtime_error("Failed to make GL context current: " + error);
+        // }
+        SDL_GL_SetSwapInterval(0);
 
-        glXMakeCurrent(dpy, win, ctx);
-        XFree(vi);
+        
+
+        loadGLFunctions();
+
+        // Verify OpenGL functions loaded
+        if (!glGenTextures || !glBindTexture || !glTexImage2D) {
+            throw std::runtime_error("Failed to load required OpenGL functions");
+        }
 
         // Create texture
         glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
+        if (tex == 0) {
+            throw std::runtime_error("Failed to generate OpenGL texture");
+        }
 
+        glBindTexture(GL_TEXTURE_2D, tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-
+        
+        // Check for OpenGL errors
+        GLenum glErr = glGetError();
+        if (glErr != GL_NO_ERROR) {
+            throw std::runtime_error("OpenGL error creating texture: " + std::to_string(glErr));
+        }
+        
         glBindTexture(GL_TEXTURE_2D, 0);
 
-        // Create PBO for efficient CPU/GPU transfers (optional but recommended)
-        glGenBuffers(1, &pbo);
-        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-        glBufferData(GL_PIXEL_UNPACK_BUFFER, width * height * 4, nullptr, GL_STREAM_DRAW);
-        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        // Ensure all OpenGL commands are complete before CUDA registration
+        glFinish();
 
-        // Allocate CUDA device memory
-        cudaError_t err = cudaMalloc(&cudaDevPtr, width * height * 4);
-        if (err != cudaSuccess) {
-            std::cerr << "CUDA malloc failed: " << cudaGetErrorString(err) << std::endl;
-            throw std::runtime_error("Failed to allocate CUDA memory");
+        // list all cudagraphics devices
+        // Initialize CUDA device and set GL device
+        int deviceCount = 0;
+        cudaError_t err = cudaGetDeviceCount(&deviceCount);
+        if (err != cudaSuccess || deviceCount == 0) {
+            throw std::runtime_error("No CUDA devices found: " + std::string(cudaGetErrorString(err)));
         }
 
-        // Create fullscreen quad
+        // Find CUDA device that can interop with OpenGL
+        int cudaDevice = -1;
+        for (int i = 0; i < deviceCount; i++) {
+            cudaDeviceProp prop;
+            cudaGetDeviceProperties(&prop, i);
+            if (prop.major >= 3) { // Require compute capability 3.0+
+                cudaDevice = i;
+                break;
+            }
+        }
+
+        if (cudaDevice == -1) {
+            throw std::runtime_error("No suitable CUDA device found for GL interop");
+        }
+
+        // Set CUDA device for GL interop
+        err = cudaSetDevice(cudaDevice);
+        if (err != cudaSuccess) {
+            throw std::runtime_error("Failed to set CUDA GL device: " + std::string(cudaGetErrorString(err)));
+        }
+
+        // CUDA–GL interop registration
+        err = cudaGraphicsGLRegisterImage(&cudaTex, tex, GL_TEXTURE_2D,
+                                    cudaGraphicsRegisterFlagsSurfaceLoadStore);
+        if (err != cudaSuccess) {
+            if(err == 999){
+                std::cout << "CUDA–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
+            }
+            std::cout << "CUDA–GL interop registration failed with error code: " << err << std::endl;
+            std::string errorMsg = "Failed to register CUDA-GL interop: " + 
+                                  std::string(cudaGetErrorString(err));
+            glDeleteTextures(1, &tex);
+            throw std::runtime_error(errorMsg);
+        }
+
+        // Fullscreen quad
         float verts[] = {
-            // pos      // uv
-            -1, -1,    0, 1,
-             1, -1,    1, 1,
-             1,  1,    1, 0,
-            -1,  1,    0, 0
+            -1, -1, 0, 1,
+             1, -1, 1, 1,
+             1,  1, 1, 0,
+            -1,  1, 0, 0
         };
 
         glGenVertexArrays(1, &vao);
@@ -331,74 +284,49 @@ public:
 
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
                               (void*)(2 * sizeof(float)));
 
         glBindVertexArray(0);
 
-        // Simple shader
-        const char* vs = R"(
-            #version 330 core
-            layout(location = 0) in vec2 pos;
-            layout(location = 1) in vec2 uv;
-            out vec2 vUV;
-            void main() {
-                vUV = uv;
-                gl_Position = vec4(pos, 0.0, 1.0);
-            }
-        )";
+        program = createProgram(vertexSrc, fragmentSrc);
 
-        const char* fs = R"(
-            #version 330 core
-            in vec2 vUV;
-            out vec4 color;
-            uniform sampler2D tex;
-            void main() {
-                color = texture(tex, vUV);
-            }
-        )";
-
-        program = createProgram(vs, fs);
-
-        return cudaDevPtr;
+       
     }
 
-    void present() override {
-        glXMakeCurrent(dpy, win, ctx);
-
-        // Copy CUDA data to texture
-        // Option 1: Direct copy (slower)
-        void* tempBuffer = malloc(width * height * 4);
-        cudaMemcpy(tempBuffer, cudaDevPtr, width * height * 4, cudaMemcpyDeviceToHost);
+    void present() {
         
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                        GL_RGBA, GL_UNSIGNED_BYTE, tempBuffer);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        
-        free(tempBuffer);
-
-        // Option 2: Using PBO (faster, uncomment to use instead of Option 1)
-        /*
-        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-        void* pboMem = glMapBuffer(GL_PIXEL_UNPACK_BUFFER, GL_WRITE_ONLY);
-        if (pboMem) {
-            cudaMemcpy(pboMem, cudaDevPtr, width * height * 4, cudaMemcpyDeviceToHost);
-            glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
-            
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-                            GL_RGBA, GL_UNSIGNED_BYTE, 0);
-            glBindTexture(GL_TEXTURE_2D, 0);
+        // copy from cudaDevPtr to cudaTex
+        //map cudaTex
+        auto errMap = cudaGraphicsMapResources(1, &cudaTex);
+        if (errMap != cudaSuccess) {
+            throw std::runtime_error("Failed to map CUDA-GL resources: " + std::string(cudaGetErrorString(errMap)));
         }
-        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-        */
+        cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaTex, 0, 0);
 
-        // Render
+        cudaError_t erra = cudaMemcpy2DToArray(
+            cudaArray,
+            0, 0,
+            cudaDevPtr,
+            width * sizeof(uint32_t),
+            width * sizeof(uint32_t),
+            height,
+            cudaMemcpyDeviceToDevice
+        );
+        if (erra != cudaSuccess) {
+            throw std::runtime_error("Failed to copy data to CUDA array: " + std::string(cudaGetErrorString(erra)));
+        }
+
+        
+
+        auto err = cudaGraphicsUnmapResources(1, &cudaTex);
+        if (err != cudaSuccess) {
+            throw std::runtime_error("Failed to unmap CUDA-GL resources: " + std::string(cudaGetErrorString(err)));
+        }
+        resourcesMapped = false;
+
         glViewport(0, 0, width, height);
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(program);
@@ -410,75 +338,94 @@ public:
 
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-        glBindVertexArray(0);
-        glUseProgram(0);
+        SDL_GL_SwapWindow(window);
 
-        glXSwapBuffers(dpy, win);
     }
 
-    void resize(int w, int h) override {
+    void resize(int w, int h) {
         width = w;
         height = h;
 
-        // Reallocate CUDA memory
-        if (cudaDevPtr) {
-            cudaFree(cudaDevPtr);
-        }
-        cudaMalloc(&cudaDevPtr, w * h * 4);
+        // // Unmap resources BEFORE unregistering
+        // if (resourcesMapped && cudaTex) {
+        //     cudaGraphicsUnmapResources(1, &cudaTex);
+        //     resourcesMapped = false;
+        // }
 
-        // Resize texture
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        // // Unregister old resource
+        // if (cudaTex) {
+        //     cudaGraphicsUnregisterResource(cudaTex);
+        //     cudaTex = nullptr;
+        // }
 
-        // Resize PBO
-        if (pbo) {
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, w * h * 4, nullptr, GL_STREAM_DRAW);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-        }
-    }
+        // // Recreate texture
+        // glBindTexture(GL_TEXTURE_2D, tex);
+        // glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+        //              GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        // glBindTexture(GL_TEXTURE_2D, 0);
 
-    DeviceType getDeviceType() const override {
-        return DeviceType::kCUDA;
+        // // Re-register
+        // cudaGraphicsGLRegisterImage(&cudaTex, tex, GL_TEXTURE_2D,
+        //                             cudaGraphicsRegisterFlagsWriteDiscard);
+
+        // // Re-map
+        // cudaGraphicsMapResources(1, &cudaTex);
+        // cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaTex, 0, 0);
+        resourcesMapped = true;
     }
 
     ~GLBackend() {
-        if (cudaDevPtr) {
-            cudaFree(cudaDevPtr);
+        if (resourcesMapped && cudaTex) {
+            cudaGraphicsUnmapResources(1, &cudaTex);
         }
-        if (pbo) glDeleteBuffers(1, &pbo);
-        if (vao) glDeleteVertexArrays(1, &vao);
-        if (vbo) glDeleteBuffers(1, &vbo);
+        if (cudaTex) cudaGraphicsUnregisterResource(cudaTex);
         if (tex) glDeleteTextures(1, &tex);
+        if (vbo) glDeleteBuffers(1, &vbo);
+        if (vao) glDeleteVertexArrays(1, &vao);
         if (program) glDeleteProgram(program);
-        if (ctx) {
-            glXMakeCurrent(dpy, None, nullptr);
-            glXDestroyContext(dpy, ctx);
-        }
+        if (glctx) SDL_GL_DestroyContext(glctx);
     }
 
 private:
-    GLuint compileShader(GLenum type, const char* src) {
-        GLuint s = glCreateShader(type);
-        glShaderSource(s, 1, &src, nullptr);
-        glCompileShader(s);
-        
-        GLint success;
-        glGetShaderiv(s, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char log[512];
-            glGetShaderInfoLog(s, 512, nullptr, log);
-            std::cerr << "Shader compilation failed: " << log << std::endl;
+    static constexpr const char* vertexSrc = R"(
+        #version 330 core
+        layout(location = 0) in vec2 pos;
+        layout(location = 1) in vec2 uv;
+        out vec2 vUV;
+        void main() {
+            vUV = uv;
+            gl_Position = vec4(pos, 0, 1);
         }
-        
-        return s;
-    }
+    )";
+
+    static constexpr const char* fragmentSrc = R"(
+        #version 330 core
+        in vec2 vUV;
+        out vec4 color;
+        uniform sampler2D tex;
+        void main() {
+            color = texture(tex, vUV);
+        }
+    )";
 
     GLuint createProgram(const char* vs, const char* fs) {
-        GLuint v = compileShader(GL_VERTEX_SHADER, vs);
-        GLuint f = compileShader(GL_FRAGMENT_SHADER, fs);
+        auto compile = [](GLenum type, const char* src) {
+            GLuint s = glCreateShader(type);
+            glShaderSource(s, 1, &src, nullptr);
+            glCompileShader(s);
+            
+            GLint success;
+            glGetShaderiv(s, GL_COMPILE_STATUS, &success);
+            if (!success) {
+                char infoLog[512];
+                glGetShaderInfoLog(s, 512, nullptr, infoLog);
+                std::cerr << "Shader compilation failed: " << infoLog << std::endl;
+            }
+            return s;
+        };
+
+        GLuint v = compile(GL_VERTEX_SHADER, vs);
+        GLuint f = compile(GL_FRAGMENT_SHADER, fs);
         GLuint p = glCreateProgram();
         glAttachShader(p, v);
         glAttachShader(p, f);
@@ -487,25 +434,23 @@ private:
         GLint success;
         glGetProgramiv(p, GL_LINK_STATUS, &success);
         if (!success) {
-            char log[512];
-            glGetProgramInfoLog(p, 512, nullptr, log);
-            std::cerr << "Program linking failed: " << log << std::endl;
+            char infoLog[512];
+            glGetProgramInfoLog(p, 512, nullptr, infoLog);
+            std::cerr << "Program linking failed: " << infoLog << std::endl;
         }
         
         glDeleteShader(v);
         glDeleteShader(f);
         return p;
     }
+
+    DeviceType getDeviceType() const {
+        return DeviceType::kCUDA;
+    }
 };
 
-template <DeviceType T>
-struct ToBackendSelector {
-    using type = std::conditional_t<
-        T == DeviceType::kCPU,
-        XImageBackend,
-        GLBackend
-    >;
-};
+
+
 
 
 class CurrentScreenInputInfo {
@@ -521,6 +466,7 @@ private:
     int mouse_move_x = 0;
     int mouse_move_y = 0;
     bool mouse_left_button = false;
+    bool mouse_left_button_released = false;
     bool mouse_right_button = false;
     bool mouse_middle_button = false;
     bool mouse_wheel_up = false;
@@ -531,14 +477,13 @@ private:
     float32x4 selectedarea = float32x4(0, 0, 0, 0);
     float32x2 lastClicked = float32x2(0, 0);
     
-    // Raw input tracking
     std::map<int, bool> raw_key_states;
     int accumulated_mouse_x = 0;
     int accumulated_mouse_y = 0;
     
 public:
+    bool just_selected_area = false;
     SelectedTextReader* selected_text_reader = nullptr;
-    
     
     void updateMousePositionAbsolute(int new_x, int new_y) {
         mouse_move_x = (new_x-x) - mouse_x;
@@ -555,7 +500,7 @@ public:
     
     void updateMouseButtonState(int button_code, bool pressed) {
         switch (button_code) {
-            case BTN_LEFT:
+            case SDL_BUTTON_LEFT:
                 std::cout << "Mouse left button " << (pressed ? "pressed" : "released") << std::endl;
                 mouse_left_button = pressed;
                 if(pressed) {
@@ -567,12 +512,13 @@ public:
                     }
                     std::cout << "Selected area: " << selectedarea.x << ", " << selectedarea.y << ", " 
                               << selectedarea.z << ", " << selectedarea.w << std::endl;
+                    just_selected_area = true;
                 }
                 break;
-            case BTN_RIGHT:
+            case SDL_BUTTON_RIGHT:
                 mouse_right_button = pressed;
                 break;
-            case BTN_MIDDLE:
+            case SDL_BUTTON_MIDDLE:
                 mouse_middle_button = pressed;
                 break;
         }
@@ -606,7 +552,6 @@ public:
         is_fullscreen = fullscreen;
     }
     
-    // Getters
     int getX() const { return x; }
     int getY() const { return y; }
     int getWidth() const { return width; }
@@ -633,7 +578,6 @@ public:
         return false;
     }
     
-    // Get current display info
     const DisplayInfo* getCurrentDisplayInfo() const {
         if (display_manager) {
             return display_manager->getCurrentDisplay();
@@ -682,13 +626,17 @@ public:
         return float32x2(mouse_x, mouse_y);
     }
     
+    void clear_mouse_states() {
+        just_selected_area = false;
+    }
 };
 
 enum WindowProperties {
     WP_BORDERLESS = 1 << 0,
     WP_ALPHA_ENABLED = 1 << 1,
     WP_FULLSCREEN = 1 << 2,
-    WP_CLICKTHROUGH = 1 << 3
+    WP_CLICKTHROUGH = 1 << 3,
+    WP_ON_TOP = 1 << 4
 };
 
 struct WindowPropertiesFlags {
@@ -696,12 +644,22 @@ struct WindowPropertiesFlags {
     bool alpha_enabled = false;
     bool fullscreen = false;
     bool clickthrough = true;
+    bool on_top = false;
 
     WindowPropertiesFlags(WindowProperties properties) {
         borderless = properties & WP_BORDERLESS;
         alpha_enabled = properties & WP_ALPHA_ENABLED;
         fullscreen = properties & WP_FULLSCREEN;
         clickthrough = properties & WP_CLICKTHROUGH;
+        on_top = properties & WP_ON_TOP;
+    }
+
+    WindowPropertiesFlags(int flags) {
+        borderless = flags & WP_BORDERLESS;
+        alpha_enabled = flags & WP_ALPHA_ENABLED;
+        fullscreen = flags & WP_FULLSCREEN;
+        clickthrough = flags & WP_CLICKTHROUGH;
+        on_top = flags & WP_ON_TOP;
     }
 
     operator WindowProperties() const {
@@ -710,15 +668,16 @@ struct WindowPropertiesFlags {
         if (alpha_enabled) props = (WindowProperties)(props | WP_ALPHA_ENABLED);
         if (fullscreen) props = (WindowProperties)(props | WP_FULLSCREEN);
         if (clickthrough) props = (WindowProperties)(props | WP_CLICKTHROUGH);
+        if (on_top) props = (WindowProperties)(props | WP_ON_TOP);
         return props;
     }
 };
 
-template <DeviceType Device = DeviceType::kCPU, typename Backend = typename ToBackendSelector<Device>::type>
+template <DeviceType Device = DeviceType::kCPU>
 class VectorDisplay : public Tensor<uint84, 2> {
 public:
     Display* display = nullptr;
-    Window window;
+    SDL_Window* window;
     Window* root_window = nullptr;
     // GC gc;
     // XImage* ximage = nullptr;
@@ -730,6 +689,7 @@ public:
     bool alpha_enabled = false;
     bool is_fullscreen = false;
     bool clickthrough = true;
+    bool on_top = false;
     CurrentScreenInputInfo current_screen_input_info;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
@@ -739,191 +699,40 @@ public:
     
     // Multi-display support
     MultiDisplayManager display_manager;
-    Backend backend = Backend();
+    GLBackend<Device> backend = GLBackend<Device>();
     
     
     VectorDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : Tensor<uint84, 2>(shape, nullptr, Device), borderless(properties.borderless), alpha_enabled(properties.alpha_enabled), is_fullscreen(properties.fullscreen), display_manager(nullptr), clickthrough(properties.clickthrough) {
-        
-        // Initialize the display with a black background
-        // for (int y = 0; y < shape[0]; y++) {
-        //     for (int x = 0; x < shape[1]; x++) {
-        //         (*this)[y][x] = 0x00000000; // ARGB format: transparent black
-        //     }
-        // }
-        // Open connection to X server
+        : Tensor<uint84, 2>(shape, Device), borderless(properties.borderless), alpha_enabled(properties.alpha_enabled), is_fullscreen(properties.fullscreen), display_manager(nullptr), clickthrough(properties.clickthrough), on_top(properties.on_top) {
+
         backend.preinit();
 
-        display = XOpenDisplay(nullptr);
-        if (!display) {
-            std::cerr << "Cannot open X display" << std::endl;
-            return;
+        std::cout << "finished preinit" << std::endl;
+      
+        window = SDL_CreateWindow(
+            "CUDA → OpenGL",
+            shape[1], shape[0],
+            SDL_WINDOW_OPENGL | (is_fullscreen ? SDL_WINDOW_FULLSCREEN : 0) | (borderless ? SDL_WINDOW_BORDERLESS : 0) | (alpha_enabled ? SDL_WINDOW_TRANSPARENT : 0) | (on_top ? SDL_WINDOW_ALWAYS_ON_TOP : 0)
+        );
+
+        if (!window) {
+            throw std::runtime_error("Failed to create SDL window: " + std::string(SDL_GetError()));
         }
 
-        
-        
-        // Initialize display manager
-        display_manager = MultiDisplayManager(display);
-        current_screen_input_info.setDisplayManager(&display_manager);
-        display_manager.detectDisplays();
-        
-        screen = DefaultScreen(display);
-        
-        // Check for composite extension if alpha is requested
-        if (alpha_enabled) {
-            int composite_event_base, composite_error_base;
-            if (!XCompositeQueryExtension(display, &composite_event_base, &composite_error_base)) {
-                std::cerr << "Warning: Composite extension not available, alpha blending may not work" << std::endl;
-            }
-        }
-        
-        // Find appropriate visual for alpha support
-        if (alpha_enabled) {
-            XVisualInfo vinfo;
-            if (XMatchVisualInfo(display, screen, 32, TrueColor, &vinfo)) {
-                visual = vinfo.visual;
-                depth = vinfo.depth;
-                colormap = XCreateColormap(display, RootWindow(display, screen), visual, AllocNone);
-            } else {
-                std::cerr << "Warning: 32-bit visual not found, falling back to default" << std::endl;
-                visual = DefaultVisual(display, screen);
-                depth = DefaultDepth(display, screen);
-                colormap = DefaultColormap(display, screen);
-            }
-        } else {
-            visual = DefaultVisual(display, screen);
-            depth = DefaultDepth(display, screen);
-            colormap = DefaultColormap(display, screen);
-        }
-        
-        // Set window attributes
-        // Replace the window creation and property setting section in your VectorDisplay constructor
-// with this corrected version:
+        std::cout << "created window" << std::endl;
 
-// Create window with proper input transparency
-        XSetWindowAttributes attrs;
-        attrs.colormap = colormap;
-        if (borderless)
-        attrs.border_pixel = 0;
-        attrs.background_pixel = 0;
-        unsigned long mask = CWColormap | CWBorderPixel | CWBackPixel | CWOverrideRedirect | CWDontPropagate;
+        display = (Display *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
 
-    
-        if (clickthrough)
+        screen = SDL_GetDisplayForWindow(window);
         
-        {
-            attrs.event_mask = NoEventMask; // No events
+        // show window
+        SDL_ShowWindow(window);
+
+        backend.initialize(data, window, shape[1], shape[0], visual, depth, colormap);
+
+       
+
         
-        
-            attrs.override_redirect = True; // Bypass window manager
-            attrs.do_not_propagate_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
-            
-        } else {
-            attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
-            attrs.override_redirect = False;
-            attrs.do_not_propagate_mask = 0;
-            mask |= CWEventMask;
-        }
-        
-        // Create window
-        window = XCreateWindow(display, RootWindow(display, screen),
-                            0, 0, shape[1], shape[0], 0, depth, InputOutput,
-                            visual, mask, &attrs);
-
-        // CRITICAL: Set input region to empty to make window completely click-through
-        if (clickthrough) {
-                
-            XserverRegion empty_region = XFixesCreateRegion(display, nullptr, 0);
-            XFixesSetWindowShapeRegion(display, window, ShapeInput, 0, 0, empty_region);
-            XFixesDestroyRegion(display, empty_region);
-
-        }
-        // Set window properties for overlay behavior
-        XStoreName(display, window, "Vector Display");
-
-        // Make window borderless
-        if (borderless) {
-            Atom motifHints = XInternAtom(display, "_MOTIF_WM_HINTS", False);
-            if (motifHints != None) {
-                struct {
-                    unsigned long flags;
-                    unsigned long functions;
-                    unsigned long decorations;
-                    long input_mode;
-                    unsigned long status;
-                } hints = {0};
-                
-                hints.flags = 2; // MWM_HINTS_DECORATIONS
-                hints.decorations = 0; // No decorations
-                
-                XChangeProperty(display, window, motifHints, motifHints, 32,
-                            PropModeReplace, (unsigned char*)&hints, 5);
-            }
-
-            Atom netWmState = XInternAtom(display, "_NET_WM_STATE", False);
-            Atom netWmStateAbove = XInternAtom(display, "_NET_WM_STATE_ABOVE", False);
-            Atom netWmStateSkipTaskbar = XInternAtom(display, "_NET_WM_STATE_SKIP_TASKBAR", False);
-            Atom netWmStateSkipPager = XInternAtom(display, "_NET_WM_STATE_SKIP_PAGER", False);
-
-            Atom states[] = { netWmStateAbove, netWmStateSkipTaskbar, netWmStateSkipPager };
-            XChangeProperty(display, window, netWmState, XA_ATOM, 32, 
-                            PropModeReplace, (unsigned char*)states, 3);
-
-            // Set window type to overlay/dock for proper stacking
-            Atom windowType = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
-            Atom windowTypeDock = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DOCK", False);
-            XChangeProperty(display, window, windowType, XA_ATOM, 32,
-                            PropModeReplace, (unsigned char*)&windowTypeDock, 1);
-        }
-
-        // Set window to stay on top
-        
-
-        // Ensure no input events are selected
-        if (clickthrough)
-        XSelectInput(display, window, NoEventMask);
-                
-        // Create graphics context
-
-        data = (uint84*)backend.initialize(display, window, shape[1], shape[0], visual, depth, colormap);
-
-        // (*this)[{{}}] = 0x00000000;
-        // gc = XCreateGC(display, window, 0, nullptr);
-        
-        // Create XImage for pixel buffer
-        // createXImage();
-        
-        // Map window
-        XMapWindow(display, window);
-        XFlush(display);
-
-        // Set initial screen size based on current display
-        if (is_fullscreen) {
-        
-            const DisplayInfo* current_display = display_manager.getCurrentDisplay();
-            if (current_display) {
-                current_screen_input_info.setScreenSize(current_display->x, current_display->y, 
-                                                    current_display->width, current_display->height);
-                
-                // Position window on current display
-                XMoveResizeWindow(display, window, current_display->x, current_display->y, 
-                                current_display->width, current_display->height);
-            } else {
-                // Fallback for single display
-                XWindowAttributes attr;
-                XGetWindowAttributes(display, window, &attr);
-                int x, y;
-                unsigned int width, height, border_width, depth;
-                Window root;
-                XGetGeometry(display, window, &root, &x, &y, &width, &height, &border_width, &depth);
-                current_screen_input_info.setScreenSize(x, y, width, height);
-            }
-        }
-
-        current_screen_input_info.selected_text_reader = new SelectedTextReader(display, window);
-        
-        // Start direct input reading
-        startDirectInputReading();
         
     }
     
@@ -940,10 +749,10 @@ private:
         int root_x, root_y, win_x, win_y;
         unsigned int mask;
         
-        if (XQueryPointer(display, root, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask)) {
-            // root_x, root_y are the global screen coordinates
-            current_screen_input_info.updateMousePositionAbsolute(root_x, root_y);
-        }
+        // if (XQueryPointer(display, root, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask)) {
+        //     // root_x, root_y are the global screen coordinates
+        //     current_screen_input_info.updateMousePositionAbsolute(root_x, root_y);
+        // }
     }
 
     
@@ -1017,8 +826,8 @@ public:
             hints.flags = 2; // MWM_HINTS_DECORATIONS
             hints.decorations = 0; // No decorations
             
-            XChangeProperty(display, window, motifHints, motifHints, 32,
-                           PropModeReplace, (unsigned char*)&hints, 5);
+            // XChangeProperty(display, window, motifHints, motifHints, 32,
+            //                PropModeReplace, (unsigned char*)&hints, 5);
         }
     }
     
@@ -1027,12 +836,12 @@ public:
         Atom netWmWindowOpacity = XInternAtom(display, "_NET_WM_WINDOW_OPACITY", False);
         if (netWmWindowOpacity != None) {
             unsigned long opacity = 0xFFFFFFFF; // Fully opaque by default
-            XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
-                           PropModeReplace, (unsigned char*)&opacity, 1);
+            // XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
+            //                PropModeReplace, (unsigned char*)&opacity, 1);
         }
         
         // Enable compositing for this window
-        XCompositeRedirectWindow(display, window, CompositeRedirectAutomatic);
+        // XCompositeRedirectWindow(display, window, CompositeRedirectAutomatic);
     }
     
     void setWindowOpacity(float opacity) {
@@ -1041,9 +850,9 @@ public:
         Atom netWmWindowOpacity = XInternAtom(display, "_NET_WM_WINDOW_OPACITY", False);
         if (netWmWindowOpacity != None) {
             unsigned long opacityValue = (unsigned long)(opacity * 0xFFFFFFFF);
-            XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
-                           PropModeReplace, (unsigned char*)&opacityValue, 1);
-            XFlush(display);
+            // XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
+            //                PropModeReplace, (unsigned char*)&opacityValue, 1);
+            // XFlush(display);
         }
     }
     
@@ -1052,54 +861,17 @@ public:
     // }
     
     void updateDisplay() {
-        // if (!backend. ximage) return;
-        
-        // // Update the image data pointer (in case tensor was reallocated)
-        // ximage->data = (char*)this->data;
-        // ximage->width = shape[1];
-        // ximage->height = shape[0];
-        // ximage->bytes_per_line = shape[1] * sizeof(uint84);
+    
         
         if (shape[0] > 0 && shape[1] > 0) {
             backend.present();
-            //     XPutImage(display, window, gc, ximage, 0, 0, 0, 0, shape[1], shape[0]);
         }
-        // XFlush(display);
+
+        
     }
 
     void resizeDisplay() {
-        if (is_fullscreen) {
-            XWindowAttributes attr;
-            XGetWindowAttributes(display, window, &attr);
-            if (attr.width != shape[1] || attr.height != shape[0]) {
-                // if (ximage) {
-                //     ximage->data = nullptr;
-                //     XDestroyImage(ximage);
-                // }
-
-                // int bitmap_pad = (depth > 16) ? 32 : (depth > 8) ? 16 : 8;
-                // this->data = (uint84*)realloc(data, attr.width * attr.height * sizeof(uint84));
-                // shape[0] = attr.height;
-                // shape[1] = attr.width;
-
-                // ximage = XCreateImage(display, visual, depth, ZPixmap, 0,
-                //                      (char*)this->data, shape[1], shape[0],
-                //                      bitmap_pad, shape[1] * sizeof(uint84));
-                // if (!ximage) {
-                //     std::cerr << "Cannot create resized XImage" << std::endl;
-                //     return;
-                // }
-                
-                // ximage->byte_order = LSBFirst;
-                // ximage->bitmap_bit_order = LSBFirst;
-                // ximage->width = shape[1];
-                // ximage->height = shape[0];
-                // ximage->bytes_per_line = shape[1] * sizeof(uint84);
-                
-                // calculate_metadata();
-                // XResizeWindow(display, window, ximage->width, ximage->height);
-            } 
-        } 
+        
     }
     
     void displayLoop() {
@@ -1115,27 +887,30 @@ public:
                 callback(current_screen_input_info);
             }
 
-            // Handle minimal X11 events (mainly window management)
-            while (XPending(display) > 0) {
-                XNextEvent(display, &event);
-                
-                switch (event.type) {
-                    case Expose:
-                        updateDisplay();
-                        break;
-                    case ClientMessage:
-                        if (event.xclient.data.l[0] == XInternAtom(display, "WM_DELETE_WINDOW", False)) {
-                            quit = true;
-                        }
-                        break;
-                    case ConfigureNotify:
-                        // Window size changed
-                        break;
+            // SDL event handling
+            SDL_Event sdl_event;
+            current_screen_input_info.clear_mouse_states();
+            while (SDL_PollEvent(&sdl_event)) {
+                if (sdl_event.type == SDL_EVENT_QUIT) {
+                    quit = true;
+                } 
+
+                // mousedown
+                else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                    current_screen_input_info.updateMouseButtonState(sdl_event.button.button, 1);
+                }
+                // mouseup
+                else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                    current_screen_input_info.updateMouseButtonState(sdl_event.button.button, 0);
+                }
+                // mousemotion
+                else if (sdl_event.type == SDL_EVENT_MOUSE_MOTION) {
+                    current_screen_input_info.updateMousePositionAbsolute(sdl_event.motion.x, sdl_event.motion.y);
                 }
             }
+
             
             updateDisplay();
-            // usleep(11111); // ~90 FPS
             updateMousePositionFromRoot();
         }
         
@@ -1170,7 +945,7 @@ public:
         //     XFreeGC(display, gc);
         // }
         if (window) {
-            XDestroyWindow(display, window);
+            // XDestroyWindow(display, window);
         }
         if (display) {
             XCloseDisplay(display);
@@ -1184,13 +959,13 @@ public:
     
     // Utility functions for window management
     void moveWindow(int x, int y) {
-        XMoveWindow(display, window, x, y);
-        XFlush(display);
+        // XMoveWindow(display, window, x, y);
+        // XFlush(display);
     }
     
     void resizeWindow(int width, int height) {
-        XResizeWindow(display, window, width, height);
-        XFlush(display);
+        // XResizeWindow(display, window, width, height);
+        // XFlush(display);
     }
     
     // Multi-display functions
@@ -1198,36 +973,11 @@ public:
         const DisplayInfo* target_display = display_manager.getDisplay(display_index);
         if (target_display) {
             display_manager.setCurrentDisplay(display_index);
-            
-            // Update window position and size to match display
-            XMoveResizeWindow(display, window, target_display->x, target_display->y,
-                            target_display->width, target_display->height);
-            
-            // Update screen info
-            std::cout << "Moving to display: " << target_display->name << std::endl;
-            std::cout << "Position: (" << target_display->x << ", " << target_display->y 
-                      << "), Size: " << target_display->width << "x" << target_display->height << std::endl;
-            current_screen_input_info.setScreenSize(target_display->x, target_display->y,
-                                                   target_display->width, target_display->height);
-            
-            // Resize internal buffer if needed
+           
             if (shape[0] != target_display->height || shape[1] != target_display->width) {
-                // Resize tensor
-                // if (ximage) {
-                //     ximage->data = nullptr;
-                //     XDestroyImage(ximage);
-                // }
-                
-                // this->data = (uint84*)realloc(data, target_display->width * target_display->height * sizeof(uint84));
-                // shape[0] = target_display->height;
-                // shape[1] = target_display->width;
-                
-                // createXImage();
-                // calculate_metadata();
+         
             }
             
-            XFlush(display);
-            std::cout << "Moved to display " << display_index << ": " << target_display->name << std::endl;
         }
     }
     

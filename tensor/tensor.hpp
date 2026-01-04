@@ -153,6 +153,8 @@ public:
         this->strides = __a.clone();
         calculate_metadata();
         this->data = datain;
+
+        register_allocation(this->data, this->device_type);
     }
 
     Tensor(DeviceType device_type, R item){
@@ -172,7 +174,7 @@ public:
             data = (R*)DeviceAllocator<DeviceType::kHIP>::allocate(total_bytes);
             DeviceAllocator<DeviceType::kHIP>::memset<R>(data, item, 1);
         }
-
+        
         
         
     }
@@ -446,6 +448,7 @@ public:
                 }
             }
         }
+        b.indexer = indexer;
 
         return b;
     }
@@ -621,6 +624,8 @@ public:
         this->bitsize = other.bitsize;
         this->data = other.data;
         this->indexer = other.indexer;
+
+        register_allocation(this->data, this->device_type);
     }
 
     Tensor<R,rank> to(DeviceType device_type){
@@ -637,50 +642,109 @@ public:
             Tensor temp = {shape, this->device_type};
             temp = *this;
             from = (void*)temp.data;
+            if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
+                #if defined(__CUDACC__) 
+                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
+                #else
+                std::cerr << "CUDA not enabled" << std::endl;
+                throw std::runtime_error("CUDA not enabled");
+                #endif
+            }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
+                #if defined(__CUDACC__) 
+                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
+                #else
+                std::cerr << "CUDA not enabled" << std::endl;
+                throw std::runtime_error("CUDA not enabled");
+                #endif
+            }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
+                #if defined(__HIPCC__)
+                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
+                #else
+                std::cerr << "HIP not enabled" << std::endl;
+                throw std::runtime_error("HIP not enabled");
+                #endif
+            }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
+                #if defined(__HIPCC__)
+                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
+                );
+                #else
+                std::cerr << "HIP not enabled" << std::endl;
+                throw std::runtime_error("HIP not enabled");
+                #endif
+            }else{
+                std::cerr << "Unsupported device type conversion" << std::endl;
+                throw std::runtime_error("Unsupported device type conversion");
+            }
         }
-
-        if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
-            #if defined(__CUDACC__) 
-            cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
-            #else
-            std::cerr << "CUDA not enabled" << std::endl;
-            throw std::runtime_error("CUDA not enabled");
-            #endif
-        }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
-            #if defined(__CUDACC__) 
-            cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
-            #else
-            std::cerr << "CUDA not enabled" << std::endl;
-            throw std::runtime_error("CUDA not enabled");
-            #endif
-        }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
-            #if defined(__HIPCC__)
-            hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
-            #else
-            std::cerr << "HIP not enabled" << std::endl;
-            throw std::runtime_error("HIP not enabled");
-            #endif
-        }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
-            #if defined(__HIPCC__)
-            hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
-            );
-            #else
-            std::cerr << "HIP not enabled" << std::endl;
-            throw std::runtime_error("HIP not enabled");
-            #endif
-        }else{
-            std::cerr << "Unsupported device type conversion" << std::endl;
-            throw std::runtime_error("Unsupported device type conversion");
+        else{
+            if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
+                #if defined(__CUDACC__) 
+                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
+                #else
+                std::cerr << "CUDA not enabled" << std::endl;
+                throw std::runtime_error("CUDA not enabled");
+                #endif
+            }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
+                #if defined(__CUDACC__) 
+                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
+                #else
+                std::cerr << "CUDA not enabled" << std::endl;
+                throw std::runtime_error("CUDA not enabled");
+                #endif
+            }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
+                #if defined(__HIPCC__)
+                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
+                #else
+                std::cerr << "HIP not enabled" << std::endl;
+                throw std::runtime_error("HIP not enabled");
+                #endif
+            }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
+                #if defined(__HIPCC__)
+                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
+                );
+                #else
+                std::cerr << "HIP not enabled" << std::endl;
+                throw std::runtime_error("HIP not enabled");
+                #endif
+            }else{
+                std::cerr << "Unsupported device type conversion" << std::endl;
+                throw std::runtime_error("Unsupported device type conversion");
+            }
         }
         return a;
     };
 
-    
+    // destructor
+    ~Tensor()
+    {
+        if(data != NULL){
+            if(device_type == DeviceType::kCPU){
+                DeviceAllocator<DeviceType::kCPU>::deallocate(data);
+            }else if(device_type == DeviceType::kCUDA){
+                DeviceAllocator<DeviceType::kCUDA>::deallocate(data);
+            }
+            else if(device_type == DeviceType::kHIP){
+                DeviceAllocator<DeviceType::kHIP>::deallocate(data);
+            }
+        }
+    }
     // template <int output>//, typename std::enable_if<(rank == -1)>::type* = nullptr>
     // operator Tensor<R,output>(){
     //     assert(this->shape.ndim() == output);// "Output not correct ndims"
     //     return *this;
     // }
+
+    // define copy constructor so that data pointer is copied but not the own_data flag
+    Tensor(const Tensor<R, rank> &other)
+    {
+        this->device_type = other.device_type;
+        this->shape = other.shape;
+        this->strides = other.strides;
+        this->bitsize = other.bitsize;
+        this->data = other.data;
+        this->indexer = other.indexer;
+        register_allocation(this->data, this->device_type);
+    }
 };
 
 

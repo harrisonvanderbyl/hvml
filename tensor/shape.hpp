@@ -82,6 +82,18 @@ struct Shape
         return *this;
     }
 
+    Shape<length> calc_strides() const
+    {
+        Shape<length> s;
+        size_t ndim = this->ndim();
+        long *a = (long *)this;
+        s[ndim - 1] = 1;
+        for (int i = ndim - 2; i >= 0; i--)
+        {
+            s[i] = s[i + 1] * a[i + 1];
+        }
+        return s;
+    }
     
 
     __host__ __device__ long& operator[](const int& i) const

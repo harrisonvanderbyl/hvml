@@ -2,8 +2,6 @@
 #include "tensor.hpp"
 #include "kernels/interface.hpp"
 
-// THESE ARE INEFFICIENT KERNELS FOR SIMPLE BINARY OPERATIONS
-
 #ifndef __host__
 #define __host__
 #define __device__
@@ -11,54 +9,50 @@
 // ================================================================
 // Operation Enum
 // ================================================================
-enum class Operation {
-    Hardamard, // element-wise operation
-    Add,
-    Sub,
-    Mul,
-    Div,
-    AddEq,
-    SubEq,
-    MulEq,
-    DivEq,
-    Pow,
-    Set,
-    Min,
-    Max,
-    Relu,
-    Sigmoid,
-    Tanh,
-    Exp,
-    Log,
-    Sqrt,
-    Negate,
-    Abs,
-    ToUnsignedLong,
-    VelocitySpread
-};
+
 
 
 
 template <typename T>
 struct Parameter {
-    T* data = nullptr;
+    T* data = 0;
     unsigned long ndim = 0;
     Shape<-1> shape ;
     Shape<-1> strides;
     unsigned long* indexer = nullptr;
+    bool istensor = true;
+    T data_scalar ;
 
     Parameter() {}
    
     template <int dim>
-    Parameter(Tensor<T, dim> tensor) {
+    Parameter(const Tensor<T, dim>& tensor) {
         data = tensor.data;
         shape = tensor.shape;
         ndim = tensor.shape.ndim();
         strides = tensor.strides;
         indexer = tensor.indexer;
+        istensor = true;
     }
 
+    
+    Parameter(const T& indata) {
+        ndim = 1;
+        shape = Shape<-1>({1});
+        strides = Shape<-1>({1});
+        istensor = false;
+        indexer = nullptr;
+        data_scalar = indata;
+
+    }
+    
+
     __host__ __device__ T& get_index(long index_flat) {
+
+        if(!istensor){
+            return data_scalar;
+        }
+
         int rem = index_flat;
         int offset = 0;
         for (long adim = ndim - 1; adim >= 0; adim--) {
@@ -73,7 +67,7 @@ struct Parameter {
 
     };
 
-    __host__ __device__ int get_total_size() {
+    __host__ __device__ unsigned long get_total_size() {
         int total = 1;
         for (long i = 0; i < ndim; i++) {
             total *= shape[i];
@@ -87,6 +81,48 @@ struct Parameter {
         tensor.strides = strides;
         tensor.indexer = indexer;
         return tensor;
+    }
+
+    Parameter broadcast(const Shape<-1>& a) const
+    {
+
+        Parameter b;
+        b.data = data;
+        b.shape = a;
+        b.strides = a.calc_strides();
+        b.indexer = indexer;
+        b.data_scalar = data_scalar;
+        b.istensor = istensor;
+        b.ndim = a.ndim();
+        // std::cout << "From shape: " << shape << " to broadcast shape: " << a << std::endl;
+        if (shape == a)
+        {
+            b.strides = strides;
+            return b;
+        }
+
+        for (size_t i = 1; i < a.ndim()+1; i++)
+        {
+            if(shape.ndim() > i && a[-i%a.ndim()] != shape[-i%shape.ndim()] && shape[-i%shape.ndim()] != 1){
+                std::cerr << "Incompatible shapes for broadcast" << std::endl;
+                std::cerr << i << "\n";
+                std::cerr << "Shape: " << shape << " Broadcast shape: " << a << std::endl;
+                std::cerr << "Shape: " << shape[-i%shape.ndim()] << " Broadcast shape: " << a[-i%a.ndim()] << std::endl;
+                throw std::runtime_error("Incompatible shapes for broadcast");
+            }
+            if (shape.ndim() < i || shape[-i] == 1)
+            {
+                b.strides[-i] = 0;
+                if(i < shape.ndim()){
+                    for (size_t j = i+1; j < a.ndim()+1; j++)
+                    {
+                        b.strides[-j] = b.strides[-j]/ shape[-j];
+                    }
+                }
+            }
+        }
+        // std::cout << "broadcasted parameter strides: " << b.strides << std::endl;
+        return b;
     }
 };
 
@@ -112,23 +148,213 @@ struct Parameter<void> {
 
 };
 
+
+
+template <typename OP, typename... Params>
+struct OutputTypeSelector {
+    using type = decltype(OP::apply(std::declval<Params&>()...));
+};
 // ================================================================
 // Compile-time Operation Selector
 // ================================================================
-template <Operation OP>
+
+
+
+
+// ================================================================
+
+
+// ================================================================
+// CPU Kernel Implementation
+// ================================================================
+template <DeviceType device, typename OP,
+          typename... Args>
+class BinaryKernel: public Kernel<device,Parameter<typename OutputTypeSelector<OP, Args...>::type>, Parameter<Args>...> 
+{
+    // Specializations will be defined below
+    void call(Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...) override 
+    {
+        throw std::runtime_error("BinaryKernel not implemented for this device type");
+    }
+};
+
+template <typename OP, typename... Args>
+class BinaryKernel<DeviceType::kCPU, OP, Args...>
+    : public Kernel<DeviceType::kCPU, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
+{
+public:
+
+    void call(
+        unsigned long total_size,
+        Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
+        Parameter<Args>... params
+    ) override 
+    {
+        // get first argument and use .get_total_size() to get total size
+
+        for (long linear_idx = 0; linear_idx < total_size; linear_idx++) {  
+            if constexpr (std::is_same<typename OutputTypeSelector<OP, Args...>::type, void>::value) {
+                OP::apply(
+                    params.get_index(linear_idx)...
+                );
+                continue;
+            }
+            else{ 
+                output.get_index(linear_idx) = OP::apply(
+                    params.get_index(linear_idx)...
+                );
+            }
+        }
+    }
+};
+
+
+// ================================================================
+// CUDA Kernel Implementation
+// ================================================================
+#ifdef __CUDACC__
+#include <cuda_runtime.h>
+
+template <typename OP, typename OutputType, typename... Args>
+__global__ void OPKERNEL(
+    unsigned long total_size,
+    int loopsize, 
+    Parameter<OutputType> output, 
+    Parameter<Args>... params) {
+    int idx = blockIdx.x * blockDim.x * loopsize + threadIdx.x * loopsize;
+    
+    for (int i = 0; i < loopsize; i++)
+    {
+        unsigned long global_idx = idx + i;
+        if (global_idx >= total_size) return;
+
+        if constexpr (std::is_same<OutputType, void>::value) {
+            OP::apply(
+                params.get_index(global_idx)...
+            );
+        }
+        else {
+            output.get_index(global_idx) = OP::apply(
+                params.get_index(global_idx)...
+            );
+        }
+    }
+}
+
+
+// CUDA kernel wrapper
+template <typename OP, typename... Args>
+class BinaryKernel<DeviceType::kCUDA, OP, Args...>
+    : public Kernel<DeviceType::kCUDA, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...>
+{
+public:
+
+    void call(
+        unsigned long total_size,
+        Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
+        Parameter<Args>... params
+    ) override 
+    {
+        int loopsize = 16; // adjust loopsize for performance/memory tradeoff
+        int threadsPerBlock = 256;
+        
+        int numBlocks = (total_size + (threadsPerBlock*loopsize) - 1) / (threadsPerBlock*loopsize);
+
+        OPKERNEL<OP, typename OutputTypeSelector<OP,Args...>::type, Args...>
+            <<<numBlocks, threadsPerBlock>>>(
+                total_size,
+                loopsize,
+                output,
+                params...
+            );
+    }
+};
+
+#endif // USE_CUDA
+
+
+
+// ================================================================
+// Operation Application Helper
+// ================================================================
+class ApplyKernelOperationHelper {
+public:
+
+    template <typename OP, DeviceType device = DeviceType::kCPU, typename... types>
+    static auto
+    apply(const Parameter<types>&... params)
+    {
+        // constexpr int out_dims = std::max(AD, BD);
+        Shape<-1> out_shape = OP::get_output_shape(
+            params...
+        );
+
+        using Out = typename OutputTypeSelector<OP, types...>::type;
+
+
+        using KernelT = BinaryKernel<device, OP, types...>; // or select device
+        KernelT kernel;
+
+        unsigned long total = out_shape.total_size();
+        Out* out_ptr = nullptr;
+
+
+        // if Out type is void, dont allocate output
+        if constexpr (!std::is_same<Out, void>::value) {
+
+            // auto buffers = kernel.template CreateBuffers<Out>({total});
+            // buffers.Allocate();
+            // out_ptr = buffers.template getPointer<0>();
+            
+            auto out_param = Tensor<Out, -1>(out_shape, device);
+
+            kernel(
+                total,
+                out_param,
+                params.broadcast(out_shape)...
+            );
+
+            return out_param;
+        }
+        
+        else {
+            kernel(
+                total,
+                Parameter<void>(),
+                params.broadcast(out_shape)...
+            );
+        }
+        
+    }
+};
+
+template <typename OP>
 struct OperationSelector {
     template <typename... Params>
     __host__ __device__ static inline
     auto apply(const Params&... params);
+
+    template <int AD, typename A, typename... B>                     
+    inline static auto run(Tensor<A, AD> a, B... b)           
+    {                                   
+        // OPERATION is the current class calling this operator(), including its decendents, so if a decendent calls this function, it will use its own apply function                                               
+                             
+        if(a.device_type == DeviceType::kCPU)            
+            return ApplyKernelOperationHelper::template apply<OP, kCPU>(Parameter(a), Parameter(b)...);        
+        else if(a.device_type == DeviceType::kCUDA) 
+        return ApplyKernelOperationHelper::template apply<OP, kCUDA>(Parameter(a), Parameter(b)...);                          
+        else{                                                                           
+            std::cerr << "Mixed device types not supported yet in binary operations." << std::endl; \
+            throw std::runtime_error("Mixed device types not supported yet in binary operations."); \
+        }                                                                              
+    }
+
+    
+   
 };
 
-template <Operation OP, typename... Params>
-struct OutputTypeSelector {
-    using type = decltype(OperationSelector<OP>::apply(std::declval<Params&>()...));
-};
-
-template <>
-struct OperationSelector<Operation::Hardamard> {
+template <typename OP>
+struct HardamardOperation: public OperationSelector<OP> {
     template <typename... Types>
     __host__ __device__ static inline
     Shape<-1> get_output_shape(const Parameter<Types>&... params) {
@@ -155,11 +381,26 @@ struct OperationSelector<Operation::Hardamard> {
 
         return output_shape;
     }
+
 };
 
 
-template <>
-struct OperationSelector<Operation::Add>:public OperationSelector<Operation::Hardamard> {
+// ================================================================
+// Operator Generation Macro
+// ================================================================
+
+
+#define CREATE_OP(func_name, OPERATION)                                     \
+template <int AD, typename A, typename... B>                     \
+auto func_name(Tensor<A, AD> a, B... b)           \
+{                                                                                  \
+    return OPERATION::run(a, b...);                                                                           \
+}
+
+
+
+
+struct OperationAdd:public HardamardOperation<OperationAdd> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -168,8 +409,8 @@ struct OperationSelector<Operation::Add>:public OperationSelector<Operation::Har
 };
 
 
-template <>
-struct OperationSelector<Operation::Sub>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationSub:public HardamardOperation<OperationSub> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -177,8 +418,8 @@ struct OperationSelector<Operation::Sub>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Mul>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationMul:public HardamardOperation<OperationMul> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -186,8 +427,8 @@ struct OperationSelector<Operation::Mul>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Div>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationDiv:public HardamardOperation<OperationDiv> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -196,8 +437,8 @@ struct OperationSelector<Operation::Div>:public OperationSelector<Operation::Har
 };
 
 
-template <>
-struct OperationSelector<Operation::AddEq>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationAddEq:public HardamardOperation<OperationAddEq> {
     template <typename A, typename B>
     __host__ __device__ static inline
     void apply(A& a, const B& b) {
@@ -206,8 +447,8 @@ struct OperationSelector<Operation::AddEq>:public OperationSelector<Operation::H
 };
 
 
-template <>
-struct OperationSelector<Operation::SubEq>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationSubEq:public HardamardOperation<OperationSubEq> {
     template <typename A, typename B>
     __host__ __device__ static inline
     void apply(A& a, const B& b) {
@@ -215,8 +456,8 @@ struct OperationSelector<Operation::SubEq>:public OperationSelector<Operation::H
     }
 };
 
-template <>
-struct OperationSelector<Operation::MulEq>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationMulEq:public HardamardOperation<OperationMulEq> {
     template <typename A, typename B>
     __host__ __device__ static inline
     void apply(A& a, const B& b) {
@@ -224,8 +465,8 @@ struct OperationSelector<Operation::MulEq>:public OperationSelector<Operation::H
     }
 };
 
-template <>
-struct OperationSelector<Operation::DivEq>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationDivEq:public HardamardOperation<OperationDivEq> {
     template <typename A, typename B>
     __host__ __device__ static inline
     void apply(A& a, const B& b) {
@@ -233,8 +474,8 @@ struct OperationSelector<Operation::DivEq>:public OperationSelector<Operation::H
     }
 };
 
-template <>
-struct OperationSelector<Operation::Pow>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationPow:public HardamardOperation<OperationPow> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -242,8 +483,8 @@ struct OperationSelector<Operation::Pow>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Set>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationSet:public HardamardOperation<OperationSet> {
     template <typename A, typename B>
     __host__ __device__ static inline
     void apply(A& a, const B& b) {
@@ -251,8 +492,8 @@ struct OperationSelector<Operation::Set>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Min>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationMin:public HardamardOperation<OperationMin> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -260,8 +501,8 @@ struct OperationSelector<Operation::Min>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Max>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationMax:public HardamardOperation<OperationMax> {
     template <typename A, typename B>
     __host__ __device__ static inline
     auto apply(const A& a, const B& b) {
@@ -269,8 +510,8 @@ struct OperationSelector<Operation::Max>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Relu>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationRelu:public HardamardOperation<OperationRelu> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -278,8 +519,8 @@ struct OperationSelector<Operation::Relu>:public OperationSelector<Operation::Ha
     }
 };
 
-template <>
-struct OperationSelector<Operation::Sigmoid>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationSigmoid:public HardamardOperation<OperationSigmoid> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -287,8 +528,8 @@ struct OperationSelector<Operation::Sigmoid>:public OperationSelector<Operation:
     }
 };
 
-template <>
-struct OperationSelector<Operation::Tanh>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationTanh:public HardamardOperation<OperationTanh> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -296,8 +537,8 @@ struct OperationSelector<Operation::Tanh>:public OperationSelector<Operation::Ha
     }
 };
 
-template <>
-struct OperationSelector<Operation::Exp>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationExp:public HardamardOperation<OperationExp> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -305,8 +546,8 @@ struct OperationSelector<Operation::Exp>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Log>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationLog:public HardamardOperation<OperationLog> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -314,8 +555,8 @@ struct OperationSelector<Operation::Log>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::Sqrt>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationSqrt:public HardamardOperation<OperationSqrt> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -323,8 +564,8 @@ struct OperationSelector<Operation::Sqrt>:public OperationSelector<Operation::Ha
     }
 };
 
-template <>
-struct OperationSelector<Operation::Negate>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationNegate:public HardamardOperation<OperationNegate> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -332,8 +573,8 @@ struct OperationSelector<Operation::Negate>:public OperationSelector<Operation::
     }
 };
 
-template <>
-struct OperationSelector<Operation::Abs>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationAbs:public HardamardOperation<OperationAbs> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -341,8 +582,8 @@ struct OperationSelector<Operation::Abs>:public OperationSelector<Operation::Har
     }
 };
 
-template <>
-struct OperationSelector<Operation::ToUnsignedLong>:public OperationSelector<Operation::Hardamard> {
+
+struct OperationToUnsignedLong:public HardamardOperation<OperationToUnsignedLong> {
     template <typename A>
     __host__ __device__ static inline
     auto apply(const A& a) {
@@ -350,269 +591,88 @@ struct OperationSelector<Operation::ToUnsignedLong>:public OperationSelector<Ope
     }
 };
 
-// template <>
-// struct OperationSelector<Operation::VelocitySpread>:public OperationSelector<Operation::Hardamard> {
-//     __host__ __device__ static inline
-//     void apply(float32x4& velocityField, float32x4& particle, int32x2& screenDims) {
-//         // Simple example: add spread to velocity
-//         velocityField.x += 1.0f;
-//     }
-// };
-// ================================================================
 
-
-// ================================================================
-// CPU Kernel Implementation
-// ================================================================
-template <DeviceType device, Operation OP,
-          typename... Args>
-class BinaryKernel: public Kernel<device,Parameter<typename OutputTypeSelector<OP, Args...>::type>, Parameter<Args>...> 
-{
-    // Specializations will be defined below
-    void call(Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...) override 
-    {
-        throw std::runtime_error("BinaryKernel not implemented for this device type");
+struct OperationRound:public HardamardOperation<OperationRound> {
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return round(a);
     }
 };
 
-template <Operation OP, typename... Args>
-class BinaryKernel<DeviceType::kCPU, OP, Args...>
-    : public Kernel<DeviceType::kCPU, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
-{
-public:
 
-    void call(
-        unsigned long total_size,
-        Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
-        Parameter<Args>... params
-    ) override 
+struct OperationFloor:public HardamardOperation<OperationFloor> {
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return floor(a);
+    }
+};
+
+
+
+struct OperationCeil:public HardamardOperation<OperationCeil>
     {
-        // get first argument and use .get_total_size() to get total size
-
-        for (long linear_idx = 0; linear_idx < total_size; linear_idx++) {  
-            if constexpr (std::is_same<typename OutputTypeSelector<OP, Args...>::type, void>::value) {
-                OperationSelector<OP>::apply(
-                    params.get_index(linear_idx)...
-                );
-                continue;
-            }
-            else{ 
-                output.get_index(linear_idx) = OperationSelector<OP>::apply(
-                    params.get_index(linear_idx)...
-                );
-            }
+        template <typename A>
+        __host__ __device__ static inline
+        auto apply(const A& a) {
+            return ceil(a);
         }
-    }
-};
+    };
 
-
-// ================================================================
-// CUDA Kernel Implementation
-// ================================================================
-#ifdef __CUDACC__
-#include <cuda_runtime.h>
-
-template <Operation OP, typename OutputType, typename... Args>
-__global__ void binaryOpCudaKernel(unsigned long total_size, Parameter<OutputType> output, Parameter<Args>... params) {
-    long idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total_size) return;
-
-    if constexpr (std::is_same<OutputType, void>::value) {
-        OperationSelector<OP>::apply(
-            params.get_index(idx)...
-        );
-        return;
-    }
-    else{
-        output.get_index(idx) = OperationSelector<OP>::apply(
-            params.get_index(idx)...
-        );
-    }    
-}
-
-
-// CUDA kernel wrapper
-template <Operation OP, typename... Args>
-class BinaryKernel<DeviceType::kCUDA, OP, Args...>
-    : public Kernel<DeviceType::kCUDA, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...>
+struct OperationSin:public HardamardOperation<OperationSin>
 {
-public:
-
-    void call(
-        unsigned long total_size,
-        Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
-        Parameter<Args>... params
-    ) override 
-    {
-
-        int threads = 256;
-        int blocks = (total_size + threads - 1) / threads;
-        
-
-        binaryOpCudaKernel<OP>
-            <<<blocks, threads>>>(
-                total_size,
-                output,
-                params...
-            );
-    }
-};
-
-#endif // USE_CUDA
-
-
-
-// ================================================================
-// Operation Application Helper
-// ================================================================
-template <typename A, typename B, int AD, int BD>
-class ApplyKernelOperationHelper {
-public:
-
-    template <Operation OP, DeviceType device = DeviceType::kCPU>
-    static auto
-    apply(const Tensor<A, AD>& a, const Tensor<B, BD>& b)
-    {
-        // constexpr int out_dims = std::max(AD, BD);
-        Shape<-1> out_shape = OperationSelector<OP>::get_output_shape(
-            Parameter<A>(a),
-            Parameter<B>(b)
-        );
-
-        using Out = typename OutputTypeSelector<OP, A, B>::type;
-
-        auto a_bcast = a.broadcast(out_shape);
-        auto b_bcast = b.broadcast(out_shape);
-        a_bcast.indexer = a.indexer;
-        b_bcast.indexer = b.indexer;
-
-        // std::cout << "out_shape: " << std::string(out_shape) << std::endl;
-
-
-        using KernelT = BinaryKernel<device, OP, A, B>; // or select device
-        KernelT kernel;
-
-        unsigned long total = out_shape.total_size();
-        Out* out_ptr = nullptr;
-
-
-        // if Out type is void, dont allocate output
-        if constexpr (!std::is_same<Out, void>::value) {
-
-            auto buffers = kernel.template CreateBuffers<Out>({total});
-            buffers.Allocate();
-            out_ptr = buffers.template getPointer<0>();
-
-            auto out_param = Tensor<Out, -1>(out_shape, out_ptr, a.device_type);
-
-            kernel(
-                total,
-                out_param,
-                a_bcast,
-                b_bcast
-            );
-
-            return out_param;
-        }
-        
-        else {
-            kernel(
-                total,
-                Parameter<void>(),
-                a_bcast,
-                b_bcast
-            );
-        }
-        
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return sin(a);
     }
 };
 
 
-// ================================================================
-// Operator Generation Macro
-// ================================================================
-#define CREATE_BINARY_OP(func_name, OPERATION)                                     \
-template <typename A, typename B, int AD, int BD>                     \
-auto func_name(Tensor<A, AD> a, Tensor<B, BD> b)           \
-{                                                                                  \
-    if(a.device_type == DeviceType::kCPU && b.device_type == DeviceType::kCPU)            \
-        return ApplyKernelOperationHelper<A,B,AD,BD>                           \
-            ::template apply<Operation::OPERATION, kCPU>(a, b);        \
-    else if(a.device_type == DeviceType::kCUDA && b.device_type == DeviceType::kCUDA) \
-    return ApplyKernelOperationHelper<A,B,AD,BD>                               \
-            ::template apply<Operation::OPERATION, kCUDA>(a, b);                          \
-    else{                                                                           \
-        std::cerr << "Mixed device types not supported yet in binary operations." << std::endl; \
-        throw std::runtime_error("Mixed device types not supported yet in binary operations."); \
-    }                                                                              \
-}
-
-#define CREATE_SINGULAR_OP(func_name, OPERATION)                                     \
-template <typename A, typename B, int AD>                     \
-auto func_name(Tensor<A, AD> a, B b)           \
-{                                                                                  \
-    Tensor<B,AD==-1?-1:1> ba(a.device_type, b); \
-                                                                                  \
-    if(a.device_type == DeviceType::kCPU)            \
-        return ApplyKernelOperationHelper<A,B,AD,AD==-1?-1:1>                           \
-            ::template apply<Operation::OPERATION, kCPU>(a, ba);        \
-    else if(a.device_type == DeviceType::kCUDA) \
-    return ApplyKernelOperationHelper<A,B,AD,AD==-1?-1:1>                               \
-            ::template apply<Operation::OPERATION, kCUDA>(a, ba);                          \
-    else{                                                                           \
-        std::cerr << "Mixed device types not supported yet in binary operations." << std::endl; \
-        std::cout << "A.device_type: " << int(a.device_type) << " B.device_type: " << int(ba.device_type) << std::endl; \
-        throw std::runtime_error("Mixed device types not supported yet in binary operations."); \
-    }                                                                              \
-}
-
-#define CREATE_KERNEL_OP(func_name, OPERATION)                                    \
-template <typename Out, typename... Args>                     \
-auto func_name(Args... args)           \
-{                                                                                  \
-    auto device = std::get<0>(std::tuple<Args...>(args...)).device_type; \
-    if(device == DeviceType::kCPU)            \
-        return BinaryKernel<DeviceType::kCPU, Operation::OPERATION, Args...>()(args...);        \
-    else if(device == DeviceType::kCUDA) \
-    return BinaryKernel<DeviceType::kCUDA, Operation::OPERATION, Args...>()(args...);                          \
-    else{                                                                           \
-        std::cerr << "Mixed device types not supported yet in binary operations." << std::endl; \
-        throw std::runtime_error("Mixed device types not supported yet in binary operations."); \
-    }                                                                              \
-}
+struct OperationCos:public HardamardOperation<OperationCos>
+{
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return cos(a);
+    }
+};
 
 
+struct OperationTan:public HardamardOperation<OperationTan>
+{
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return tan(a);
+    }
+}; 
 
 // ================================================================
 // User-Facing Tensor Operators
 // ================================================================
-CREATE_BINARY_OP(operator+, Add);
-CREATE_BINARY_OP(operator-, Sub);
-CREATE_BINARY_OP(operator*, Mul);
-CREATE_BINARY_OP(operator/, Div);
-CREATE_BINARY_OP(pow, Pow);
-CREATE_BINARY_OP(min, Min);
-CREATE_BINARY_OP(max, Max);
-CREATE_SINGULAR_OP(operator+, Add);
-CREATE_SINGULAR_OP(operator-, Sub);
-CREATE_SINGULAR_OP(operator*, Mul);
-CREATE_SINGULAR_OP(operator/, Div);
-CREATE_SINGULAR_OP(pow, Pow)
-CREATE_SINGULAR_OP(min, Min);
-CREATE_SINGULAR_OP(max, Max);
 
-CREATE_BINARY_OP(operator+=, AddEq);
-CREATE_BINARY_OP(operator-=, SubEq);
-CREATE_BINARY_OP(operator*=, MulEq);
-CREATE_BINARY_OP(operator/=, DivEq);
-CREATE_SINGULAR_OP(operator+=, AddEq);
-CREATE_SINGULAR_OP(operator-=, SubEq);
-CREATE_SINGULAR_OP(operator*=, MulEq);
-CREATE_SINGULAR_OP(operator/=, DivEq);
+CREATE_OP(operator+, OperationAdd);
+CREATE_OP(operator-, OperationSub);
+CREATE_OP(operator*, OperationMul);
+CREATE_OP(operator/, OperationDiv);
+CREATE_OP(pow, OperationPow);
+CREATE_OP(min, OperationMin);
+CREATE_OP(max, OperationMax);
 
-CREATE_BINARY_OP(tensor_copy, Set);
-CREATE_SINGULAR_OP(tensor_copy, Set);
+CREATE_OP(operator+=, OperationAddEq);
+CREATE_OP(operator-=, OperationSubEq);
+CREATE_OP(operator*=, OperationMulEq);
+CREATE_OP(operator/=, OperationDivEq);
+
+CREATE_OP(tensor_copy, OperationSet);
+
+CREATE_OP(round, OperationRound);
+CREATE_OP(floor, OperationFloor);
+CREATE_OP(ceil, OperationCeil);
+CREATE_OP(sin, OperationSin);
+CREATE_OP(cos, OperationCos);
+CREATE_OP(tan, OperationTan);
 
 
-// CREATE_KERNEL_OP(tensor_hardamard, Hardamard);
-// CREATE_KERNEL_OP(tensor_velocity_spread, VelocitySpread);

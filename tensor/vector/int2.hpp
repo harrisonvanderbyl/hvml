@@ -7,11 +7,11 @@ struct int32x2
 {
     int x;
     int y;
-    int32x2(int x, int y){
+    __device__ __host__ int32x2(int x, int y){
         this->x = x;
         this->y = y;
     };
-    int32x2(){
+    __device__ __host__  int32x2(){
         this->x = 0;
         this->y = 0;
     };
@@ -62,6 +62,14 @@ struct uint84
         this->z = (v >> 8) & 0xFF;
         this->w = v & 0xFF;
     };
+
+    __host__ __device__ uint84& operator+= (const uint84& other) {
+        this->x = min(255, this->x + other.x);
+        this->y = min(255, this->y + other.y);
+        this->z = min(255, this->z + other.z);
+        this->w = min(255, this->w + other.w);
+        return *this;
+    }
 };
 
 
