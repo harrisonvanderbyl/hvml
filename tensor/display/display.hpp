@@ -1,13 +1,6 @@
-#include "display/display_manager.hpp"
-#include "display/selected_text.hpp"
+
 
 // X11 headers
-#include <X11/X.h>
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
-#include <X11/extensions/Xcomposite.h>
-#include <X11/extensions/Xfixes.h>
-#include <X11/extensions/shape.h>
 
 // OpenGL headers
 #include <GL/gl.h>
@@ -27,6 +20,8 @@
 #include <stdexcept>
 #include <cmath>
 #include <unistd.h>
+#include "vector/float4.hpp"
+#include "vector/int2.hpp"
 
 
 
@@ -455,7 +450,6 @@ private:
 
 class CurrentScreenInputInfo {
 private:
-    MultiDisplayManager* display_manager = nullptr;
     int x = 0;
     int y = 0;
     int width = 0;
@@ -473,7 +467,6 @@ private:
     bool mouse_wheel_down = false;
     bool mouse_wheel_left = false;
     bool mouse_wheel_right = false;
-    bool key_pressed[KEY_MAX] = {false};
     float32x4 selectedarea = float32x4(0, 0, 0, 0);
     float32x2 lastClicked = float32x2(0, 0);
     
@@ -483,7 +476,6 @@ private:
     
 public:
     bool just_selected_area = false;
-    SelectedTextReader* selected_text_reader = nullptr;
     
     void updateMousePositionAbsolute(int new_x, int new_y) {
         mouse_move_x = (new_x-x) - mouse_x;
@@ -496,6 +488,13 @@ public:
 
     float32x4 getSelectedArea() const {
         return selectedarea;
+    }
+
+    float32x2 getGlobalMousePosition() const {
+        // sdl3 get global mouse position
+        float gx, gy;
+        SDL_GetGlobalMouseState(&gx, &gy);
+        return float32x2(gx, gy);
     }
     
     void updateMouseButtonState(int button_code, bool pressed) {
@@ -521,23 +520,6 @@ public:
             case SDL_BUTTON_MIDDLE:
                 mouse_middle_button = pressed;
                 break;
-        }
-    }
-    
-    void updateMouseWheel(int axis, int value) {
-        if (axis == REL_WHEEL) {
-            mouse_wheel_up = (value > 0);
-            mouse_wheel_down = (value < 0);
-        } else if (axis == REL_HWHEEL) {
-            mouse_wheel_left = (value < 0);
-            mouse_wheel_right = (value > 0);
-        }
-    }
-    
-    void updateKeyState(int keycode, bool pressed) {
-        if (keycode >= 0 && keycode < KEY_MAX) {
-            key_pressed[keycode] = pressed;
-            raw_key_states[keycode] = pressed;
         }
     }
     
@@ -571,41 +553,7 @@ public:
     bool isMouseWheelDown() const { return mouse_wheel_down; }
     bool isMouseWheelLeft() const { return mouse_wheel_left; }
     bool isMouseWheelRight() const { return mouse_wheel_right; }
-    bool isKeyPressed(int keycode) const {
-        if (keycode >= 0 && keycode < KEY_MAX) {
-            return key_pressed[keycode];
-        }
-        return false;
-    }
-    
-    const DisplayInfo* getCurrentDisplayInfo() const {
-        if (display_manager) {
-            return display_manager->getCurrentDisplay();
-        }
-        return nullptr;
-    }
-    
-    // Get all displays
-    std::vector<DisplayInfo> getAllDisplays() const {
-        if (display_manager) {
-            return display_manager->getDisplays();
-        }
-        return {};
-    }
-    
-    int getCurrentDisplayIndex() const {
-        if (display_manager) {
-            return display_manager->getCurrentDisplayIndex();
-        }
-        return 0;
-    }
-
-    void setDisplayManager(MultiDisplayManager* manager) {
-        display_manager = manager;
-    }
-    MultiDisplayManager* getDisplayManager() const {
-        return display_manager;
-    }
+   
 
     void clearWheelStates() {
         mouse_wheel_up = false;
@@ -615,16 +563,7 @@ public:
     }
 
     // global coordinates for mouse position
-    float32x2 getGlobalMousePosition() const {
-        if (display_manager) {
-            const DisplayInfo* display = display_manager->getCurrentDisplay();
-            if (display) {
-                auto local_pos = display->localToGlobal(mouse_x, mouse_y);
-                return float32x2(local_pos.first, local_pos.second);
-            }
-        }
-        return float32x2(mouse_x, mouse_y);
-    }
+    
     
     void clear_mouse_states() {
         just_selected_area = false;
@@ -693,17 +632,11 @@ public:
     CurrentScreenInputInfo current_screen_input_info;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
-    // Direct input reading
-    DirectInputReader input_reader;
-
-    
-    // Multi-display support
-    MultiDisplayManager display_manager;
     GLBackend<Device> backend = GLBackend<Device>();
     
     
     VectorDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : Tensor<uint84, 2>(shape, Device), borderless(properties.borderless), alpha_enabled(properties.alpha_enabled), is_fullscreen(properties.fullscreen), display_manager(nullptr), clickthrough(properties.clickthrough), on_top(properties.on_top) {
+        : Tensor<uint84, 2>(shape, Device), borderless(properties.borderless), alpha_enabled(properties.alpha_enabled), is_fullscreen(properties.fullscreen),  clickthrough(properties.clickthrough), on_top(properties.on_top) {
 
         backend.preinit();
 
@@ -737,78 +670,11 @@ public:
     }
     
 private:
-    void startDirectInputReading() {
-        input_reader.start([this](const input_event& event, const std::string& device_name) {
-            processInputEvent(event, device_name);
-        });
-    }
 
     void updateMousePositionFromRoot() {
-        Window root = RootWindow(display, screen);
-        Window child;
-        int root_x, root_y, win_x, win_y;
-        unsigned int mask;
-        
-        // if (XQueryPointer(display, root, &root, &child, &root_x, &root_y, &win_x, &win_y, &mask)) {
-        //     // root_x, root_y are the global screen coordinates
-        //     current_screen_input_info.updateMousePositionAbsolute(root_x, root_y);
-        // }
     }
 
     
-    void processInputEvent(const input_event& event, const std::string& device_name) {
-        // Capture and process ALL events without filtering
-        switch (event.type) {
-            case EV_KEY:
-                // Process ALL key events, including mouse buttons and keyboard keys
-                if (event.code == BTN_LEFT || event.code == BTN_RIGHT || event.code == BTN_MIDDLE) {
-                    current_screen_input_info.updateMouseButtonState(event.code, event.value);
-                } else {
-                    // For keyboard keys, update key state
-                    current_screen_input_info.updateKeyState(event.code, event.value);
-                }
-                break;
-                
-            case EV_REL:
-                // Process ALL relative events
-                switch (event.code) {
-                    case REL_X:
-                        // current_screen_input_info.updateMousePositionRelative(event.value, 0);
-                        break;
-                    case REL_Y:
-                        // current_screen_input_info.updateMousePositionRelative(0, event.value);
-                        break;
-                    case REL_WHEEL:
-                    case REL_HWHEEL:
-                        current_screen_input_info.updateMouseWheel(event.code, event.value);
-                        break;
-                }
-
-                break;
-                
-            case EV_ABS:
-                // Process ALL absolute positioning events
-                switch (event.code) {
-                    case ABS_X:
-                        current_screen_input_info.updateMousePositionAbsolute(event.value, current_screen_input_info.getMouseY());
-                        break;
-                    case ABS_Y:
-                        current_screen_input_info.updateMousePositionAbsolute(current_screen_input_info.getMouseX(), event.value);
-                        break;
-                }
-                break;
-                
-            case EV_SYN:
-                // Always process synchronization events
-                if (event.code == SYN_REPORT) {
-                    current_screen_input_info.clearWheelStates();
-                }
-                break;
-        }
-
-        
-       
-    }
     
 public:
     void setWindowBorderless() {
@@ -876,8 +742,7 @@ public:
     
     void displayLoop() {
         bool quit = false;
-        XEvent event;
-        
+
         while (!quit) {
             resizeDisplay();
             
@@ -914,9 +779,8 @@ public:
             updateMousePositionFromRoot();
         }
         
-        // Stop input reading when display loop ends
-        input_reader.stop();
     }
+
     
     // Clear display with specified color
     void clear(uint8_t r = 0, uint8_t g = 0, uint8_t b = 0, uint8_t a = 0) {
@@ -935,20 +799,11 @@ public:
     }
     
     ~VectorDisplay() {
-        input_reader.stop();
-        
-        // if (ximage) {
-        //     ximage->data = nullptr;
-        //     XDestroyImage(ximage);
-        // }
-        // if (gc) {
-        //     XFreeGC(display, gc);
-        // }
+      
         if (window) {
             // XDestroyWindow(display, window);
         }
         if (display) {
-            XCloseDisplay(display);
         }
     }
     
@@ -968,67 +823,6 @@ public:
         // XFlush(display);
     }
     
-    // Multi-display functions
-    void moveToDisplay(int display_index) {
-        const DisplayInfo* target_display = display_manager.getDisplay(display_index);
-        if (target_display) {
-            display_manager.setCurrentDisplay(display_index);
-           
-            if (shape[0] != target_display->height || shape[1] != target_display->width) {
-         
-            }
-            
-        }
-    }
-    
-    void moveToNextDisplay() {
-        int next_display = (display_manager.getCurrentDisplayIndex() + 1) % display_manager.getDisplayCount();
-        moveToDisplay(next_display);
-    }
-    
-    void moveToPreviousDisplay() {
-        int prev_display = (display_manager.getCurrentDisplayIndex() - 1 + display_manager.getDisplayCount()) % display_manager.getDisplayCount();
-        moveToDisplay(prev_display);
-    }
-    
-    void moveToPrimaryDisplay() {
-        const auto& displays = display_manager.getDisplays();
-        for (size_t i = 0; i < displays.size(); i++) {
-            if (displays[i].is_primary) {
-                moveToDisplay(i);
-                return;
-            }
-        }
-    }
-    
-    void moveToDisplayContainingMouse() {
-        auto [global_x, global_y] = current_screen_input_info.getGlobalMousePosition();
-        const DisplayInfo* containing_display = display_manager.getDisplayContaining(global_x, global_y);
-        if (containing_display && containing_display->index != display_manager.getCurrentDisplayIndex()) {
-            moveToDisplay(containing_display->index);
-        }
-    }
-    
-    // Get display information
-    std::vector<DisplayInfo> getAllDisplays() const {
-        return display_manager.getDisplays();
-    }
-    
-    const DisplayInfo* getCurrentDisplay() const {
-        return display_manager.getCurrentDisplay();
-    }
-    
-    int getCurrentDisplayIndex() const {
-        return display_manager.getCurrentDisplayIndex();
-    }
-    
-    int getDisplayCount() const {
-        return display_manager.getDisplayCount();
-    }
-    
-    void refreshDisplays() {
-        display_manager.detectDisplays();
-    }
 };
 
 #endif
