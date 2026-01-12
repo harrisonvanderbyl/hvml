@@ -1,8 +1,7 @@
 #ifndef MODULE_LINEAR_HPP
 #define MODULE_LINEAR_HPP
 #include "module/base/module.hpp"
-#include "models/rwkv7/linear/kernels.hpp"
-
+#include "ops/ops.h"
 enum ActivationFunction
 {
     NONE,
@@ -11,6 +10,9 @@ enum ActivationFunction
     SIGMOID,
     TANH
 };
+
+
+
 
 template <typename T = float, ActivationFunction ACT = NONE>
 struct Linear : public Module<Tensor<T,2>>
@@ -30,33 +32,15 @@ struct Linear : public Module<Tensor<T,2>>
     }
      
     template <int rank = 2>
-    Tensor <T,rank> forward(Tensor<T,rank> input)
+    auto forward(Tensor<T,rank> input)
     {
-        Tensor<T,2> reshaped_input = input.view(Shape<2>{-1, this->weight.shape[0]});
+        Tensor<T,3> reshaped_input = input.view(Shape<3>{input.shape[0], input.shape[1], 1});
+        std::cout << "Reshaped input shape: " << reshaped_input.shape << std::endl;
+        Tensor<T,3> reshaped_matrix = this->weight.view(Shape<3>{1, weight.shape[0], weight.shape[1]});
 
-        Shape<rank> out_shape = input.shape;
-        out_shape[out_shape.ndim()-1] = this->weight.shape[1];
-        Tensor<T, rank> output(out_shape, input.device_type);
+
+        auto output = DotProduct<-2>::run(reshaped_matrix,reshaped_input);
         
-        if constexpr (ACT == RELU_SQUARED){
-            linear_relu_squared_cpu(
-                input.data,
-                weight.data,
-                weight.shape[0],
-                weight.shape[1],
-                output.data,
-                reshaped_input.shape[0]
-            );
-        }else{
-            linear_cpu(
-                input.data,
-                weight.data,
-                weight.shape[0],
-                weight.shape[1],
-                output.data,
-                reshaped_input.shape[0]
-            );
-        }
         
         return output;
     }

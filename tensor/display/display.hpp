@@ -1,5 +1,3 @@
-
-
 // X11 headers
 
 // OpenGL headers
@@ -20,10 +18,13 @@
 #include <stdexcept>
 #include <cmath>
 #include <unistd.h>
+#include <map>
+#include <set>
+#include <functional>
+#include <vector>
+#include <chrono>
 #include "vector/float4.hpp"
 #include "vector/int2.hpp"
-
-
 
 // OpenGL function pointer typedefs
 typedef GLuint (APIENTRY *PFNGLCREATESHADERPROC)(GLenum type);
@@ -124,8 +125,6 @@ void loadGLFunctions() {
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
 
-
-
 template <DeviceType device>
 class GLBackend {
 public:
@@ -150,16 +149,11 @@ public:
             throw std::runtime_error("Failed to initialize SDL: " + std::string(SDL_GetError()));
         }
 
-        // Request OpenGL 3.3 Core profile
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        
-        // Enable double buffering
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-        
-        // Ensure we get an accelerated context
         SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
     }
 
@@ -179,22 +173,14 @@ public:
             throw std::runtime_error("Failed to create OpenGL context: " + error);
         }
         
-        // if (SDL_GL_MakeCurrent(window, glctx) != 0) {
-        //     // std::string error = SDL_GetError();
-        //     // throw std::runtime_error("Failed to make GL context current: " + error);
-        // }
         SDL_GL_SetSwapInterval(0);
-
-        
 
         loadGLFunctions();
 
-        // Verify OpenGL functions loaded
         if (!glGenTextures || !glBindTexture || !glTexImage2D) {
             throw std::runtime_error("Failed to load required OpenGL functions");
         }
 
-        // Create texture
         glGenTextures(1, &tex);
         if (tex == 0) {
             throw std::runtime_error("Failed to generate OpenGL texture");
@@ -208,31 +194,25 @@ public:
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         
-        // Check for OpenGL errors
         GLenum glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
             throw std::runtime_error("OpenGL error creating texture: " + std::to_string(glErr));
         }
         
         glBindTexture(GL_TEXTURE_2D, 0);
-
-        // Ensure all OpenGL commands are complete before CUDA registration
         glFinish();
 
-        // list all cudagraphics devices
-        // Initialize CUDA device and set GL device
         int deviceCount = 0;
         cudaError_t err = cudaGetDeviceCount(&deviceCount);
         if (err != cudaSuccess || deviceCount == 0) {
             throw std::runtime_error("No CUDA devices found: " + std::string(cudaGetErrorString(err)));
         }
 
-        // Find CUDA device that can interop with OpenGL
         int cudaDevice = -1;
         for (int i = 0; i < deviceCount; i++) {
             cudaDeviceProp prop;
             cudaGetDeviceProperties(&prop, i);
-            if (prop.major >= 3) { // Require compute capability 3.0+
+            if (prop.major >= 3) {
                 cudaDevice = i;
                 break;
             }
@@ -242,13 +222,11 @@ public:
             throw std::runtime_error("No suitable CUDA device found for GL interop");
         }
 
-        // Set CUDA device for GL interop
         err = cudaSetDevice(cudaDevice);
         if (err != cudaSuccess) {
             throw std::runtime_error("Failed to set CUDA GL device: " + std::string(cudaGetErrorString(err)));
         }
 
-        // CUDA–GL interop registration
         err = cudaGraphicsGLRegisterImage(&cudaTex, tex, GL_TEXTURE_2D,
                                     cudaGraphicsRegisterFlagsSurfaceLoadStore);
         if (err != cudaSuccess) {
@@ -262,7 +240,6 @@ public:
             throw std::runtime_error(errorMsg);
         }
 
-        // Fullscreen quad
         float verts[] = {
             -1, -1, 0, 1,
              1, -1, 1, 1,
@@ -286,14 +263,9 @@ public:
         glBindVertexArray(0);
 
         program = createProgram(vertexSrc, fragmentSrc);
-
-       
     }
 
     void present() {
-        
-        // copy from cudaDevPtr to cudaTex
-        //map cudaTex
         auto errMap = cudaGraphicsMapResources(1, &cudaTex);
         if (errMap != cudaSuccess) {
             throw std::runtime_error("Failed to map CUDA-GL resources: " + std::string(cudaGetErrorString(errMap)));
@@ -312,8 +284,6 @@ public:
         if (erra != cudaSuccess) {
             throw std::runtime_error("Failed to copy data to CUDA array: " + std::string(cudaGetErrorString(erra)));
         }
-
-        
 
         auto err = cudaGraphicsUnmapResources(1, &cudaTex);
         if (err != cudaSuccess) {
@@ -334,38 +304,11 @@ public:
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
         SDL_GL_SwapWindow(window);
-
     }
 
     void resize(int w, int h) {
         width = w;
         height = h;
-
-        // // Unmap resources BEFORE unregistering
-        // if (resourcesMapped && cudaTex) {
-        //     cudaGraphicsUnmapResources(1, &cudaTex);
-        //     resourcesMapped = false;
-        // }
-
-        // // Unregister old resource
-        // if (cudaTex) {
-        //     cudaGraphicsUnregisterResource(cudaTex);
-        //     cudaTex = nullptr;
-        // }
-
-        // // Recreate texture
-        // glBindTexture(GL_TEXTURE_2D, tex);
-        // glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-        //              GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        // glBindTexture(GL_TEXTURE_2D, 0);
-
-        // // Re-register
-        // cudaGraphicsGLRegisterImage(&cudaTex, tex, GL_TEXTURE_2D,
-        //                             cudaGraphicsRegisterFlagsWriteDiscard);
-
-        // // Re-map
-        // cudaGraphicsMapResources(1, &cudaTex);
-        // cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaTex, 0, 0);
         resourcesMapped = true;
     }
 
@@ -444,10 +387,6 @@ private:
     }
 };
 
-
-
-
-
 class CurrentScreenInputInfo {
 private:
     int x = 0;
@@ -470,20 +409,30 @@ private:
     float32x4 selectedarea = float32x4(0, 0, 0, 0);
     float32x2 lastClicked = float32x2(0, 0);
     
-    std::map<int, bool> raw_key_states;
+    std::map<SDL_Keycode, bool> key_states;
+    std::map<SDL_Keycode, bool> key_pressed;  // Edge detection for key down
+    std::map<SDL_Keycode, bool> key_released; // Edge detection for key up
+    std::set<int> mouse_buttons_pressed;
     int accumulated_mouse_x = 0;
     int accumulated_mouse_y = 0;
+    bool mouse_grabbed = false;
+    bool mouse_visible = true;
     
 public:
+    int32x2 relativeWindowMove = int32x2(0, 0);
+    int32x2 currentWindowPosition = int32x2(0, 0);
     bool just_selected_area = false;
     
     void updateMousePositionAbsolute(int new_x, int new_y) {
-        mouse_move_x = (new_x-x) - mouse_x;
-        mouse_move_y = (new_y-y) - mouse_y;
-        mouse_x = (new_x-x);
-        mouse_y = (new_y-y);
-        accumulated_mouse_x = (new_x-x);
-        accumulated_mouse_y = (new_y-y);
+        mouse_move_x = new_x - mouse_x;
+        mouse_move_y = new_y - mouse_y;
+        mouse_x = new_x;
+        mouse_y = new_y;
+    }
+
+    void updateMouseMotion(int dx, int dy) {
+        mouse_move_x = dx;
+        mouse_move_y = dy;
     }
 
     float32x4 getSelectedArea() const {
@@ -491,36 +440,86 @@ public:
     }
 
     float32x2 getGlobalMousePosition() const {
-        // sdl3 get global mouse position
         float gx, gy;
         SDL_GetGlobalMouseState(&gx, &gy);
         return float32x2(gx, gy);
     }
-    
+
+    int32x2 getLocalMousePosition() const {
+        return int32x2(mouse_x, mouse_y);
+    }
+
+    int32x4 getLocalSelectedArea() const {
+        return int32x4(
+            selectedarea.x - currentWindowPosition.x,
+            selectedarea.y - currentWindowPosition.y,
+            selectedarea.z,
+            selectedarea.w
+        );
+    }
+
     void updateMouseButtonState(int button_code, bool pressed) {
         switch (button_code) {
             case SDL_BUTTON_LEFT:
-                std::cout << "Mouse left button " << (pressed ? "pressed" : "released") << std::endl;
                 mouse_left_button = pressed;
                 if(pressed) {
                     lastClicked = getGlobalMousePosition();
-                }else{
+                    mouse_buttons_pressed.insert(SDL_BUTTON_LEFT);
+                } else {
+                    mouse_buttons_pressed.erase(SDL_BUTTON_LEFT);
                     float32x2 mx = getGlobalMousePosition();
                     if (sqrt(pow(mx.x - lastClicked.x, 2) + pow(mx.y - lastClicked.y, 2)) > 5.0f) {
                         selectedarea = float32x4(lastClicked.x, lastClicked.y, mx.x - lastClicked.x, mx.y - lastClicked.y);
                     }
-                    std::cout << "Selected area: " << selectedarea.x << ", " << selectedarea.y << ", " 
-                              << selectedarea.z << ", " << selectedarea.w << std::endl;
                     just_selected_area = true;
                 }
                 break;
             case SDL_BUTTON_RIGHT:
                 mouse_right_button = pressed;
+                if(pressed) mouse_buttons_pressed.insert(SDL_BUTTON_RIGHT);
+                else mouse_buttons_pressed.erase(SDL_BUTTON_RIGHT);
                 break;
             case SDL_BUTTON_MIDDLE:
                 mouse_middle_button = pressed;
+                if(pressed) mouse_buttons_pressed.insert(SDL_BUTTON_MIDDLE);
+                else 
+                    mouse_buttons_pressed.erase(SDL_BUTTON_MIDDLE);
                 break;
         }
+    }
+
+    void updateKeyState(SDL_Keycode key, bool pressed) {
+        bool was_pressed = key_states[key];
+        key_states[key] = pressed;
+        
+        if (pressed && !was_pressed) {
+            key_pressed[key] = true;
+        } else if (!pressed && was_pressed) {
+            key_released[key] = true;
+        }
+    }
+
+    bool isKeyPressed(SDL_Keycode key) const {
+        auto it = key_states.find(key);
+        return it != key_states.end() && it->second;
+    }
+
+    bool isKeyJustPressed(SDL_Keycode key) const {
+        auto it = key_pressed.find(key);
+        return it != key_pressed.end() && it->second;
+    }
+
+    bool isKeyJustReleased(SDL_Keycode key) const {
+        auto it = key_released.find(key);
+        return it != key_released.end() && it->second;
+    }
+
+    std::set<int> getMouseButtonsPressed() const {
+        return mouse_buttons_pressed;
+    }
+
+    std::pair<int, int> getMouseRel() const {
+        return {mouse_move_x, mouse_move_y};
     }
     
     void setScreenSize(int new_x, int new_y, int new_width, int new_height) {
@@ -532,6 +531,22 @@ public:
     
     void setFullscreen(bool fullscreen) {
         is_fullscreen = fullscreen;
+    }
+
+    void setMouseGrabbed(bool grabbed) {
+        mouse_grabbed = grabbed;
+    }
+
+    void setMouseVisible(bool visible) {
+        mouse_visible = visible;
+    }
+
+    bool isMouseGrabbed() const {
+        return mouse_grabbed;
+    }
+
+    bool isMouseVisible() const {
+        return mouse_visible;
     }
     
     int getX() const { return x; }
@@ -553,7 +568,6 @@ public:
     bool isMouseWheelDown() const { return mouse_wheel_down; }
     bool isMouseWheelLeft() const { return mouse_wheel_left; }
     bool isMouseWheelRight() const { return mouse_wheel_right; }
-   
 
     void clearWheelStates() {
         mouse_wheel_up = false;
@@ -562,11 +576,17 @@ public:
         mouse_wheel_right = false;
     }
 
-    // global coordinates for mouse position
-    
+    void clearKeyEdgeStates() {
+        key_pressed.clear();
+        key_released.clear();
+    }
     
     void clear_mouse_states() {
         just_selected_area = false;
+        mouse_move_x = 0;
+        mouse_move_y = 0;
+        clearWheelStates();
+        clearKeyEdgeStates();
     }
 };
 
@@ -575,7 +595,8 @@ enum WindowProperties {
     WP_ALPHA_ENABLED = 1 << 1,
     WP_FULLSCREEN = 1 << 2,
     WP_CLICKTHROUGH = 1 << 3,
-    WP_ON_TOP = 1 << 4
+    WP_ON_TOP = 1 << 4,
+    WP_RESIZABLE = 1 << 5
 };
 
 struct WindowPropertiesFlags {
@@ -584,6 +605,7 @@ struct WindowPropertiesFlags {
     bool fullscreen = false;
     bool clickthrough = true;
     bool on_top = false;
+    bool resizable = false;
 
     WindowPropertiesFlags(WindowProperties properties) {
         borderless = properties & WP_BORDERLESS;
@@ -591,6 +613,7 @@ struct WindowPropertiesFlags {
         fullscreen = properties & WP_FULLSCREEN;
         clickthrough = properties & WP_CLICKTHROUGH;
         on_top = properties & WP_ON_TOP;
+        resizable = properties & WP_RESIZABLE;
     }
 
     WindowPropertiesFlags(int flags) {
@@ -599,6 +622,7 @@ struct WindowPropertiesFlags {
         fullscreen = flags & WP_FULLSCREEN;
         clickthrough = flags & WP_CLICKTHROUGH;
         on_top = flags & WP_ON_TOP;
+        resizable = flags & WP_RESIZABLE;
     }
 
     operator WindowProperties() const {
@@ -608,7 +632,38 @@ struct WindowPropertiesFlags {
         if (fullscreen) props = (WindowProperties)(props | WP_FULLSCREEN);
         if (clickthrough) props = (WindowProperties)(props | WP_CLICKTHROUGH);
         if (on_top) props = (WindowProperties)(props | WP_ON_TOP);
+        if (resizable) props = (WindowProperties)(props | WP_RESIZABLE);
         return props;
+    }
+};
+
+// FPS Clock for frame rate limiting
+class Clock {
+private:
+    std::chrono::steady_clock::time_point last_tick;
+    
+public:
+    Clock() : last_tick(std::chrono::steady_clock::now()) {}
+    
+    void tick(int fps) {
+        auto target_duration = std::chrono::microseconds(1000000 / fps);
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_tick);
+        
+        if (elapsed < target_duration) {
+            auto sleep_time = target_duration - elapsed;
+            // std::this_thread::sleep_for(sleep_time);
+            SDL_Delay(sleep_time.count() / 1000); // Convert microseconds to milliseconds
+        }
+        
+        last_tick = std::chrono::steady_clock::now();
+    }
+    
+    int get_fps() const {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - last_tick);
+        if (elapsed.count() == 0) return 0;
+        return 1000000 / elapsed.count();
     }
 };
 
@@ -618,8 +673,6 @@ public:
     Display* display = nullptr;
     SDL_Window* window;
     Window* root_window = nullptr;
-    // GC gc;
-    // XImage* ximage = nullptr;
     Visual* visual = nullptr;
     Colormap colormap;
     int screen;
@@ -629,23 +682,38 @@ public:
     bool is_fullscreen = false;
     bool clickthrough = true;
     bool on_top = false;
+    bool resizable = false;
     CurrentScreenInputInfo current_screen_input_info;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
     GLBackend<Device> backend = GLBackend<Device>();
-    
+    Clock clock;
     
     VectorDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : Tensor<uint84, 2>(shape, Device), borderless(properties.borderless), alpha_enabled(properties.alpha_enabled), is_fullscreen(properties.fullscreen),  clickthrough(properties.clickthrough), on_top(properties.on_top) {
+        : Tensor<uint84, 2>(shape, Device), 
+          borderless(properties.borderless), 
+          alpha_enabled(properties.alpha_enabled), 
+          is_fullscreen(properties.fullscreen),  
+          clickthrough(properties.clickthrough), 
+          on_top(properties.on_top),
+          resizable(properties.resizable) {
 
         backend.preinit();
 
         std::cout << "finished preinit" << std::endl;
       
+        Uint32 window_flags = SDL_WINDOW_OPENGL;
+        
+        if (is_fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN;
+        if (borderless) window_flags |= SDL_WINDOW_BORDERLESS;
+        if (alpha_enabled) window_flags |= SDL_WINDOW_TRANSPARENT;
+        if (on_top) window_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+        if (resizable) window_flags |= SDL_WINDOW_RESIZABLE;
+        
         window = SDL_CreateWindow(
             "CUDA → OpenGL",
             shape[1], shape[0],
-            SDL_WINDOW_OPENGL | (is_fullscreen ? SDL_WINDOW_FULLSCREEN : 0) | (borderless ? SDL_WINDOW_BORDERLESS : 0) | (alpha_enabled ? SDL_WINDOW_TRANSPARENT : 0) | (on_top ? SDL_WINDOW_ALWAYS_ON_TOP : 0)
+            window_flags
         );
 
         if (!window) {
@@ -658,129 +726,189 @@ public:
 
         screen = SDL_GetDisplayForWindow(window);
         
-        // show window
         SDL_ShowWindow(window);
 
         backend.initialize(data, window, shape[1], shape[0], visual, depth, colormap);
-
-       
-
-        
-        
     }
     
 private:
-
     void updateMousePositionFromRoot() {
+        // Get global mouse state
+        float gx, gy;
+        SDL_GetGlobalMouseState(&gx, &gy);
+        
+        // Get window position
+        int wx, wy;
+        SDL_GetWindowPosition(window, &wx, &wy);
+        
+        // Calculate relative position
+        current_screen_input_info.updateMousePositionAbsolute(gx - wx, gy - wy);
     }
 
-    
-    
 public:
-    void setWindowBorderless() {
-        // Remove window decorations
-        Atom motifHints = XInternAtom(display, "_MOTIF_WM_HINTS", False);
-        if (motifHints != None) {
-            struct {
-                unsigned long flags;
-                unsigned long functions;
-                unsigned long decorations;
-                long input_mode;
-                unsigned long status;
-            } hints = {0};
-            
-            hints.flags = 2; // MWM_HINTS_DECORATIONS
-            hints.decorations = 0; // No decorations
-            
-            // XChangeProperty(display, window, motifHints, motifHints, 32,
-            //                PropModeReplace, (unsigned char*)&hints, 5);
+    void setWindowCaption(const char* title) {
+        SDL_SetWindowTitle(window, title);
+    }
+
+    void setMouseGrab(bool grab) {
+        SDL_SetWindowMouseGrab(window, grab ? true : false);
+        if (grab) {
+            SDL_SetWindowRelativeMouseMode(window, true);
+        } else {
+            SDL_SetWindowRelativeMouseMode(window, false);
         }
+        current_screen_input_info.setMouseGrabbed(grab);
+    }
+
+    void setMouseVisible(bool visible) {
+        if (visible) {
+            SDL_ShowCursor();
+        } else {
+            SDL_HideCursor();
+        }
+        current_screen_input_info.setMouseVisible(visible);
+    }
+
+    std::pair<int, int> getWindowSize() const {
+        int w, h;
+        SDL_GetWindowSize(window, &w, &h);
+        return {w, h};
+    }
+    
+    void setWindowBorderless() {
+        SDL_SetWindowBordered(window, false);
     }
     
     void enableAlphaBlending() {
-        // Set window opacity property for compositor
-        Atom netWmWindowOpacity = XInternAtom(display, "_NET_WM_WINDOW_OPACITY", False);
-        if (netWmWindowOpacity != None) {
-            unsigned long opacity = 0xFFFFFFFF; // Fully opaque by default
-            // XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
-            //                PropModeReplace, (unsigned char*)&opacity, 1);
-        }
-        
-        // Enable compositing for this window
-        // XCompositeRedirectWindow(display, window, CompositeRedirectAutomatic);
+        // Set window opacity for compositor
+        SDL_SetWindowOpacity(window, 1.0f);
     }
     
     void setWindowOpacity(float opacity) {
         if (!alpha_enabled) return;
-        
-        Atom netWmWindowOpacity = XInternAtom(display, "_NET_WM_WINDOW_OPACITY", False);
-        if (netWmWindowOpacity != None) {
-            unsigned long opacityValue = (unsigned long)(opacity * 0xFFFFFFFF);
-            // XChangeProperty(display, window, netWmWindowOpacity, XA_CARDINAL, 32,
-            //                PropModeReplace, (unsigned char*)&opacityValue, 1);
-            // XFlush(display);
-        }
+        SDL_SetWindowOpacity(window, opacity);
     }
     
-    // void createXImage() {
-        
-    // }
-    
     void updateDisplay() {
-    
+        auto oldWindowPosition = current_screen_input_info.currentWindowPosition;
+        SDL_GetWindowPosition(window, &current_screen_input_info.currentWindowPosition.x, &current_screen_input_info.currentWindowPosition.y);
+        current_screen_input_info.relativeWindowMove = int32x2(
+            current_screen_input_info.currentWindowPosition.x - oldWindowPosition.x,
+            current_screen_input_info.currentWindowPosition.y - oldWindowPosition.y
+        );
         
         if (shape[0] > 0 && shape[1] > 0) {
             backend.present();
         }
-
-        
     }
 
     void resizeDisplay() {
+        int w, h;
+        SDL_GetWindowSize(window, &w, &h);
+        if (w != shape[1] || h != shape[0]) {
+            shape[0] = h;
+            shape[1] = w;
+            backend.resize(w, h);
+            current_screen_input_info.setScreenSize(0, 0, w, h);
+        }
+    }
+    
+    bool processEvents() {
+        SDL_Event sdl_event;
+        current_screen_input_info.clear_mouse_states();
         
+        while (SDL_PollEvent(&sdl_event)) {
+            if (sdl_event.type == SDL_EVENT_QUIT) {
+                return false;
+            }
+            else if (sdl_event.type == SDL_EVENT_KEY_DOWN) {
+                current_screen_input_info.updateKeyState(sdl_event.key.key, true);
+                
+                // Check for special keys (like ESC)
+                if (sdl_event.key.key == SDLK_ESCAPE) {
+                    return false;
+                }
+            }
+            else if (sdl_event.type == SDL_EVENT_KEY_UP) {
+                current_screen_input_info.updateKeyState(sdl_event.key.key, false);
+            }
+            else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                current_screen_input_info.updateMouseButtonState(sdl_event.button.button, true);
+            }
+            else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+                current_screen_input_info.updateMouseButtonState(sdl_event.button.button, false);
+            }
+            else if (sdl_event.type == SDL_EVENT_MOUSE_MOTION) {
+                if (current_screen_input_info.isMouseGrabbed()) {
+                    current_screen_input_info.updateMouseMotion(sdl_event.motion.xrel, sdl_event.motion.yrel);
+                } else {
+                    current_screen_input_info.updateMousePositionAbsolute(sdl_event.motion.x, sdl_event.motion.y);
+                }
+            }
+            else if (sdl_event.type == SDL_EVENT_MOUSE_WHEEL) {
+                // Handle mouse wheel scrolling
+                if (sdl_event.wheel.y > 0) {
+                    current_screen_input_info.clearWheelStates();
+                    // Wheel up
+                } else if (sdl_event.wheel.y < 0) {
+                    current_screen_input_info.clearWheelStates();
+                    // Wheel down
+                }
+                if (sdl_event.wheel.x > 0) {
+                    current_screen_input_info.clearWheelStates();
+                    // Wheel right
+                } else if (sdl_event.wheel.x < 0) {
+                    current_screen_input_info.clearWheelStates();
+                    // Wheel left
+                }
+            }
+            else if (sdl_event.type == SDL_EVENT_WINDOW_RESIZED) {
+                resizeDisplay();
+            }
+        }
+        
+        return true;
     }
     
     void displayLoop() {
-        bool quit = false;
+        bool running = true;
 
-        while (!quit) {
+        while (running) {
             resizeDisplay();
-            
             
             // Call display loop functions
             for (const auto& callback : display_loop_functions) {
                 callback(current_screen_input_info);
             }
 
-            // SDL event handling
-            SDL_Event sdl_event;
-            current_screen_input_info.clear_mouse_states();
-            while (SDL_PollEvent(&sdl_event)) {
-                if (sdl_event.type == SDL_EVENT_QUIT) {
-                    quit = true;
-                } 
-
-                // mousedown
-                else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                    current_screen_input_info.updateMouseButtonState(sdl_event.button.button, 1);
-                }
-                // mouseup
-                else if (sdl_event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                    current_screen_input_info.updateMouseButtonState(sdl_event.button.button, 0);
-                }
-                // mousemotion
-                else if (sdl_event.type == SDL_EVENT_MOUSE_MOTION) {
-                    current_screen_input_info.updateMousePositionAbsolute(sdl_event.motion.x, sdl_event.motion.y);
-                }
-            }
-
+            // Process events
+            running = processEvents();
             
             updateDisplay();
             updateMousePositionFromRoot();
         }
-        
     }
 
+    void displayLoopWithFPS(int target_fps) {
+        bool running = true;
+
+        while (running) {
+            resizeDisplay();
+            
+            // Call display loop functions
+            for (const auto& callback : display_loop_functions) {
+                callback(current_screen_input_info);
+            }
+
+            // Process events
+            running = processEvents();
+            
+            updateDisplay();
+            updateMousePositionFromRoot();
+            
+            clock.tick(target_fps);
+        }
+    }
     
     // Clear display with specified color
     void clear(uint8_t r = 0, uint8_t g = 0, uint8_t b = 0, uint8_t a = 0) {
@@ -799,30 +927,79 @@ public:
     }
     
     ~VectorDisplay() {
-      
         if (window) {
-            // XDestroyWindow(display, window);
+            SDL_DestroyWindow(window);
         }
-        if (display) {
-        }
+        SDL_Quit();
     }
     
     void add_on_update(std::function<void(CurrentScreenInputInfo&)> func) {
         display_loop_functions.push_back(func);
     }
     
-    
     // Utility functions for window management
     void moveWindow(int x, int y) {
-        // XMoveWindow(display, window, x, y);
-        // XFlush(display);
+        SDL_SetWindowPosition(window, x, y);
     }
     
     void resizeWindow(int width, int height) {
-        // XResizeWindow(display, window, width, height);
-        // XFlush(display);
+        SDL_SetWindowSize(window, width, height);
     }
-    
+
+    void setFullscreen(bool fullscreen) {
+        if (fullscreen) {
+            SDL_SetWindowFullscreen(window, true);
+        } else {
+            SDL_SetWindowFullscreen(window, false);
+        }
+        is_fullscreen = fullscreen;
+        current_screen_input_info.setFullscreen(fullscreen);
+    }
+
+    // Get key code mapping (similar to pygame)
+    static SDL_Keycode getKeyCode(const char* key_name) {
+        return SDL_GetKeyFromName(key_name);
+    }
+
+    // Check if specific key is pressed
+    bool isKeyPressed(SDL_Keycode key) const {
+        return current_screen_input_info.isKeyPressed(key);
+    }
+
+    // Surface operations for compatibility
+    struct Surface {
+        int width;
+        int height;
+        std::vector<uint32_t> pixels;
+        
+        Surface(int w, int h, uint32_t * px) : width(w), height(h), pixels(px, px + (w * h)) {}
+        Surface(int w, int h) : width(w), height(h), pixels(w * h, 0) {}
+    };
+
+    Surface createSurface(int w, int h) {
+        return Surface(w, h);
+    }
+
+    void blitSurface(const Surface& surf, int x, int y) {
+        for (int sy = 0; sy < surf.height && (y + sy) < shape[0]; sy++) {
+            for (int sx = 0; sx < surf.width && (x + sx) < shape[1]; sx++) {
+                if (x + sx >= 0 && y + sy >= 0) {
+                    (*this)[y + sy][x + sx] = surf.pixels[sy * surf.width + sx];
+                }
+            }
+        }
+    }
+
+    // Font rendering placeholder (requires SDL_ttf)
+    struct Font {
+        // Placeholder for font data
+        int size;
+        Font(int s) : size(s) {}
+    };
+
+    Font loadFont(const char* name, int size) {
+        return Font(size);
+    }
 };
 
 #endif

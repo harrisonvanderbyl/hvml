@@ -1,3 +1,5 @@
+#ifndef TENSOR_VECTOR_INT2_HPP
+#define TENSOR_VECTOR_INT2_HPP
 #ifndef __host__
 #define __host__
 #define __device__
@@ -74,3 +76,4 @@ struct uint84
 
 
 // uint8_t& uint84::r = &uint84::x;
+#endif // TENSOR_VECTOR_INT2_HPP

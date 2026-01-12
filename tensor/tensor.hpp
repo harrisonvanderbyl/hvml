@@ -12,23 +12,37 @@
 #ifndef TENSOR
 #define TENSOR
 
+class DefaultSlice
+{
+    int Value;
+    public:
+        bool is_default = true;
+        DefaultSlice(){};
+
+        template <typename inttype = int, typename = std::enable_if_t<std::is_integral_v<inttype>>>
+        DefaultSlice(inttype v) : Value(v), is_default(false) {};
+        operator int() const {
+            return Value;
+        };
+};
 
 class Slice
 {
     public:
-    int start;
-    int end;
-    int step;
+    DefaultSlice start;
+    DefaultSlice end;
+    DefaultSlice step;
     bool is_slice;
     bool is_empty;
 
     
     // Constructor: full parameters
-    Slice(int starti, int endi, int stepi = 1)
+
+    Slice(DefaultSlice starti, DefaultSlice endi, DefaultSlice stepi = 1)
         : start(starti), end(endi), step(stepi), is_slice(true), is_empty(false) {};
 
     // Constructor: reduced slice
-    Slice(int starti)
+    Slice(DefaultSlice starti)
         : start(starti), end(-1), step(1), is_slice(false), is_empty(false) {};
 
     // Constructor: empty slice
@@ -263,7 +277,11 @@ public:
                 }
                 else
                 {
-                    newshape[j] = ((inp[i].end - inp[i].start + shape[i])%shape[i]) / inp[i].step;
+                    int spot = ((inp[i].end) - (inp[i].start) + (shape[i]))%shape[i];
+                    if(inp[i].end.is_default){
+                        spot = shape[i] - (inp[i].start);
+                    }
+                    newshape[j] = (spot) / inp[i].step;
                     newstrides[j] = this->strides[i] * inp[i].step;
                     // std::cout << "not implemented" << std::endl;
                 }
@@ -504,6 +522,7 @@ public:
         {
             std::cerr << "Incompatible shapes for view" << std::endl;
             std::cerr << "Shape: " << shape << " New shape: " << newshape << std::endl;
+            std::cerr << "Data size: " << total_bytes << " New total bytes: " << newshape.total_size() * sizeof(T) << std::endl;
             if (typeid(T) != typeid(R))
             {
                 std::cerr << "Data size: " << sizeof(T) << " Tensor size: " << bitsize << std::endl;
@@ -624,6 +643,8 @@ public:
         this->bitsize = other.bitsize;
         this->data = other.data;
         this->indexer = other.indexer;
+        this->total_size = other.total_size;
+        this->total_bytes = other.total_bytes;
 
         register_allocation(this->data, this->device_type);
     }
@@ -743,6 +764,8 @@ public:
         this->bitsize = other.bitsize;
         this->data = other.data;
         this->indexer = other.indexer;
+        this->total_size = other.total_size;
+        this->total_bytes = other.total_bytes;
         register_allocation(this->data, this->device_type);
     }
 };
