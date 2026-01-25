@@ -1,20 +1,13 @@
 #ifndef MODULE_LINEAR_HPP
 #define MODULE_LINEAR_HPP
 #include "module/base/module.hpp"
-#include "ops/ops.h"
-enum ActivationFunction
-{
-    NONE,
-    RELU,
-    RELU_SQUARED,
-    SIGMOID,
-    TANH
-};
+#include "ops/ops.hpp"
 
 
 
 
-template <typename T = float, ActivationFunction ACT = NONE>
+
+template <typename T = float>
 struct Linear : public Module<Tensor<T,2>>
 {
 
@@ -25,8 +18,15 @@ struct Linear : public Module<Tensor<T,2>>
     Linear(
         size_t in_features,
         size_t out_features,
-        DeviceType device_type = DeviceType::kCPU
-    ):weight({in_features,out_features}, device_type), Module<Tensor<T,2>>({weight, "weight"})
+        MemoryType device_type = MemoryType::kDDR
+    ):weight({out_features,in_features}, device_type), Module<Tensor<T,2>>({weight, "weight"})
+    {
+        
+    }
+
+    Linear(
+        Tensor<T,2> weight_tensor
+    ):weight(weight_tensor.shape,weight_tensor.data,weight_tensor.device_type, weight_tensor.storage_pointer, weight_tensor.original_device_type), Module<Tensor<T,2>>({weight, "weight"})
     {
         
     }
@@ -34,12 +34,11 @@ struct Linear : public Module<Tensor<T,2>>
     template <int rank = 2>
     auto forward(Tensor<T,rank> input)
     {
-        Tensor<T,3> reshaped_input = input.view(Shape<3>{input.shape[0], input.shape[1], 1});
-        std::cout << "Reshaped input shape: " << reshaped_input.shape << std::endl;
+        Tensor<T,3> reshaped_input = input.view(Shape<3>{input.shape[0], 1, input.shape[1]});
         Tensor<T,3> reshaped_matrix = this->weight.view(Shape<3>{1, weight.shape[0], weight.shape[1]});
 
 
-        auto output = DotProduct<-2>::run(reshaped_matrix,reshaped_input);
+        auto output = DotProduct<-1>::run(reshaped_matrix,reshaped_input);
         
         
         return output;

@@ -219,7 +219,7 @@ int main(){
 
     using QT = Quaternion<SuperReal2>;
 
-    Tensor<QT,2> tensorCPU({size,horizontal_size}, DeviceType::kCPU);
+    Tensor<QT,2> tensorCPU({size,horizontal_size}, MemoryType::kDDR);
 
     for (int i = 0; i < size; i++) {
         for (int j = 0; j < horizontal_size; j++) {

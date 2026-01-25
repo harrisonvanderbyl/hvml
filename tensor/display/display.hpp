@@ -1,137 +1,15 @@
-// X11 headers
-
-// OpenGL headers
-#include <GL/gl.h>
-#include <GL/glext.h>
-#include <GL/glx.h>
-
-// SDL headers
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_opengl.h>
-
-// CUDA headers
-#include <cuda_gl_interop.h>
-#include <cuda_runtime.h>
-
-// Standard headers
-#include <iostream>
-#include <stdexcept>
-#include <cmath>
-#include <unistd.h>
-#include <map>
-#include <set>
-#include <functional>
-#include <vector>
-#include <chrono>
-#include "vector/float4.hpp"
-#include "vector/int2.hpp"
-
-// OpenGL function pointer typedefs
-typedef GLuint (APIENTRY *PFNGLCREATESHADERPROC)(GLenum type);
-typedef void (APIENTRY *PFNGLSHADERSOURCEPROC)(GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length);
-typedef void (APIENTRY *PFNGLCOMPILESHADERPROC)(GLuint shader);
-typedef void (APIENTRY *PFNGLGETSHADERIVPROC)(GLuint shader, GLenum pname, GLint *params);
-typedef void (APIENTRY *PFNGLGETSHADERINFOLOGPROC)(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
-typedef GLuint (APIENTRY *PFNGLCREATEPROGRAMPROC)(void);
-typedef void (APIENTRY *PFNGLATTACHSHADERPROC)(GLuint program, GLuint shader);
-typedef void (APIENTRY *PFNGLLINKPROGRAMPROC)(GLuint program);
-typedef void (APIENTRY *PFNGLGETPROGRAMIVPROC)(GLuint program, GLenum pname, GLint *params);
-typedef void (APIENTRY *PFNGLGETPROGRAMINFOLOGPROC)(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog);
-typedef void (APIENTRY *PFNGLDELETESHADERPROC)(GLuint shader);
-typedef void (APIENTRY *PFNGLDELETEPROGRAMPROC)(GLuint program);
-typedef void (APIENTRY *PFNGLUSEPROGRAMPROC)(GLuint program);
-typedef void (APIENTRY *PFNGLGENVERTEXARRAYSPROC)(GLsizei n, GLuint *arrays);
-typedef void (APIENTRY *PFNGLBINDVERTEXARRAYPROC)(GLuint array);
-typedef void (APIENTRY *PFNGLDELETEVERTEXARRAYSPROC)(GLsizei n, const GLuint *arrays);
-typedef void (APIENTRY *PFNGLGENBUFFERSPROC)(GLsizei n, GLuint *buffers);
-typedef void (APIENTRY *PFNGLBINDBUFFERPROC)(GLenum target, GLuint buffer);
-typedef void (APIENTRY *PFNGLBUFFERDATAPROC)(GLenum target, GLsizeiptr size, const void *data, GLenum usage);
-typedef void (APIENTRY *PFNGLDELETEBUFFERSPROC)(GLsizei n, const GLuint *buffers);
-typedef void (APIENTRY *PFNGLVERTEXATTRIBPOINTERPROC)(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer);
-typedef void (APIENTRY *PFNGLVERTEXATTRIBIPOINTERPROC)(GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer);
-typedef void (APIENTRY *PFNGLENABLEVERTEXATTRIBARRAYPROC)(GLuint index);
-typedef GLint (APIENTRY *PFNGLGETUNIFORMLOCATIONPROC)(GLuint program, const GLchar *name);
-typedef void (APIENTRY *PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
-typedef void (APIENTRY *PFNGLUNIFORM3FVPROC)(GLint location, GLsizei count, const GLfloat *value);
-typedef void (APIENTRY *PFNGLUNIFORM1FPROC)(GLint location, GLfloat value);
-typedef void (APIENTRY *PFNGLUNIFORM1IPROC)(GLint location, GLint value);
-typedef GLboolean (APIENTRY *PFNGLUNMAPBUFFERPROC)(GLenum target);
-
-// Global function pointers
-PFNGLCREATESHADERPROC glCreateShader = nullptr;
-PFNGLSHADERSOURCEPROC glShaderSource = nullptr;
-PFNGLCOMPILESHADERPROC glCompileShader = nullptr;
-PFNGLGETSHADERIVPROC glGetShaderiv = nullptr;
-PFNGLGETSHADERINFOLOGPROC glGetShaderInfoLog = nullptr;
-PFNGLCREATEPROGRAMPROC glCreateProgram = nullptr;
-PFNGLATTACHSHADERPROC glAttachShader = nullptr;
-PFNGLLINKPROGRAMPROC glLinkProgram = nullptr;
-PFNGLGETPROGRAMIVPROC glGetProgramiv = nullptr;
-PFNGLGETPROGRAMINFOLOGPROC glGetProgramInfoLog = nullptr;
-PFNGLDELETESHADERPROC glDeleteShader = nullptr;
-PFNGLDELETEPROGRAMPROC glDeleteProgram = nullptr;
-PFNGLUSEPROGRAMPROC glUseProgram = nullptr;
-PFNGLGENVERTEXARRAYSPROC glGenVertexArrays = nullptr;
-PFNGLBINDVERTEXARRAYPROC glBindVertexArray = nullptr;
-PFNGLDELETEVERTEXARRAYSPROC glDeleteVertexArrays = nullptr;
-PFNGLGENBUFFERSPROC glGenBuffers = nullptr;
-PFNGLBINDBUFFERPROC glBindBuffer = nullptr;
-PFNGLBUFFERDATAPROC glBufferData = nullptr;
-PFNGLDELETEBUFFERSPROC glDeleteBuffers = nullptr;
-PFNGLVERTEXATTRIBPOINTERPROC glVertexAttribPointer = nullptr;
-PFNGLVERTEXATTRIBIPOINTERPROC glVertexAttribIPointer = nullptr;
-PFNGLENABLEVERTEXATTRIBARRAYPROC glEnableVertexAttribArray = nullptr;
-PFNGLGETUNIFORMLOCATIONPROC glGetUniformLocation = nullptr;
-PFNGLUNIFORMMATRIX4FVPROC glUniformMatrix4fv = nullptr;
-PFNGLUNIFORM3FVPROC glUniform3fv = nullptr;
-PFNGLUNIFORM1FPROC glUniform1f = nullptr;
-PFNGLUNIFORM1IPROC glUniform1i = nullptr;
-PFNGLMAPBUFFERPROC glMapBuffer = nullptr;
-PFNGLUNMAPBUFFERPROC glUnmapBuffer = nullptr;
-
-void loadGLFunctions() {
-    glCreateShader = (PFNGLCREATESHADERPROC)SDL_GL_GetProcAddress("glCreateShader");
-    glShaderSource = (PFNGLSHADERSOURCEPROC)SDL_GL_GetProcAddress("glShaderSource");
-    glCompileShader = (PFNGLCOMPILESHADERPROC)SDL_GL_GetProcAddress("glCompileShader");
-    glGetShaderiv = (PFNGLGETSHADERIVPROC)SDL_GL_GetProcAddress("glGetShaderiv");
-    glGetShaderInfoLog = (PFNGLGETSHADERINFOLOGPROC)SDL_GL_GetProcAddress("glGetShaderInfoLog");
-    glCreateProgram = (PFNGLCREATEPROGRAMPROC)SDL_GL_GetProcAddress("glCreateProgram");
-    glAttachShader = (PFNGLATTACHSHADERPROC)SDL_GL_GetProcAddress("glAttachShader");
-    glLinkProgram = (PFNGLLINKPROGRAMPROC)SDL_GL_GetProcAddress("glLinkProgram");
-    glGetProgramiv = (PFNGLGETPROGRAMIVPROC)SDL_GL_GetProcAddress("glGetProgramiv");
-    glGetProgramInfoLog = (PFNGLGETPROGRAMINFOLOGPROC)SDL_GL_GetProcAddress("glGetProgramInfoLog");
-    glDeleteShader = (PFNGLDELETESHADERPROC)SDL_GL_GetProcAddress("glDeleteShader");
-    glDeleteProgram = (PFNGLDELETEPROGRAMPROC)SDL_GL_GetProcAddress("glDeleteProgram");
-    glUseProgram = (PFNGLUSEPROGRAMPROC)SDL_GL_GetProcAddress("glUseProgram");
-    glGenVertexArrays = (PFNGLGENVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glGenVertexArrays");
-    glBindVertexArray = (PFNGLBINDVERTEXARRAYPROC)SDL_GL_GetProcAddress("glBindVertexArray");
-    glDeleteVertexArrays = (PFNGLDELETEVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glDeleteVertexArrays");
-    glGenBuffers = (PFNGLGENBUFFERSPROC)SDL_GL_GetProcAddress("glGenBuffers");
-    glBindBuffer = (PFNGLBINDBUFFERPROC)SDL_GL_GetProcAddress("glBindBuffer");
-    glBufferData = (PFNGLBUFFERDATAPROC)SDL_GL_GetProcAddress("glBufferData");
-    glDeleteBuffers = (PFNGLDELETEBUFFERSPROC)SDL_GL_GetProcAddress("glDeleteBuffers");
-    glVertexAttribPointer = (PFNGLVERTEXATTRIBPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribPointer");
-    glVertexAttribIPointer = (PFNGLVERTEXATTRIBIPOINTERPROC)SDL_GL_GetProcAddress("glVertexAttribIPointer");
-    glEnableVertexAttribArray = (PFNGLENABLEVERTEXATTRIBARRAYPROC)SDL_GL_GetProcAddress("glEnableVertexAttribArray");
-    glGetUniformLocation = (PFNGLGETUNIFORMLOCATIONPROC)SDL_GL_GetProcAddress("glGetUniformLocation");
-    glUniformMatrix4fv = (PFNGLUNIFORMMATRIX4FVPROC)SDL_GL_GetProcAddress("glUniformMatrix4fv");
-    glUniform3fv = (PFNGLUNIFORM3FVPROC)SDL_GL_GetProcAddress("glUniform3fv");
-    glUniform1f = (PFNGLUNIFORM1FPROC)SDL_GL_GetProcAddress("glUniform1f");
-    glUniform1i = (PFNGLUNIFORM1IPROC)SDL_GL_GetProcAddress("glUniform1i");
-    glMapBuffer = (PFNGLMAPBUFFERPROC)SDL_GL_GetProcAddress("glMapBuffer");
-    glUnmapBuffer = (PFNGLUNMAPBUFFERPROC)SDL_GL_GetProcAddress("glUnmapBuffer");
-}
-
+#include "tensor.hpp"
+#include "enums/device_support/device.hpp"
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
-
-template <DeviceType device>
 class GLBackend {
 public:
     SDL_Window* window = nullptr;
     SDL_GLContext glctx = nullptr;
 
-    GLuint tex = 0;
+    GLuint pbo = 0;  // Pixel Buffer Object for CUDA interop
+    GLuint tbo = 0;  // Texture Buffer Object
+    GLuint bufferTexture = 0;  // Buffer texture handle
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint program = 0;
@@ -139,26 +17,21 @@ public:
     int width = 0;
     int height = 0;
 
-    cudaGraphicsResource* cudaTex = nullptr;
-    cudaArray_t cudaArray = nullptr;
-    void* cudaDevPtr = nullptr;
-    bool resourcesMapped = false;
+   
 
     void preinit() {
         if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-            throw std::runtime_error("Failed to initialize SDL: " + std::string(SDL_GetError()));
+            std::cerr << "Failed to initialize SDL: " << SDL_GetError() << std::endl;
         }
 
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-        SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
     }
 
-    void initialize(void* ptr, SDL_Window* win, int w, int h, Visual* visual = nullptr, int depth = 24, Colormap colormap = 0) {
-        cudaDevPtr = ptr;
+    void initialize(GLuint ptr, SDL_Window* win, int w, int h, int depth = 24) {
         width = w;
         height = h;
         window = win;
@@ -167,79 +40,27 @@ public:
             throw std::runtime_error("Failed to create SDL window");
         }
 
-        glctx = SDL_GL_CreateContext(window);
-        if (!glctx) {
-            std::string error = SDL_GetError();
-            throw std::runtime_error("Failed to create OpenGL context: " + error);
-        }
+        pbo = (GLuint)ptr;
+
+        // Create buffer for CUDA interop
         
-        SDL_GL_SetSwapInterval(0);
-
-        loadGLFunctions();
-
-        if (!glGenTextures || !glBindTexture || !glTexImage2D) {
-            throw std::runtime_error("Failed to load required OpenGL functions");
-        }
-
-        glGenTextures(1, &tex);
-        if (tex == 0) {
-            throw std::runtime_error("Failed to generate OpenGL texture");
-        }
-
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         
-        GLenum glErr = glGetError();
+        // Create buffer texture that references the buffer
+        glGenTextures(1, &bufferTexture);
+        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+        GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, pbo);
+        
+        auto glErr = glGetError();
         if (glErr != GL_NO_ERROR) {
-            throw std::runtime_error("OpenGL error creating texture: " + std::to_string(glErr));
+            throw std::runtime_error("OpenGL error creating buffer texture: " + std::to_string(glErr));
         }
         
-        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, 0);
         glFinish();
 
-        int deviceCount = 0;
-        cudaError_t err = cudaGetDeviceCount(&deviceCount);
-        if (err != cudaSuccess || deviceCount == 0) {
-            throw std::runtime_error("No CUDA devices found: " + std::string(cudaGetErrorString(err)));
-        }
 
-        int cudaDevice = -1;
-        for (int i = 0; i < deviceCount; i++) {
-            cudaDeviceProp prop;
-            cudaGetDeviceProperties(&prop, i);
-            if (prop.major >= 3) {
-                cudaDevice = i;
-                break;
-            }
-        }
-
-        if (cudaDevice == -1) {
-            throw std::runtime_error("No suitable CUDA device found for GL interop");
-        }
-
-        err = cudaSetDevice(cudaDevice);
-        if (err != cudaSuccess) {
-            throw std::runtime_error("Failed to set CUDA GL device: " + std::string(cudaGetErrorString(err)));
-        }
-
-        err = cudaGraphicsGLRegisterImage(&cudaTex, tex, GL_TEXTURE_2D,
-                                    cudaGraphicsRegisterFlagsSurfaceLoadStore);
-        if (err != cudaSuccess) {
-            if(err == 999){
-                std::cout << "CUDA–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
-            }
-            std::cout << "CUDA–GL interop registration failed with error code: " << err << std::endl;
-            std::string errorMsg = "Failed to register CUDA-GL interop: " + 
-                                  std::string(cudaGetErrorString(err));
-            glDeleteTextures(1, &tex);
-            throw std::runtime_error(errorMsg);
-        }
-
+        // Setup quad vertices (position and texture coordinates)
         float verts[] = {
             -1, -1, 0, 1,
              1, -1, 1, 1,
@@ -247,80 +68,75 @@ public:
             -1,  1, 0, 0
         };
 
-        glGenVertexArrays(1, &vao);
-        glBindVertexArray(vao);
+        GLFuncs->glGenVertexArrays(1, &vao);
+        GLFuncs->glBindVertexArray(vao);
 
-        glGenBuffers(1, &vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+        GLFuncs->glGenBuffers(1, &vbo);
+        GLFuncs->glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        GLFuncs->glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
 
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+        GLFuncs->glEnableVertexAttribArray(0);
+        GLFuncs->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+        GLFuncs->glEnableVertexAttribArray(1);
+        GLFuncs->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
                               (void*)(2 * sizeof(float)));
 
-        glBindVertexArray(0);
+        GLFuncs->glBindVertexArray(0);
 
         program = createProgram(vertexSrc, fragmentSrc);
     }
 
     void present() {
-        auto errMap = cudaGraphicsMapResources(1, &cudaTex);
-        if (errMap != cudaSuccess) {
-            throw std::runtime_error("Failed to map CUDA-GL resources: " + std::string(cudaGetErrorString(errMap)));
-        }
-        cudaGraphicsSubResourceGetMappedArray(&cudaArray, cudaTex, 0, 0);
-
-        cudaError_t erra = cudaMemcpy2DToArray(
-            cudaArray,
-            0, 0,
-            cudaDevPtr,
-            width * sizeof(uint32_t),
-            width * sizeof(uint32_t),
-            height,
-            cudaMemcpyDeviceToDevice
-        );
-        if (erra != cudaSuccess) {
-            throw std::runtime_error("Failed to copy data to CUDA array: " + std::string(cudaGetErrorString(erra)));
-        }
-
-        auto err = cudaGraphicsUnmapResources(1, &cudaTex);
-        if (err != cudaSuccess) {
-            throw std::runtime_error("Failed to unmap CUDA-GL resources: " + std::string(cudaGetErrorString(err)));
-        }
-        resourcesMapped = false;
-
+        // Render using shader that samples from buffer texture
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        glUseProgram(program);
-        glBindVertexArray(vao);
+        GLFuncs->glUseProgram(program);
+        GLFuncs->glBindVertexArray(vao);
 
+        // Bind buffer texture
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform1i(glGetUniformLocation(program, "tex"), 0);
+        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+        GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "bufferTex"), 0);
+        GLFuncs->glUniform2i(GLFuncs->glGetUniformLocation(program, "dimensions"), width, height);
 
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        GLFuncs->glBindVertexArray(0);
 
         SDL_GL_SwapWindow(window);
     }
 
     void resize(int w, int h) {
+        if (width == w && height == h) return;
+        
         width = w;
         height = h;
-        resourcesMapped = true;
+
+        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, pbo);
+        GLFuncs->glBufferData(GL_TEXTURE_BUFFER, 
+                              width * height * 4, 
+                              nullptr, 
+                              GL_DYNAMIC_DRAW);
+        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, 0);
+        
+        // Update buffer texture binding
+        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+        GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, pbo);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        
+        glFinish();
+
     }
 
     ~GLBackend() {
-        if (resourcesMapped && cudaTex) {
-            cudaGraphicsUnmapResources(1, &cudaTex);
-        }
-        if (cudaTex) cudaGraphicsUnregisterResource(cudaTex);
-        if (tex) glDeleteTextures(1, &tex);
-        if (vbo) glDeleteBuffers(1, &vbo);
-        if (vao) glDeleteVertexArrays(1, &vao);
-        if (program) glDeleteProgram(program);
+     
+        if (bufferTexture) glDeleteTextures(1, &bufferTexture);
+        if (pbo) GLFuncs->glDeleteBuffers(1, &pbo);
+        if (vbo) GLFuncs->glDeleteBuffers(1, &vbo);
+        if (vao) GLFuncs->glDeleteVertexArrays(1, &vao);
+        if (program) GLFuncs->glDeleteProgram(program);
         if (glctx) SDL_GL_DestroyContext(glctx);
     }
 
@@ -340,23 +156,32 @@ private:
         #version 330 core
         in vec2 vUV;
         out vec4 color;
-        uniform sampler2D tex;
+        uniform samplerBuffer bufferTex;
+        uniform ivec2 dimensions;
+        
         void main() {
-            color = texture(tex, vUV);
+            // Convert UV coordinates to pixel coordinates
+            ivec2 pixelCoord = ivec2(vUV * vec2(dimensions));
+            
+            // Calculate linear index into buffer (row-major order)
+            int index = pixelCoord.y * dimensions.x + pixelCoord.x;
+            
+            // Fetch color directly from buffer
+            color = texelFetch(bufferTex, index);
         }
     )";
 
     GLuint createProgram(const char* vs, const char* fs) {
         auto compile = [](GLenum type, const char* src) {
-            GLuint s = glCreateShader(type);
-            glShaderSource(s, 1, &src, nullptr);
-            glCompileShader(s);
+            GLuint s = GLFuncs->glCreateShader(type);
+            GLFuncs->glShaderSource(s, 1, &src, nullptr);
+            GLFuncs->glCompileShader(s);
             
             GLint success;
-            glGetShaderiv(s, GL_COMPILE_STATUS, &success);
+            GLFuncs->glGetShaderiv(s, GL_COMPILE_STATUS, &success);
             if (!success) {
                 char infoLog[512];
-                glGetShaderInfoLog(s, 512, nullptr, infoLog);
+                GLFuncs->glGetShaderInfoLog(s, 512, nullptr, infoLog);
                 std::cerr << "Shader compilation failed: " << infoLog << std::endl;
             }
             return s;
@@ -364,27 +189,24 @@ private:
 
         GLuint v = compile(GL_VERTEX_SHADER, vs);
         GLuint f = compile(GL_FRAGMENT_SHADER, fs);
-        GLuint p = glCreateProgram();
-        glAttachShader(p, v);
-        glAttachShader(p, f);
-        glLinkProgram(p);
+        GLuint p = GLFuncs->glCreateProgram();
+        GLFuncs->glAttachShader(p, v);
+        GLFuncs->glAttachShader(p, f);
+        GLFuncs->glLinkProgram(p);
         
         GLint success;
-        glGetProgramiv(p, GL_LINK_STATUS, &success);
+        GLFuncs->glGetProgramiv(p, GL_LINK_STATUS, &success);
         if (!success) {
             char infoLog[512];
-            glGetProgramInfoLog(p, 512, nullptr, infoLog);
+            GLFuncs->glGetProgramInfoLog(p, 512, nullptr, infoLog);
             std::cerr << "Program linking failed: " << infoLog << std::endl;
         }
         
-        glDeleteShader(v);
-        glDeleteShader(f);
+        GLFuncs->glDeleteShader(v);
+        GLFuncs->glDeleteShader(f);
         return p;
     }
 
-    DeviceType getDeviceType() const {
-        return DeviceType::kCUDA;
-    }
 };
 
 class CurrentScreenInputInfo {
@@ -667,14 +489,11 @@ public:
     }
 };
 
-template <DeviceType Device = DeviceType::kCPU>
 class VectorDisplay : public Tensor<uint84, 2> {
 public:
-    Display* display = nullptr;
+    void* display = nullptr;
     SDL_Window* window;
-    Window* root_window = nullptr;
-    Visual* visual = nullptr;
-    Colormap colormap;
+    void* root_window = nullptr;
     int screen;
     int depth;
     bool borderless = false;
@@ -686,12 +505,11 @@ public:
     CurrentScreenInputInfo current_screen_input_info;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
-    GLBackend<Device> backend = GLBackend<Device>();
+    GLBackend backend = GLBackend();
     Clock clock;
     
     VectorDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : Tensor<uint84, 2>(shape, Device), 
-          borderless(properties.borderless), 
+        : borderless(properties.borderless), 
           alpha_enabled(properties.alpha_enabled), 
           is_fullscreen(properties.fullscreen),  
           clickthrough(properties.clickthrough), 
@@ -699,6 +517,7 @@ public:
           resizable(properties.resizable) {
 
         backend.preinit();
+        std::cout << GLFuncs << std::endl;
 
         std::cout << "finished preinit" << std::endl;
       
@@ -710,6 +529,7 @@ public:
         if (on_top) window_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
         if (resizable) window_flags |= SDL_WINDOW_RESIZABLE;
         
+
         window = SDL_CreateWindow(
             "CUDA → OpenGL",
             shape[1], shape[0],
@@ -722,13 +542,46 @@ public:
 
         std::cout << "created window" << std::endl;
 
-        display = (Display *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+        display = (void *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
 
         screen = SDL_GetDisplayForWindow(window);
+
+
+        
         
         SDL_ShowWindow(window);
 
-        backend.initialize(data, window, shape[1], shape[0], visual, depth, colormap);
+        std::cout << "loading GL functions" << std::endl;
+        loadGLFunctions();
+
+        auto glctx = SDL_GL_CreateContext(window);
+        if (!glctx) {
+            std::string error = SDL_GetError();
+            throw std::runtime_error("Failed to create OpenGL context: " + error);
+        }
+        
+        SDL_GL_SetSwapInterval(0);
+
+
+        auto* opengl_device = create_opengl_compute_device(0);
+
+
+        this->bitsize = sizeof(uint84);
+        this->device = &global_device_manager.get_device(opengl_device->default_memory_type, 0);
+        // printf("ndim: %d\n", __a.ndim());
+        this->shape = shape;
+        this->strides = shape.clone();
+        calculate_metadata();
+        auto previous_compute_type = device->default_compute_type;
+        device->default_compute_type = ComputeType::kOPENGL;
+        GLuint pbo = (unsigned long long)(device->allocate(total_bytes));
+        data =  (uint84*)device->compute_device_massagers[kOPENGL](pbo);
+        device->default_compute_type = previous_compute_type;
+        
+        storage_pointer = data;
+
+        backend.initialize(pbo, window, shape[1], shape[0], depth);
+
     }
     
 private:
@@ -798,6 +651,7 @@ public:
         );
         
         if (shape[0] > 0 && shape[1] > 0) {
+            device->synchronize_function();
             backend.present();
         }
     }

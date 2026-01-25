@@ -328,10 +328,10 @@ export EGL_PLATFORM=x11
 
 
     unsigned long indexerdata[2] = {2,1};
-    Tensor<unsigned long, 1> indexertest = Tensor<unsigned long, 1>({2}, (unsigned long *)indexerdata, DeviceType::kCPU);
+    Tensor<unsigned long, 1> indexertest = Tensor<unsigned long, 1>({2}, (unsigned long *)indexerdata, MemoryType::kDDR);
     std::cout << "indexertest: " << indexertest << std::endl;
     float testdata[12] = {10.0f,1.0f, 20.0f,1.0f, 30.0f,1.0f, 40.0f,1.0f, 50.0f,1.0f, 60.0f,1.0f};
-    Tensor<float, 2> testtensor = Tensor<float, 2>({6,2}, (float *)testdata, DeviceType::kCPU);
+    Tensor<float, 2> testtensor = Tensor<float, 2>({6,2}, (float *)testdata, MemoryType::kDDR);
     std::cout << "testtensor before: " << testtensor << std::endl;
     Tensor<float,1> gathered = testtensor.tensor_index(indexertest);
     std::cout << "gathered: " << gathered << std::endl;
@@ -347,7 +347,7 @@ export EGL_PLATFORM=x11
 
     // using QT = Quaternion<SuperReal2>;
 
-   Tensor<ParticleField, 2> patch = Tensor<ParticleField, 2>({100,100}, DeviceType::kCPU);
+   Tensor<ParticleField, 2> patch = Tensor<ParticleField, 2>({100,100}, MemoryType::kDDR);
     for(int i = 0; i < 100; i++){
         for(int j = 0; j < 100; j++){
             patch[{i,j}] = ParticleField(i+30, j+30); // 10 by 10 block of particles
@@ -414,7 +414,7 @@ export EGL_PLATFORM=x11
         if(info.just_selected_area){
             auto area = info.getSelectedArea()*float32x4(1,1,0.25,0.25);
             unsigned long count = (unsigned long)(area.z) * (unsigned long)area.w ;
-            Tensor<ParticleField, 2> newparticles = Tensor<ParticleField, 2>({area.z,area.w}, DeviceType::kCPU);
+            Tensor<ParticleField, 2> newparticles = Tensor<ParticleField, 2>({area.z,area.w}, MemoryType::kDDR);
             for(int i = 0; i < area.z; i++){
                 for(int j = 0; j < area.w; j++){
                     newparticles[{i , j}] = ParticleField(area.x + i*4 , area.y + j*4 );

@@ -1,6 +1,6 @@
-
-#include <module/linear/linear.hpp>
+#include "module/linear/linear.hpp"
 #include <models/rwkv7/timeshift/kernels.hpp>
+#include "module/layernorm/layernorm.hpp"
 
 
 template <typename R = float>
@@ -13,10 +13,14 @@ struct TimeShift: Module<Tensor<R, 2>>
 
     };
 
-    Tensor<R,3> forward(Tensor<R,3> x){
+    Tensor<R> forward(Tensor<R> x){
         
         if(x.device_type == kCPU){
             timeshift_cpu(x.data, state.data, buffer.data, x.shape[0], x.shape[1], x.shape[2]);
+        }else if(x.device_type == kCUDA){
+            timeshift_cuda(x.data, state.data, buffer.data, x.shape[0], x.shape[1], x.shape[2]);
+        }else if(x.device_type == kHIP){
+            timeshift_hip(x.data, state.data, buffer.data, x.shape[0], x.shape[1], x.shape[2]);
         }
         return x;
     }
@@ -42,18 +46,18 @@ struct TimeShift: Module<Tensor<R, 2>>
 
 
 template <typename T = float>
-struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
+struct FFN : public Module<TimeShift<T>,Linear<T>,Linear<T>>
 {
     public:
     TimeShift<T> shift;
-    Linear<T, RELU_SQUARED> key;
+    Linear<T> key;
     Linear<T> value;
     
     FFN(
         size_t max_batch,
         size_t n_dim,
         size_t ffn_dim,
-        DeviceType device_type = DeviceType::kCPU
+        DeviceType device_type = MemoryType::kDDR
     ):
     key(n_dim, ffn_dim, device_type), 
     value(ffn_dim, n_dim, device_type), 
@@ -66,9 +70,9 @@ struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
     Tensor <T> forward(Tensor<T> input)
     {
         auto x = shift(input);
-        auto k = key(x);
+        auto r = ChainOperations<OperationRelu, OperationSqr>::run(key(x));
         // Apply ReLU squared activation
-        return value(k);
+        return value(r);
     }
     
 };
@@ -209,6 +213,8 @@ struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
 //         # Return the logits and the state
 //         return x, v_first
 
+
+
 // class Block(nn.Module):
 
 //     def __init__(self, layer_id, n_layer, n_embd, n_head, head_size, dim_att, dim_ffn, decay_lora, aaa_lora, mv_lora, gate_lora):
@@ -232,6 +238,214 @@ struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
 //         x = x + self.ffn(self.ln2(x))
                 
 //         return [x, v_first]
+
+class RWKV_TimeMix : public Module<
+    TimeShift<float>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,   
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,3>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Tensor<float,2>,
+    Linear<float>,
+    Linear<float>,
+    Linear<float>,
+    Linear<float>,
+    LayerNorm<float>
+    >
+{
+    public:
+    // Define all parameters here
+    Tensor<float,3> x_r;
+    Tensor<float,3> x_w;
+    Tensor<float,3> x_k;
+    Tensor<float,3> x_v;
+    Tensor<float,3> x_a;
+    Tensor<float,3> x_g;
+    Tensor<float,3> w0;
+    Tensor<float,2> w1;
+    Tensor<float,2> w2;
+    Tensor<float,3> a0;
+    Tensor<float,2> a1;
+    Tensor<float,2> a2;
+    Tensor<float,3> v0;
+    Tensor<float,2> v1;
+    Tensor<float,2> v2;
+    Tensor<float,2> g1;
+    Tensor<float,2> g2;
+    Tensor<float,3> k_k;
+    Tensor<float,3> k_a;
+    Tensor<float,2> r_k;
+    TimeShift<float> shift;
+    Linear<float> receptance;
+    Linear<float> key;
+    Linear<float> value;
+    Linear<float> output;
+    LayerNorm<float> ln_x;
+
+
+    RWKV_TimeMix(
+        size_t layer_id,
+        size_t n_layer,
+        size_t n_embd,
+        size_t n_head,
+        size_t head_size,
+        size_t dim_att,
+        size_t decay_lora,
+        size_t aaa_lora,
+        size_t mv_lora,
+        size_t gate_lora,
+        DeviceType device_type = MemoryType::kDDR
+    ):
+    x_r({1, 1, n_embd}, device_type),
+    x_w({1, 1, n_embd}, device_type),
+    x_k({1, 1, n_embd}, device_type),
+    x_v({1, 1, n_embd}, device_type),
+    x_a({1, 1, n_embd}, device_type),
+    x_g({1, 1, n_embd}, device_type),
+    w0({1, 1, n_embd}, device_type),
+    w1({n_embd, decay_lora}, device_type),
+    w2({decay_lora, n_embd}, device_type),
+    a0({1, 1, n_embd}, device_type),
+    a1({n_embd, aaa_lora}, device_type),
+    a2({aaa_lora, n_embd}, device_type),
+    v0(layer_id != 0 ? Tensor<float,3>({1, 1, n_embd}, device_type) : Tensor<float,3>({0, 0, 0}, device_type)),
+    v1(layer_id != 0 ? Tensor<float,2>({n_embd, mv_lora}, device_type) : Tensor<float,2>({0, 0}, device_type)),
+    v2(layer_id != 0 ? Tensor<float,2>({mv_lora, n_embd}, device_type) : Tensor<float,2>({0, 0}, device_type)),
+    g1({n_embd, gate_lora}, device_type),
+    g2({gate_lora, n_embd}, device_type),
+    k_k({1, 1, n_embd}, device_type),
+    k_a({1, 1, n_embd}, device_type),
+    r_k({n_head, head_size}, device_type),
+    shift( /*max_batch=*/1024, n_embd), // Placeholder for max_batch
+    receptance(n_embd, n_embd, device_type),
+    key(n_embd, n_embd, device_type),
+    value(n_embd, n_embd, device_type),
+    output(n_embd, n_embd, device_type),
+    ln_x(n_head, n_embd, 64e-5, device_type),
+    Module(
+        {shift, "shift"},
+        {x_r, "x_r"},
+        {x_w, "x_w"},
+        {x_k, "x_k"},
+        {x_v, "x_v"},
+        {x_a, "x_a"},
+        {x_g, "x_g"},
+        {w0, "w0"},
+        {a0, "a0"},
+        {v0, "v0"},
+        {g1, "g1"},
+        {k_k, "k_k"},
+        {k_a, "k_a"},
+        {r_k, "r_k"},
+        {w1, "w1"},
+        {w2, "w2"},
+        {a1, "a1"},
+        {a2, "a2"},
+        {v1, "v1"},
+        {v2, "v2"},
+        {g2, "g2"},
+        {receptance, "receptance"},
+        {key, "key"},
+        {value, "value"},
+        {output, "output"},
+        {ln_x, "ln_x"}
+    )
+    {
+        
+    }
+     
+    Tensor<float> forward(Tensor<float> x, Tensor<float> v_first)
+    {
+
+        auto xx = shift(x);
+        auto xr = x + xx * x_r;
+        auto xw = x + xx * x_w;
+        auto xk = x + xx * x_k;
+        auto xv = x + xx * x_v;
+        auto xa = x + xx * x_a;
+        auto xg = x + xx * x_g;
+
+        auto r = receptance.forward(xr);
+        auto w = Linear(tanh(Linear(xw)(w1)))(w2);
+        auto k = key.forward(xk);
+        auto v = value.forward(xv);
+        auto a = sigmoid(a0 + Linear((Linear(xa)(a1))(a2))); // a is "in-context learning rate"
+        auto g = Linear(sigmoid(Linear(xg)(g1)))(g2);
+        auto kk = k * k_k;
+        
+    }
+};
+
+class Block : public Module<LayerNorm, Layernorm, FFN<float>, RWKV_TimeMix>
+{
+    public:
+    LayerNorm<float> ln1;
+    LayerNorm<float> ln2;
+    FFN<float> ffn;
+    RWKV_TimeMix att;
+    
+    Block(
+        size_t layer_id,
+        size_t n_layer,
+        size_t n_embd,
+        size_t n_head,
+        size_t head_size,
+        size_t dim_att,
+        size_t dim_ffn,
+        size_t decay_lora,
+        size_t aaa_lora,
+        size_t mv_lora,
+        size_t gate_lora,
+        DeviceType device_type = MemoryType::kDDR
+    ):
+    ln1(n_embd, 64e-5, device_type),
+    ln2(n_embd, 64e-5, device_type),
+    ffn( /*max_batch=*/1024, n_embd, dim_ffn, device_type),
+    att(
+        layer_id,
+        n_layer,
+        n_embd,
+        n_head,
+        head_size,
+        dim_att,
+        decay_lora,
+        aaa_lora,
+        mv_lora,
+        gate_lora,
+        device_type
+    ),
+    // att(...),
+    Module({ln1, "ln1"},{ln2, "ln2"},{ffn, "ffn"},{att, "att"})
+    {
+        
+    }
+     
+    Tensor<float> forward(Tensor<float> x, Tensor<float> v_first)
+    {
+        
+        auto xa = att({ln1.forward(x), v_first}) + x;      
+        
+        return ffn(ln2(xa)) + xa;
+                
+    }
+    
+};
 
 // def identifyModelParams(file):
     
@@ -296,3 +510,26 @@ struct FFN : public Module<TimeShift<T>,Linear<T, RELU_SQUARED>,Linear<T>>
 //         x = self.ln_out(x)
 //         x = self.head(x)
 //         return x
+
+struct Embedding : public Module<Tensor<float,2>>
+{
+    public:
+    Tensor<float,2> weight;
+    
+    
+    Embedding(
+        size_t vocab_size,
+        size_t n_embd,
+        DeviceType device_type = MemoryType::kDDR
+    ):weight({vocab_size,n_embd}, device_type), Module<Tensor<float,2>>({weight, "weight"})
+    {
+        
+    }
+     
+    Tensor<float,3> forward(Tensor<long,2> input)
+    {
+        return weight.tensor_index(input);
+    }
+    
+};
+

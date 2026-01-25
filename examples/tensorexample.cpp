@@ -15,14 +15,14 @@
 int main(){
 
 
-    Linear<float, NONE> linear(4, 4, DeviceType::kCPU);
+    Linear<float, NONE> linear(4, 4, MemoryType::kDDR);
     std::cout << linear << std::endl;
     linear.weight[0][0] = 1.0f;
     linear.weight[1][1] = 1.0f;
     linear.weight[2][2] = 1.0f;
     linear.weight[3][3] = 1.0f;
 
-    Tensor<float,2> input({2,4}, DeviceType::kCPU);
+    Tensor<float,2> input({2,4}, MemoryType::kDDR);
     input[0][0] = 1.0f;
     input[0][1] = 2.0f;
     input[0][2] = 3.0f;

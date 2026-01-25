@@ -2,6 +2,12 @@
 #include <iostream>
 #include <initializer_list>
 #include <vector>
+
+#ifndef __host__
+#define __host__
+#define __device__
+#endif
+
 #ifndef SHAPE
 #define SHAPE
 #define INT64MAX 9223372036854775807

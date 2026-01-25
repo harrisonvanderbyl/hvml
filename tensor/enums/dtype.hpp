@@ -58,7 +58,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(DataType, {
 
 
 // map from enum DataType to size of data type
-int dtype_size(enum DataType dtype){
+static int dtype_size(enum DataType dtype){
     switch(dtype){
         case kUINT_8:
             return 1;
@@ -84,6 +84,10 @@ int dtype_size(enum DataType dtype){
             return 8;
         case kUINT_64:
             return 8;
+        case kBOOL:
+            return 1;
+        default:
+            return 0;
 
     }
     return 0;
@@ -119,7 +123,7 @@ DataType get_dtype(){
 
     return kUNKNOWN;
 }
-std::ostream &operator<<(std::ostream &os, const DataType &dtype)
+static std::ostream &operator<<(std::ostream &os, const DataType &dtype)
 {
     std::string s;
     switch (dtype)
@@ -163,10 +167,9 @@ std::ostream &operator<<(std::ostream &os, const DataType &dtype)
     case kBOOL:
         s = "BOOL";
         break;
-    }
-    if (dtype == kUNKNOWN)
-    {
+    case kUNKNOWN:
         s = "UNKNOWN";
+        break;
     }
 
     os << s;

@@ -2,7 +2,7 @@
 #include "tensor.hpp"
 #include "vector/vectors.hpp"
 #include "file_loaders/safetensors.hpp"
-#include <ops/ops.h>
+#include <ops/ops.hpp>
 #include <string>
 
 #include "module/base/reflist.hpp"

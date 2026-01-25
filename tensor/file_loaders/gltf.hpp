@@ -100,7 +100,7 @@ class Texture: public  Tensor<uint8_t, 3>
 {
 public:
     std::string filename;
-    Texture(std::string filename, DeviceType device_type = DeviceType::kCPU): Tensor<uint8_t, 3>(Shape<3>{0, 0, 0}, nullptr, device_type), filename(filename) 
+    Texture(std::string filename, DeviceType device_type = MemoryType::kDDR): Tensor<uint8_t, 3>(Shape<3>{0, 0, 0}, nullptr, device_type), filename(filename) 
          {
             
             int w, h, channels;
@@ -235,7 +235,7 @@ public:
                 bin.seekg(0, std::ios::end);
                 size_t size = bin.tellg();
                 bin.seekg(0, std::ios::beg);
-                auto dataa = Tensor<char, 1>(Shape<1>{size}, DeviceType::kCPU);
+                auto dataa = Tensor<char, 1>(Shape<1>{size}, MemoryType::kDDR);
                 bin.read(dataa.data, size);
                 data.push_back(dataa);
             }
@@ -342,7 +342,7 @@ public:
                                     }
                                 }
                                 // emplace the bone_ids 
-                                auto a = Tensor<int, 1>(Shape<1>{positionlength}, DeviceType::kCPU);
+                                auto a = Tensor<int, 1>(Shape<1>{positionlength}, MemoryType::kDDR);
                                 // a = uint32_t(primcount);
                                 for (int i = 0; i < positionlength; i++)
                                 {

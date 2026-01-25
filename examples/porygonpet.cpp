@@ -22,7 +22,7 @@ class eventQueue {
 
 int main(){
     int objects = 4;
-    Tensor<float, 2> myobjects({objects, 4}, DeviceType::kCPU);
+    Tensor<float, 2> myobjects({objects, 4}, MemoryType::kDDR);
     Tensor vecview = myobjects.view<float32x4,1>({objects});
     for (int i = 0; i < objects; i++) {
         vecview[i] = float32x4(i%512, i/512, 0, 1); // x, y, z, w

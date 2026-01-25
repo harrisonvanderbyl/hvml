@@ -3,7 +3,7 @@
 #include "stdlib.h"
 #include "enums/dtype.hpp"
 #include "vector"
-#include "enums/device.hpp"
+#include "enums/device_support/device.hpp"
 #include <stdarg.h>
 #include <string>
 #include "shape.hpp"
@@ -116,11 +116,12 @@ public:
     Shape<rank> shape;
     Shape<rank> strides;
     R *data = NULL;
+    R *storage_pointer = NULL;
     unsigned long bitsize;
 
     size_t total_size = 0;
     size_t total_bytes = 0;
-    DeviceType device_type = DeviceType::kCPU;
+    AllocationMap* device = &global_device_manager.get_device(MemoryType::kDDR,0);
     unsigned long* indexer = nullptr;
 
     void calculate_metadata()
@@ -139,63 +140,43 @@ public:
             strides[i] = shape[i + 1] * strides[i + 1];
         }
     }
+    
+    Tensor(){}
 
-    Tensor(Shape<rank> __a, DeviceType device_type = DeviceType::kCPU)
+    Tensor(Shape<rank> __a, MemoryLocation memory_device)
     {
         this->bitsize = sizeof(R);
-        this->device_type = device_type;
+        this->device = memory_device.allocation_map;
         // printf("ndim: %d\n", __a.ndim());
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        if(device_type == DeviceType::kCPU){
-            data = (R*)DeviceAllocator<DeviceType::kCPU>::allocate(total_bytes);
-        }else if(device_type == DeviceType::kCUDA){
-            data = (R*)DeviceAllocator<DeviceType::kCUDA>::allocate(total_bytes);
-        }
-        else if(device_type == DeviceType::kHIP){
-            data = (R*)DeviceAllocator<DeviceType::kHIP>::allocate(total_bytes);
-        }
+        data = (R*)device->allocate(total_bytes);;
+        
+        storage_pointer = data;
     }
     
     
-    Tensor(Shape<rank> __a, R *datain, DeviceType device_type = DeviceType::kCPU)
+    Tensor(Shape<rank> __a, R *datain, MemoryLocation memory_device, R *storage_pointer = nullptr)
     {
-        this->device_type = device_type;
+        this->device = memory_device.allocation_map;
         this->bitsize = sizeof(R);
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
         this->data = datain;
-
-        register_allocation(this->data, this->device_type);
-    }
-
-    Tensor(DeviceType device_type, R item){
-        this->device_type = device_type;
-        this->bitsize = sizeof(R);
-        this->shape = Shape<rank>(1);
-        this->strides = Shape<rank>(1);
-        calculate_metadata();
-        if(device_type == DeviceType::kCPU){
-            data = (R*)DeviceAllocator<DeviceType::kCPU>::allocate(total_bytes);
-            DeviceAllocator<DeviceType::kCPU>::memset<R>(data, item, 1);
-        }else if(device_type == DeviceType::kCUDA){
-            data = (R*)DeviceAllocator<DeviceType::kCUDA>::allocate(total_bytes);
-            DeviceAllocator<DeviceType::kCUDA>::memset<R>(data, item, 1);
+        if (storage_pointer == nullptr){
+            this->storage_pointer = datain;
+        }else{
+            this->storage_pointer = storage_pointer;
         }
-        else if(device_type == DeviceType::kHIP){
-            data = (R*)DeviceAllocator<DeviceType::kHIP>::allocate(total_bytes);
-            DeviceAllocator<DeviceType::kHIP>::memset<R>(data, item, 1);
-        }
-        
-        
-        
+
+        this->device->register_allocation(this->storage_pointer);
     }
 
     // Tensor(R a)
     // {
-    //     this->device_type = DeviceType::kCPU;
+    //     this->device_type = MemoryType::kDDR;
     //     this->shape = Shape(1);
     //     this->strides = Shape(1);
     //     calculate_metadata();
@@ -299,7 +280,8 @@ public:
             }
         }
         
-        Tensor<R, newrank> b = {newshape, startingpointer, device_type};
+        Tensor<R, newrank> b = {newshape, startingpointer, *device, storage_pointer};
+        
         b.strides = newstrides;
         
         // // std::cout << (i.end - i.start) / i.step << std::endl;
@@ -379,21 +361,20 @@ public:
 
     inline Tensor transpose()
     {
-        Tensor a;
-        a.shape = Shape(shape[1], shape[0]);
-        a.strides = Shape(strides[1], strides[0]);
-        a.bitsize = bitsize;
-        a.device_type = device_type;
-        a.total_size = total_size;
-        a.total_bytes = total_bytes;
-        a.data = data;
+        Tensor a(shape, data, *device, storage_pointer);
+        auto shapea = shape.clone();
+        auto stridesa = strides.clone();
+        a.shape[-1] = shapea[-2];
+        a.shape[-2] = shapea[-1];
+        a.strides[-1] = stridesa[-2];
+        a.strides[-2] = stridesa[-1];
         
         return a;
     }
 
     inline Tensor contiguous()
     {
-        Tensor a = {shape, device_type};
+        Tensor a = Tensor{shape, *device};
         a = *this;
         return a;
     }
@@ -421,7 +402,7 @@ public:
                 newstrides[i] = strides[i - 1];
             }
         }
-        Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, device_type};
+        Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, device, storage_pointer,};
         b.strides = newstrides;
         return b;
     }
@@ -438,7 +419,7 @@ public:
     
 
 
-        Tensor<R, v> b{a, data, device_type};
+        Tensor<R, v> b{a, data, device, storage_pointer};
 
         if (shape == a)
         {
@@ -475,7 +456,7 @@ public:
     Tensor<R, 1> tensor_index(const Tensor<unsigned long, v>& index_tensor) const
     {
         // Tensor<R, newrank> b{index_tensor.shape, device_type};
-        Tensor<R, 1> b{{index_tensor.shape[0]}, data, device_type};
+        Tensor<R, 1> b{{index_tensor.shape[0]}, data, *device, storage_pointer};
         
         b.indexer = index_tensor.data;
 
@@ -495,7 +476,7 @@ public:
             throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
         }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, device_type);
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, device);
         return b;   
     }
 
@@ -532,7 +513,7 @@ public:
         }
 
 
-        return Tensor<T, Z>{newshape, (T*)data, device_type};   
+        return Tensor<T, Z>{newshape, (T*)data, *device};   
     }
 
     inline R& flatget(size_t i)
@@ -569,7 +550,7 @@ public:
     template <typename M>
     inline Tensor<M, rank> astype()
     {
-        Tensor<M, rank> a = {shape, device_type};
+        Tensor<M, rank> a = {shape, device};
         for (int i = 0; i < total_size; i++)
         {
             a.flatget(i) = (M)flatget(i);
@@ -583,12 +564,13 @@ public:
         
         // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
         // tensorc = tensorin;
-        Tensor<R, rank> tensor = tensorin.to(DeviceType::kCPU);
+        Tensor<R, rank> tensor = tensorin.to(MemoryType::kDDR);
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
         os << "shape=" << tensorin.shape << ", ";
         os << "strides=" << tensorin.strides << ", ";
-        os << "device_type=" << tensorin.device_type << "";
+        os << "device_type=" << tensorin.device->this_device_type << "";
+        os << "device_id=" << tensorin.device->device_id << "";
         if(tensorin.indexer != nullptr){
             os << ", indexed";
         }
@@ -637,7 +619,7 @@ public:
     {
         assert(other.dtype == get_dtype<R>());
         assert(other.shape == shape);
-        this->device_type = other.device_type;
+        this->device = other.device;
         this->shape = other.shape;
         this->strides = other.strides;
         this->bitsize = other.bitsize;
@@ -645,108 +627,49 @@ public:
         this->indexer = other.indexer;
         this->total_size = other.total_size;
         this->total_bytes = other.total_bytes;
+        this->storage_pointer = other.storage_pointer;
 
-        register_allocation(this->data, this->device_type);
+        this->device->register_allocation(this->storage_pointer);
     }
 
-    Tensor<R,rank> to(DeviceType device_type){
-        if(this->device_type == device_type){
+    Tensor<R,rank> to(MemoryLocation device_type){
+        
+        if(this->device->this_device_type == device_type.memory_type && this->device->device_id == device_type.device_id){
             return *this;
         }
-        Tensor a = {shape, device_type};
+        
+
+        // Tensor a = {shape, device_type};
         
 
         auto from = (void*)this->data;
 
-        if(indexer != nullptr || strides != a.strides){
+        void* result;
+
+        if(indexer != nullptr || strides != shape.calc_strides()){
             
-            Tensor temp = {shape, this->device_type};
+            Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
-                #if defined(__CUDACC__) 
-                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
-                #else
-                std::cerr << "CUDA not enabled" << std::endl;
-                throw std::runtime_error("CUDA not enabled");
-                #endif
-            }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
-                #if defined(__CUDACC__) 
-                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
-                #else
-                std::cerr << "CUDA not enabled" << std::endl;
-                throw std::runtime_error("CUDA not enabled");
-                #endif
-            }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
-                #if defined(__HIPCC__)
-                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
-                #else
-                std::cerr << "HIP not enabled" << std::endl;
-                throw std::runtime_error("HIP not enabled");
-                #endif
-            }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
-                #if defined(__HIPCC__)
-                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
-                );
-                #else
-                std::cerr << "HIP not enabled" << std::endl;
-                throw std::runtime_error("HIP not enabled");
-                #endif
-            }else{
-                std::cerr << "Unsupported device type conversion" << std::endl;
-                throw std::runtime_error("Unsupported device type conversion");
-            }
+            result = device->convert_memory_type(from, device_type.memory_type, total_bytes);
         }
         else{
-            if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kCUDA){
-                #if defined(__CUDACC__) 
-                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyDeviceToHost);
-                #else
-                std::cerr << "CUDA not enabled" << std::endl;
-                throw std::runtime_error("CUDA not enabled");
-                #endif
-            }else if(device_type == DeviceType::kCUDA && this->device_type == DeviceType::kCPU){
-                #if defined(__CUDACC__) 
-                cudaMemcpy(a.data, from, a.total_bytes, cudaMemcpyHostToDevice);
-                #else
-                std::cerr << "CUDA not enabled" << std::endl;
-                throw std::runtime_error("CUDA not enabled");
-                #endif
-            }else if(device_type == DeviceType::kCPU && this->device_type == DeviceType::kHIP){
-                #if defined(__HIPCC__)
-                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyDeviceToHost);
-                #else
-                std::cerr << "HIP not enabled" << std::endl;
-                throw std::runtime_error("HIP not enabled");
-                #endif
-            }else if(device_type == DeviceType::kHIP && this->device_type == DeviceType::kCPU){
-                #if defined(__HIPCC__)
-                hipMemcpy(a.data, from, a.total_bytes, hipMemcpyHostToDevice
-                );
-                #else
-                std::cerr << "HIP not enabled" << std::endl;
-                throw std::runtime_error("HIP not enabled");
-                #endif
-            }else{
-                std::cerr << "Unsupported device type conversion" << std::endl;
-                throw std::runtime_error("Unsupported device type conversion");
-            }
+            result = device->convert_memory_type(from, device_type.memory_type, total_bytes);
         }
-        return a;
+
+        return {
+            shape,
+            (R*)result,
+            device_type,
+            (R*)result
+        };
     };
 
     // destructor
     ~Tensor()
     {
         if(data != NULL){
-            if(device_type == DeviceType::kCPU){
-                DeviceAllocator<DeviceType::kCPU>::deallocate(data);
-            }else if(device_type == DeviceType::kCUDA){
-                DeviceAllocator<DeviceType::kCUDA>::deallocate(data);
-            }
-            else if(device_type == DeviceType::kHIP){
-                DeviceAllocator<DeviceType::kHIP>::deallocate(data);
-            }
+            device->deallocate((void*)storage_pointer);
         }
     }
     // template <int output>//, typename std::enable_if<(rank == -1)>::type* = nullptr>
@@ -758,7 +681,7 @@ public:
     // define copy constructor so that data pointer is copied but not the own_data flag
     Tensor(const Tensor<R, rank> &other)
     {
-        this->device_type = other.device_type;
+        this->device = other.device;
         this->shape = other.shape;
         this->strides = other.strides;
         this->bitsize = other.bitsize;
@@ -766,7 +689,8 @@ public:
         this->indexer = other.indexer;
         this->total_size = other.total_size;
         this->total_bytes = other.total_bytes;
-        register_allocation(this->data, this->device_type);
+        this->storage_pointer = other.storage_pointer;
+        device->register_allocation(this->storage_pointer);
     }
 };
 
@@ -780,14 +704,14 @@ class Tensor<void, rank> {
     void *data = NULL;
     unsigned long bitsize;
     DataType dtype;
-    DeviceType device_type = DeviceType::kCPU;
+    MemoryType device_type = MemoryType::kDDR;
 
     // Tensor<void, rank> operator[](Slice<true> i) = delete;
     Tensor<void, rank> operator[](int i) = delete;
     Tensor<void, rank> view() = delete;
     Tensor<void, rank> view(Shape<rank> newshape) = delete;
-    Tensor(Shape<rank> __a, DeviceType device_type = DeviceType::kCPU) = delete;
-    Tensor(Shape<rank> __a, void *datain, DeviceType device_type = DeviceType::kCPU) = delete;
+    Tensor(Shape<rank> __a, MemoryType device_type = MemoryType::kDDR) = delete;
+    Tensor(Shape<rank> __a, void *datain, MemoryType device_type = MemoryType::kDDR) = delete;
     friend std::ostream &operator<<(std::ostream &os, Tensor<void, rank> tensor) = delete;
     template <typename T>
     Tensor(const Tensor<T, rank>& other){

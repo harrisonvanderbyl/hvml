@@ -22,19 +22,19 @@ int main(){
     layernorm.bias = 0.0f;
     // std::cout << layernorm << std::endl;
 
-    Tensor<float,2> input({2,1024}, DeviceType::kCPU);
+    Tensor<float,2> input({2,1024}, MemoryType::kDDR);
     for(int i = 0; i < input.total_size; i++){
         input.flatget(i) = (rand() % 10000) / 10000.0f;
     }
 
     auto input_cuda = input.to(DeviceType::kHIP);
     auto output_cuda = layernorm.forward(input_cuda);
-    auto output = output_cuda.to(DeviceType::kCPU);
+    auto output = output_cuda.to(MemoryType::kDDR);
     std::cout << "Input: " << input << std::endl;
     std::cout << "Output: " << output << std::endl;
 
 
-    auto layernorm_cpu = LayerNorm<float>(1024, DeviceType::kCPU);
+    auto layernorm_cpu = LayerNorm<float>(1024, MemoryType::kDDR);
     layernorm_cpu.weight = 1.0f;
     layernorm_cpu.bias = 0.0f;
     auto output_cpu = layernorm_cpu.forward(input);

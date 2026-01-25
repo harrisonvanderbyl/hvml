@@ -1,0 +1,16 @@
+#!/bin/bash
+basefile=$1
+outputfile=$2
+if [ -z "$outputfile" ]; then
+    outputfile="a.out"
+fi
+cat $basefile > "tmp.cu"
+
+hipcc $basefile -o hip.o -c -I./tensor -std=c++20
+nvcc -ccbin=g++-14 tmp.cu  -c -o nvidia.o -I./tensor -std=c++20 -Xcompiler -fPIC
+# include libraries for SDL3, OpenGL, GLEW, HIP, CUDA and vulkan
+g++-14  hip.o nvidia.o  -o $outputfile -lSDL3 -lGL -lGLEW -std=c++20 -lamdhip64 -lcudart -L/usr/local/cuda/lib64 -I./tensor -lvulkan
+
+rm "tmp.cu";
+rm hip.o
+rm nvidia.o

@@ -8,7 +8,7 @@
 // Order determines fallback priority
 
 
-template <DeviceType dtype, typename... returnTypes>
+template <ComputeType dtype, typename... returnTypes>
 class KernelBufferAllocator {
     void * pointers[sizeof...(returnTypes)] = {nullptr};
     Shape<sizeof...(returnTypes)> sizes;
@@ -28,7 +28,10 @@ class KernelBufferAllocator {
                 size_t size = sizes[i-1];
                 // make sure is unallocated
                 if(pointers[i-1] == nullptr){
-                   pointers[i-1] = DeviceAllocator<dtype>::allocate(size * sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
+                    auto& device = global_device_manager.get_compute_device(dtype, 0);
+                    MemoryType memtype = device.default_memory_type;
+                    pointers[i-1] = global_device_manager.get_device(memtype,0).allocate(size * sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
+
                 }
             }
             Allocate<i-1>();
@@ -45,7 +48,7 @@ class KernelBufferAllocator {
 };
 
 
-template <DeviceType device_type, typename... Args>
+template <ComputeType device_type, typename... Args>
 class Kernel {
 public:
 

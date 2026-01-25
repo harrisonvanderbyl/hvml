@@ -4,6 +4,7 @@
 #define __host__
 #define __device__
 #endif
+#include <cstdint>
 
 struct int32x2 
 {
@@ -66,10 +67,10 @@ struct uint84
     };
 
     __host__ __device__ uint84& operator+= (const uint84& other) {
-        this->x = min(255, this->x + other.x);
-        this->y = min(255, this->y + other.y);
-        this->z = min(255, this->z + other.z);
-        this->w = min(255, this->w + other.w);
+        this->x = this->x + other.x;
+        this->y = this->y + other.y;
+        this->z = this->z + other.z;
+        this->w = this->w + other.w;
         return *this;
     }
 };

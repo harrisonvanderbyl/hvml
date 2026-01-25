@@ -26,12 +26,12 @@ int main(){
 
     
 
-    auto weight = Tensor<float>({1024,1024}, DeviceType::kCPU);
+    auto weight = Tensor<float>({1024,1024}, MemoryType::kDDR);
     weight = 0.5f;
     auto weightcuda = weight.to(DeviceType::kCUDA);
 
 
-    auto input = Tensor<float>({64,1024}, DeviceType::kCPU);
+    auto input = Tensor<float>({64,1024}, MemoryType::kDDR);
     input = 2.0f;
     auto inputcuda = input.to(DeviceType::kCUDA);
     // input = 2.0f;

@@ -15,7 +15,7 @@ struct LayerNorm : public Module<Tensor<T,1>,Tensor<T,1>>
     
     LayerNorm(
         size_t features,
-        DeviceType device_type = DeviceType::kCPU
+        DeviceType device_type = MemoryType::kDDR
     ):
     weight({features}, device_type),
     bias({features}, device_type), 
