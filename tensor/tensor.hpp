@@ -1,16 +1,14 @@
-
-// include malloc
+#ifndef TENSOR
+#define TENSOR
 #include "stdlib.h"
 #include "enums/dtype.hpp"
 #include "vector"
-#include "enums/device_support/device.hpp"
 #include <stdarg.h>
 #include <string>
 #include "shape.hpp"
 #include <iostream>
 #include <string.h>
-#ifndef TENSOR
-#define TENSOR
+#include "device/device.hpp"
 
 class DefaultSlice
 {
@@ -140,7 +138,7 @@ public:
             strides[i] = shape[i + 1] * strides[i + 1];
         }
     }
-    
+
     Tensor(){}
 
     Tensor(Shape<rank> __a, MemoryLocation memory_device)

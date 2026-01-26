@@ -4,7 +4,50 @@
 #include <string.h>
 #include "file_loaders/json.hpp"
 #include <iostream>
-#include "enums/device_support/device.hpp"
+
+#define __weak __attribute__((weak))
+
+enum ComputeType
+{
+    kCPU,
+    kCUDA,
+    kHIP,
+    kVULKAN,
+    kOPENGL,
+    kUnknown
+};
+
+enum MemoryType
+{
+    kDDR,
+    kCUDA_VRAM,
+    kHIP_VRAM,
+    kUnknown_MEM
+};
+
+enum AssignmentType {
+    Direct,
+    InplaceAdd,
+    NoAssignment
+};
+
+
+NLOHMANN_JSON_SERIALIZE_ENUM(ComputeType, {
+                                             {kCPU, "CPU"},
+                                                {kCUDA, "CUDA"},
+                                                {kHIP, "HIP"},
+                                                {kVULKAN, "Vulkan"},
+                                                {kOPENGL, "OpenGL"},
+                                                {kUnknown, "Unknown"}
+                                         })
+
+NLOHMANN_JSON_SERIALIZE_ENUM(MemoryType, {
+                                             {kDDR, "DDR_RAM"},
+                                                {kCUDA_VRAM, "CUDA_VRAM"},
+                                                {kHIP_VRAM, "HIP_VRAM"},
+                                                {kUnknown_MEM, "UNKNOWN"}
+                                         })
+
 
 
 __weak std::ostream &operator<<(std::ostream &os, const ComputeType &dtype)
@@ -22,33 +65,6 @@ __weak  std::ostream &operator<<(std::ostream &os, const MemoryType &mtype)
     os << s;
     return os;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-#if defined(__CUDACC__)
-#include "enums/device_support/cuda/device.cuh"
-#endif
-
-
-#if defined(__HIPCC__)
-#include "enums/device_support/hip/device.hpp"
-#endif
-
-#include "enums/device_support/vulkan/device.hpp"
-#include "enums/device_support/opengl/device.hpp"
-
-
-
-
 
         
 

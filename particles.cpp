@@ -6,12 +6,6 @@
 #include <atomic>
 #include "module/linear/linear.hpp"
 
-static float relu(float a){
-    return a > 0 ? a : 0;
-}
-
-
-
 
 struct SuperReal2{
     float real;
@@ -191,14 +185,14 @@ struct FractalParticle
     FractalParticle* subparticles;
 };
 
-constexpr int SIZE = 3;
+constexpr int SIZE = 2;
 constexpr int size = SIZE;
-constexpr int compression = 5;
-constexpr int allowDensity = 1;
+constexpr int compression = 1;
+constexpr int allowDensity = 5;
 
 #define repulsionFactor(r, distance) r
 
-#define FADEOFF(io,jo) 1//(sqrtf(float(io*io+jo*jo))+1) //sqrt((io*io+jo*jo + 1.0))
+#define FADEOFF(io,jo) (sqrtf(float(io*io+jo*jo))+1) //sqrt((io*io+jo*jo + 1.0))
 // #define FADEOFF(io,jo) 1
 struct VelocitySpread:public HardamardOperation<VelocitySpread> {
 
@@ -251,7 +245,7 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
         particle += momentum;
         particle += Particle(-globalAddVelocity.x, -globalAddVelocity.y) * compression;
 
-        momentum.y += 0.1f;
+        momentum.y += 0.5f;
 
         if ( particle.x < 1 + size || particle.x > width - 1 - size || particle.y < 1 + size || particle.y > height - 1 - size)
         {
@@ -287,10 +281,15 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
             if(curra >= allowDensity){ // collision
                 particle = oldparticle; // revert position
                 if(curra < allowDensity+1){
-                    newpos.atomic_plus_equals(momentum*1.0); // give half momentum to other particle
-                    momentum = momentum*-0.0; // keep half momentum
+                    Particle assumed_oppos = {float(relative.x) , float(relative.y) };
+                    auto norm = (particle - assumed_oppos);
+                    // reflect momentum along normal
+                    float dot = (momentum.x * norm.x + momentum.y * norm.y) / (norm.x * norm.x + norm.y * norm.y);
+                    momentum = momentum - norm * (2.0 * dot);
+                    momentum = momentum * 0.5; // bounce back
+                    newpos.atomic_plus_equals(momentum * -1.0f);
                 }else{
-                    momentum = momentum * -0.5f; // bounce back with half momentum
+                    momentum = momentum * 0.0; // bounce back with half momentum
                 }
                 newpos.addFilled(-1.0f);
             }
@@ -307,8 +306,8 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
         
         
 
-        double repulsion = 0.05;
-        double drag = 1.0;
+        double repulsion = 0.02;
+        double drag = 0.99;
         auto aa = momentum * drag ;
         
         // auto& curr = *particle.filled;
@@ -359,7 +358,7 @@ __weak int main(){
     setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 1);
     setenv("SDL_VIDEO_DRIVER", "x11", 1);
     setenv("EGL_PLATFORM", "x11", 1);
-    setenv("SDL_DEBUG", "1", 1);
+    // setenv("SDL_DEBUG", "1", 1);
     /*
     export SDL_VIDEO_DRIVER=x11
 export EGL_PLATFORM=x11
@@ -383,13 +382,13 @@ export EGL_PLATFORM=x11
             patch[{i,j}] = ParticleField(i+30, j+30); // 10 by 10 block of particles
         }
     }
-    auto patchcuda = patch.view(Shape<1>{-1}).to(MemoryType::kCUDA_VRAM);
+    auto patchcuda = patch.view(Shape<1>{-1}).to(*display.device);
     
     
-    Tensor<ParticleField,2> Field = Tensor<ParticleField,2>({size*compression,horizontal_size*compression}, MemoryType::kCUDA_VRAM);
+    Tensor<ParticleField,2> Field = Tensor<ParticleField,2>({size*compression,horizontal_size*compression}, *display.device);
     Field[{{}}] = ParticleField(0.0f, 0.0f);
 
-    Tensor<ParticleField, 1> particles = Tensor<ParticleField, 1>({5000*100}, MemoryType::kCUDA_VRAM);
+    Tensor<ParticleField, 1> particles = Tensor<ParticleField, 1>({5000*100}, *display.device);
     particles[{{}}] = ParticleField(-10.0f, -10.0f);
 //     // particles[{{0,100*100}}] = patchcuda;
     
@@ -412,7 +411,7 @@ export EGL_PLATFORM=x11
         std::chrono::duration<double, std::milli> elapsed = current_time - start_time;
         float time_seconds = elapsed.count() / 1000.0f;
         start_time = current_time;
-        std::cout << "Fps: " << 1.0f / time_seconds << std::endl;
+        // std::cout << "Fps: " << 1.0f / time_seconds << std::endl;
         
         
         // auto particleOffsets = round(particles.view<float, 2>({-1,2})[{{},1}])*horizontal_size;
@@ -473,7 +472,7 @@ export EGL_PLATFORM=x11
                     }
                 }
                 // cudaDeviceSynchronize();
-                auto newparticles_cuda = newparticles.view(Shape<1>{-1}).to(MemoryType::kCUDA_VRAM);
+                auto newparticles_cuda = newparticles.view(Shape<1>{-1}).to(*display.device);
                 // cudaDeviceSynchronize();
                 if(currentIndex + count > particles.shape[0]){
                     std::cout << "Particle limit reached, cannot add more particles." << std::endl;

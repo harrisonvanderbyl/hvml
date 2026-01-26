@@ -1,5 +1,5 @@
 #include "tensor.hpp"
-#include "enums/device_support/device.hpp"
+#include "device/device.hpp"
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
 class GLBackend {
@@ -20,10 +20,7 @@ public:
    
 
     void preinit() {
-        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-            std::cerr << "Failed to initialize SDL: " << SDL_GetError() << std::endl;
-        }
-
+        SDL_Init(SDL_INIT_VIDEO);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);

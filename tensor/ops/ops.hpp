@@ -2,7 +2,7 @@
 #define OPMASTER
 #include "ops/common.hpp"
 #if defined(__CUDACC__)
-#include "ops/nvidia/ops.cu"
+#include "ops/nvidia/ops.cuh"
 #endif
 #if defined(__HIPCC__)
 #include "ops/hip/ops.hpp"
