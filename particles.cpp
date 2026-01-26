@@ -289,7 +289,7 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
                     momentum = momentum * 0.5; // bounce back
                     newpos.atomic_plus_equals(momentum * -1.0f);
                 }else{
-                    momentum = momentum * 0.0; // bounce back with half momentum
+                    momentum = momentum * -1.0; // bounce back with half momentum
                 }
                 newpos.addFilled(-1.0f);
             }
@@ -344,9 +344,6 @@ struct UpdateFieldDetails:public HardamardOperation<UpdateFieldDetails> {
         if(particlefield.filled > 0.0f){
             displayPixel = uint84(0x00, 0xff, 0x00, 0xff); // Green for filled
         }
-        else{
-            displayPixel = uint84(0x00, 0x00, 0x00, 0xff); // Black for empty
-        }
     }
 };
 
@@ -368,7 +365,7 @@ export EGL_PLATFORM=x11
     int horizontal_size = 1024;
 
 
-    VectorDisplay display({size,horizontal_size},  WP_ON_TOP);
+    VectorDisplay display({size,horizontal_size},  WP_ON_TOP|WP_ALPHA_ENABLED);
 
 
 
@@ -403,7 +400,7 @@ export EGL_PLATFORM=x11
 //     // get current time in milliseconds
     auto start_time = std::chrono::high_resolution_clock::now();
     display.add_on_update([&](CurrentScreenInputInfo& info){
-        display[{{}}] = 0xffffffff; // White background
+        display[{{}}] = 0xffffff00; // White background
         currentFrame++;
         // std::cout << "Frame " << currentFrame << std::endl;
 

@@ -123,35 +123,39 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
     vk_queues.push_back(compute_queue);
 
     // Register with memory device
-    auto& mem_device = global_device_manager.get_device(mem, 0);
-    mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
+    try{
+        auto& mem_device = global_device_manager.get_device(mem, 0);
+        mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
 
-    // Setup allocator
-    mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](size_t size) {
-        VkDeviceMemory* device_memory = new VkDeviceMemory();
+        // Setup allocator
+        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](size_t size) {
+            VkDeviceMemory* device_memory = new VkDeviceMemory();
+            
+            VkMemoryAllocateInfo alloc_info = {};
+            alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+            alloc_info.allocationSize = size;
+            
+            // Find device-local memory type
+            alloc_info.memoryTypeIndex = find_memory_type(
+                physical_device,
+                UINT32_MAX,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            );
+            
+            VK_CHECK(vkAllocateMemory(vk_devices[device_id], &alloc_info, nullptr, device_memory));
+            return device_memory;
+        };
         
-        VkMemoryAllocateInfo alloc_info = {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_info.allocationSize = size;
-        
-        // Find device-local memory type
-        alloc_info.memoryTypeIndex = find_memory_type(
-            physical_device,
-            UINT32_MAX,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-        );
-        
-        VK_CHECK(vkAllocateMemory(vk_devices[device_id], &alloc_info, nullptr, device_memory));
-        return device_memory;
-    };
-    
-    mem_device.compute_device_deallocators[ComputeType::kVULKAN] = [device_id](void* ptr) {
-        VkDeviceMemory device_memory = *(VkDeviceMemory*)ptr;
-        vkFreeMemory(vk_devices[device_id], device_memory, nullptr);
-        delete (VkDeviceMemory*)ptr;
-    };
+        mem_device.compute_device_deallocators[ComputeType::kVULKAN] = [device_id](void* ptr) {
+            VkDeviceMemory device_memory = *(VkDeviceMemory*)ptr;
+            vkFreeMemory(vk_devices[device_id], device_memory, nullptr);
+            delete (VkDeviceMemory*)ptr;
+        };
 
-    std::cout << "Created Vulkan device " << device_id  << std::endl;
+        std::cout << "Created Vulkan device " << device_id  << std::endl;
+    }catch(...){
+        std::cerr << "Failed to register Vulkan device " << device_id << " with memory manager" << std::endl;
+    }
     
     return device;
 }

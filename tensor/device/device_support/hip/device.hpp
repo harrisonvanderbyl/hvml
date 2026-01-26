@@ -1,16 +1,14 @@
 #include "device/common.hpp"
 #include <hip/hip_runtime.h>
+#include <hip/driver_types.h>
 #include <hip/hip_gl_interop.h>
 
-
-#define HIP_ERROR_CHECK(__call)                                      \
-    do {                                                   \
-        hipError_t err = __call;                           \
-        if (err != hipSuccess) {                           \
-            std::cerr << "HIP error: " << hipGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
-            throw std::runtime_error("HIP error");         \
-        }                                                  \
-    } while (0)
+void HIP_ERROR_CHECK(hipError_t err){
+    if (err != hipSuccess) {
+        std::cerr << "HIP error: " << hipGetErrorString(err) << std::endl;
+        throw std::runtime_error("HIP error");
+    }
+}
 
 AllocationMap* create_hip_mapper(int device_id){
     // Create HIP AllocationMap
@@ -30,7 +28,6 @@ AllocationMap* create_hip_mapper(int device_id){
         mapper->compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
             HIP_ERROR_CHECK(hipSetDevice(device_id));
             HIP_ERROR_CHECK(hipFree(ptr));
-            
         };
 
         mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, size_t size) {
@@ -52,9 +49,9 @@ AllocationMap* create_hip_mapper(int device_id){
         };
 
         mapper->compute_device_massagers[ComputeType::kOPENGL] = [](unsigned int ptr) {
-            hipGraphicsResource* m = nullptr;
-            hipGraphicsResource_t* resource = &m;
-            auto err = hipGraphicsGLRegisterBuffer(resource, (GLuint)ptr, hipGraphicsRegisterFlagsNone);
+            std::cout << "Registering OpenGL buffer with HIP for interop, buffer ID: " << ptr << std::endl;
+            hipGraphicsResource_t m = nullptr;
+            auto err = hipGraphicsGLRegisterBuffer(&m, (GLuint)ptr, hipGraphicsRegisterFlagsNone);
             if (err != hipSuccess) {
                 if(err == 999){
                     std::cout << "HIP–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
@@ -65,13 +62,13 @@ AllocationMap* create_hip_mapper(int device_id){
                 throw std::runtime_error(errorMsg);
             }
             
-            auto errMap = hipGraphicsMapResources(1, resource);
+            auto errMap = hipGraphicsMapResources(1, &m);
             if (errMap != hipSuccess) {
                 throw std::runtime_error("Failed to map HIP-GL resources: " + std::string(hipGetErrorString(errMap)));
             }
             void* temp;
             size_t size;
-            auto hipError = hipGraphicsResourceGetMappedPointer(&temp, &size, resource[0]);
+            auto hipError = hipGraphicsResourceGetMappedPointer(&temp, &size, m);
             if (hipError != hipSuccess) {
                 throw std::runtime_error("Failed to get mapped pointer from HIP-GL resource: " + std::string(hipGetErrorString(hipError)));
             }
