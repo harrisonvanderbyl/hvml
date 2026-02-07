@@ -141,7 +141,7 @@ public:
 
     Tensor(){}
 
-    Tensor(Shape<rank> __a, MemoryLocation memory_device)
+    Tensor(Shape<rank> __a, MemoryLocation memory_device, ComputeType compute_type = ComputeType::kUnknown)
     {
         this->bitsize = sizeof(R);
         this->device = memory_device.allocation_map;
@@ -149,9 +149,9 @@ public:
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        data = (R*)device->allocate(total_bytes);;
+        storage_pointer = (R*)device->allocate(__a, bitsize, compute_type);;
         
-        storage_pointer = data;
+        data = (R*)device->get_massaged_pointer(storage_pointer, device->default_compute_type);
     }
     
     
@@ -222,7 +222,7 @@ public:
         // ){
         //     i.end = shape[0] - (i.end + (reducedims!=0));
         // }
-        R* startingpointer = (R *)data;
+        R* startingpointer = data;//(R*)device->get_massaged_pointer((R *)data, device->default_compute_type);
         int ndim = shape.ndim();
         int ii = 1;
         for (; ii <= ndim ; ii++)
@@ -400,7 +400,7 @@ public:
                 newstrides[i] = strides[i - 1];
             }
         }
-        Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, device, storage_pointer,};
+        Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, *device, storage_pointer,};
         b.strides = newstrides;
         return b;
     }
@@ -417,7 +417,7 @@ public:
     
 
 
-        Tensor<R, v> b{a, data, device, storage_pointer};
+        Tensor<R, v> b{a, data, *device, storage_pointer};
 
         if (shape == a)
         {
@@ -462,9 +462,9 @@ public:
     }
 
     template <typename T = R>
-    inline Tensor<T, rank> view() const
+    inline Tensor<T, rank> view()
     {
-        Shape<rank> newshape = shape.clone();
+        Shape<rank> newshape = shape;
         float scale =  float(bitsize) / sizeof(T);
         float newlastdim = shape[-1] * scale;
         if (newlastdim != (int)newlastdim){
@@ -474,12 +474,12 @@ public:
             throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
         }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, device);
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, *device, (T*)storage_pointer);
         return b;   
     }
 
     template <typename T = R, int Z = -1>
-    inline Tensor<T, Z> view(Shape<Z> newshape) const
+    inline Tensor<T, Z> view(Shape<Z> newshape)
     {
         bool has_neg = false;
         for(int i = 0; i < newshape.ndim(); i++){
@@ -511,7 +511,7 @@ public:
         }
 
 
-        return Tensor<T, Z>{newshape, (T*)data, *device};   
+        return Tensor<T, Z>{newshape, (T*)data, *device, (T*)storage_pointer};   
     }
 
     inline R& flatget(size_t i)
@@ -562,12 +562,14 @@ public:
         
         // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
         // tensorc = tensorin;
+        tensorin.device->synchronize_function();
         Tensor<R, rank> tensor = tensorin.to(MemoryType::kDDR);
+        tensorin.device->synchronize_function();
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
         os << "shape=" << tensorin.shape << ", ";
         os << "strides=" << tensorin.strides << ", ";
-        os << "device_type=" << tensorin.device->this_device_type << "";
+        os << "device_type=" << tensorin.device->this_device_type << ", ";
         os << "device_id=" << tensorin.device->device_id << "";
         if(tensorin.indexer != nullptr){
             os << ", indexed";
@@ -630,7 +632,7 @@ public:
         this->device->register_allocation(this->storage_pointer);
     }
 
-    Tensor<R,rank> to(MemoryLocation device_type){
+    Tensor<R,rank> to(MemoryLocation device_type, ComputeType compute_type = ComputeType::kUnknown) const{
         
         if(this->device->this_device_type == device_type.memory_type && this->device->device_id == device_type.device_id){
             return *this;
@@ -649,17 +651,36 @@ public:
             Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            result = device->convert_memory_type(from, device_type.memory_type, total_bytes);
+            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type);
         }
         else{
-            result = device->convert_memory_type(from, device_type.memory_type, total_bytes);
+            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type);
         }
 
         return {
             shape,
-            (R*)result,
+            (R*)device_type.allocation_map->get_massaged_pointer(
+                result,
+                device_type.allocation_map->default_compute_type
+            ),
             device_type,
             (R*)result
+        };
+    };
+
+    Tensor<R,rank> to_compute(ComputeType compute_type){
+        
+        if(!this->device->supports_compute_device[compute_type]){
+            std::cerr << "Compute type " << compute_type << " not supported on device type " << this->device->this_device_type << std::endl;
+            throw std::runtime_error("Compute type not supported on device type");
+        }
+        auto from = (void*)this->data;
+        auto result = this->device->get_massaged_pointer(from, compute_type);
+        return {
+            shape,
+            (R*)result,
+            *device,
+            (R*)storage_pointer
         };
     };
 
@@ -700,9 +721,10 @@ class Tensor<void, rank> {
     Shape<rank> shape;
     Shape<rank> strides;
     void *data = NULL;
+    void* storage_pointer = NULL;
+    AllocationMap* device = &global_device_manager.get_device(MemoryType::kDDR,0);
     unsigned long bitsize;
     DataType dtype;
-    MemoryType device_type = MemoryType::kDDR;
 
     // Tensor<void, rank> operator[](Slice<true> i) = delete;
     Tensor<void, rank> operator[](int i) = delete;
@@ -713,12 +735,26 @@ class Tensor<void, rank> {
     friend std::ostream &operator<<(std::ostream &os, Tensor<void, rank> tensor) = delete;
     template <typename T>
     Tensor(const Tensor<T, rank>& other){
-        this->device_type = other.device_type;
+        this->device = other.device;
         this->shape = other.shape;
         this->strides = other.strides;
         this->bitsize = other.bitsize;
         this->data = other.data;
         this->dtype = get_dtype<T>();
+        this->storage_pointer = other.storage_pointer;
+        device->register_allocation(this->storage_pointer);
+    }
+    // copy constructor
+    Tensor(const Tensor<void, rank> &other)
+    {
+        this->device = other.device;
+        this->shape = other.shape;
+        this->strides = other.strides;
+        this->bitsize = other.bitsize;
+        this->data = other.data;
+        this->dtype = other.dtype;
+        this->storage_pointer = other.storage_pointer;
+        device->register_allocation(this->storage_pointer);
     }
 
     template <typename T>
@@ -736,7 +772,7 @@ class Tensor<void, rank> {
             std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
             throw std::runtime_error("Data type mismatch");
         }
-        return {shape, (T*)data, device_type};
+        return {shape, (T*)data, *device, (T*)storage_pointer};
     }
 
     template <typename T>
@@ -745,9 +781,16 @@ class Tensor<void, rank> {
             std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
             throw std::runtime_error("Data type mismatch");
         }
-        return {shape, (T*)data, device_type};
+        return {shape, (T*)data, *device, (T*)storage_pointer};
     }
 
+    // destructor
+    ~Tensor()
+    {
+        if(data != NULL){
+            device->deallocate(storage_pointer);
+        }
+    }
     
 };
 

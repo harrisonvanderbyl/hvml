@@ -326,11 +326,7 @@ typedef unsigned short stbi_us;
 extern "C" {
 #endif
 
-#ifdef STB_IMAGE_STATIC
 #define STBIDEF static
-#else
-#define STBIDEF extern
-#endif
 
 //////////////////////////////////////////////////////////////////////////////
 //

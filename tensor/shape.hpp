@@ -66,6 +66,28 @@ struct Shape
             }
         }
     }
+
+    template <int odim>
+    Shape(const Shape<odim>& other)
+    {
+        if(odim != length && length != -1 && odim != -1){
+            std::cerr << "Cannot assign shapes of different ranks" << std::endl;
+            throw std::runtime_error("Cannot assign shapes of different ranks");
+        }
+
+        if(length != -1){
+            if (other.ndim()!=length){
+
+                std::cerr << "Cannot assign shape of a different rank to a static typed rank shape" << std::endl;
+                throw std::runtime_error("Cannot assign shapes of different ranks");
+            }
+        }
+
+        for (int i = 0; i < other.ndim(); i++)
+        {
+            ((long *)this)[i] = ((long *)&other)[i];
+        }
+    }
    
 
      __host__ __device__ Shape()
@@ -190,6 +212,7 @@ struct Shape
         }
         return *this;
     }
+    
     
 };
 

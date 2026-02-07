@@ -6,6 +6,7 @@
 #include "file_loaders/json.hpp"
 #include "enums/dtype.hpp"
 #include <unordered_map>
+#include "file_loaders/texture.hpp"
 #include <fstream>
 #include <span>
 using json = nlohmann::json;
@@ -14,20 +15,13 @@ using json = nlohmann::json;
 #include <utility>
 // png and jpeg libs
 #define STB_IMAGE_IMPLEMENTATION
-#include "image/image.hpp"
+#include "file_loaders/image.hpp"
+// GL enums for primitive types
+#include <GL/gl.h>
 
 
-enum class PrimitiveType
-{
-    TRIANGLES,
-    LINES,
-    POINTS,
-    LINE_LOOP,
-    LINE_STRIP,
-    POLYGON,
-    TRIANGLE_STRIP,
-    TRIANGLE_FAN
-};
+typedef GLenum PrimitiveType;
+
 
 struct Primitive
 {
@@ -36,29 +30,29 @@ struct Primitive
 
     Tensor<int, 1> indices; // Indices of the mesh
 
-    PrimitiveType type = PrimitiveType::TRIANGLES; // Default to TRIANGLES
+    PrimitiveType type = GL_TRIANGLES; // Default to TRIANGLES
 
     static PrimitiveType fromInt(int mode)
     {
         switch (mode)
         {
         case 0:
-            return PrimitiveType::POINTS;
+            return GL_POINTS;
         case 1:
-            return PrimitiveType::LINES;
+            return GL_LINES;
         case 2:
-            return PrimitiveType::LINE_LOOP;
+            return GL_LINE_LOOP;
         case 3:
-            return PrimitiveType::LINE_STRIP;
+            return GL_LINE_STRIP;
         case 4:
-            return PrimitiveType::TRIANGLES;
+            return GL_TRIANGLES;
         case 5:
-            return PrimitiveType::TRIANGLE_STRIP;
+            return GL_TRIANGLE_STRIP;
         case 6:
-            return PrimitiveType::TRIANGLE_FAN;
+            return GL_TRIANGLE_FAN;
         default:
             std::cerr << "Unknown primitive type: " << mode << std::endl;
-            return PrimitiveType::TRIANGLES; // Default fallback
+            return GL_TRIANGLES; // Default fallback
         }
     }
 
@@ -87,7 +81,7 @@ struct Mesh
 };
 
 
-struct Material
+struct MaterialData
 {
     std::string name = "default";
     bool doubleSided = false;
@@ -96,45 +90,21 @@ struct Material
     int normalTextureIndex = -1;
 };
 
-class Texture: public  Tensor<uint8_t, 3>
+
+
+struct Skeleton: public Tensor<mat4, 1>
 {
 public:
-    std::string filename;
-    Texture(std::string filename, DeviceType device_type = MemoryType::kDDR): Tensor<uint8_t, 3>(Shape<3>{0, 0, 0}, nullptr, device_type), filename(filename) 
-         {
-            
-            int w, h, channels;
-
-            data = (uint8_t*)(void*)stbi_load(filename.c_str(), &w, &h, &channels, 0);
-            shape.A = w;
-            shape.B = h;
-            shape.C = channels;
-            strides.A = shape.B * shape.C;
-            strides.B = shape.C;
-            strides.C = 1;
-            this->device_type = device_type;
-            bitsize = sizeof(uint84);
-            std::cout << "Loaded texture: " << filename << " with shape: " << shape << std::endl;
-            calculate_metadata();
-        // stb_image
-
-
-        }
-};
-
-class Skeleton: public Tensor<mat4, 1>
-{
-public:
-    std::string name;
+    std::string name = "skeleton";
     std::vector<std::string> jointNames; // Names of the joints in the skeleton
 
-    Skeleton(std::string name, Shape<1> shape = Shape<1>{}) : Tensor<mat4, 1>(shape), name(name) {
+    Skeleton(std::string name, Shape<1> shape = Shape<1>{}) : Tensor<mat4, 1>(shape, kDDR), name(name) {
         for (int i = 0; i < shape.total_size(); i++) {
             this->operator[](i) = mat4::identity(); // Initialize with identity matrices
         }
     }
 
-   
+    Skeleton() : Tensor<mat4, 1>() {}
 };
 
 class gltf
@@ -142,8 +112,8 @@ class gltf
 public:
     std::vector<Tensor<char, 1>> data;
     std::vector<Tensor<char, 1>> bufferViews;
-    std::vector<Material> materials;
-    std::vector<Texture> textures;
+    std::vector<MaterialData> materials;
+    std::vector<sampler2D> textures;
     std::vector<Mesh> meshes;
     std::vector<Skeleton> skeletons; // Assuming Skeleton is defined elsewhere
 
@@ -177,7 +147,7 @@ public:
                         if (imageJson.contains("uri"))
                         {
                             std::string uri = imageJson["uri"];
-                            Texture texture(path + "/" + uri);
+                            auto texture = load_texture(path + "/" + uri);
                             textures.push_back(texture);
                         }
                     }
@@ -191,7 +161,7 @@ public:
             auto materialsJson = j["materials"];
             for (const auto &materialJson : materialsJson)
             {
-                Material material;
+                MaterialData material;
                 if (materialJson.contains("name"))
                 {
                     material.name = materialJson["name"];
@@ -405,7 +375,7 @@ public:
         os << "Textures: " << model.textures.size() << std::endl;
         for (const auto &texture : model.textures)
         {
-            os << "  Texture: " << texture.filename << ", Shape: " << texture.shape << std::endl;
+            os << "  Texture:" << ", Shape: " << texture.shape << std::endl;
         }
         os << "Skeletons: " << model.skeletons.size() << std::endl;
         for (const auto &skeleton : model.skeletons)

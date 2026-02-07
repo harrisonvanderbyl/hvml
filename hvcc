@@ -4,13 +4,25 @@ outputfile=$2
 if [ -z "$outputfile" ]; then
     outputfile="a.out"
 fi
-cat $basefile > "tmp.cu"
 
-hipcc $basefile -o hip.o -c -I./tensor -std=c++20
-nvcc -ccbin=g++-14 tmp.cu  -c -o nvidia.o -I./tensor -std=c++20 -Xcompiler -fPIC
+cd ./shader-compiler/build
+cmake .. ..
+make -j8
+cd ../..
+
+./shader-compiler/build/shader_tool $basefile -- -std=c++20 -I./tensor  --gcc-toolchain=/usr   -isystem /usr/lib/gcc/x86_64-redhat-linux/16/include -fsyntax-only -DSTBI_NO_SIMD
+
+# clang
+compiler="clang++-19"
+
+cat "shad.cpp" > "tmp.cu"
+hipcc shad.cpp -o hip.o -c -I./tensor -std=c++20 -ggdb -O3
+nvcc -ccbin=$compiler tmp.cu  -c -o nvidia.o -I./tensor -std=c++20 -Xcompiler -fPIC -Xcompiler -ggdb -O3
 # include libraries for SDL3, OpenGL, GLEW, HIP, CUDA and vulkan
-g++-14  hip.o nvidia.o  -o $outputfile -lSDL3 -lGL -lGLEW -std=c++20 -lamdhip64 -lcudart -L/usr/local/cuda/lib64 -I./tensor -lvulkan
+$compiler hip.o nvidia.o -o $outputfile -lSDL3 -lGL -lGLEW -std=c++20 -lamdhip64 -lcudart -L/usr/local/cuda/lib64 -I./tensor -lvulkan -ggdb -O3
+# include libraries for SDL3, OpenGL, GLEW, HIP, CUDA and vulkan
 
 rm "tmp.cu";
 rm hip.o
+# rm shad.cpp
 rm nvidia.o

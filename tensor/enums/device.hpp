@@ -14,7 +14,9 @@ enum ComputeType
     kHIP,
     kVULKAN,
     kOPENGL,
-    kUnknown
+    kOPENGLTEXTURE, // seperate compute device due to requiring different allocation methods
+    kUnknown,
+    ComputeTypeCount
 };
 
 enum MemoryType
@@ -38,6 +40,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ComputeType, {
                                                 {kHIP, "HIP"},
                                                 {kVULKAN, "Vulkan"},
                                                 {kOPENGL, "OpenGL"},
+                                                {kOPENGLTEXTURE, "OpenGLTexture"},
                                                 {kUnknown, "Unknown"}
                                          })
 

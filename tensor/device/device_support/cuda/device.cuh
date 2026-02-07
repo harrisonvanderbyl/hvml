@@ -18,10 +18,13 @@ AllocationMap* create_cuda_mapper(int device_id){
         mapper->default_compute_type = ComputeType::kCUDA;
         
         mapper->supports_compute_device[ComputeType::kCUDA] = true;
-        mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](size_t size) {
+        mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](Shape<-1> size, size_t bitsize, void* existing_data) {
             void* ptr;
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMalloc(&ptr, size));
+            CUDA_ERROR_CHECK(cudaMalloc(&ptr, size.total_size() * bitsize));
+            if (existing_data != nullptr){
+                CUDA_ERROR_CHECK(cudaMemcpy(ptr, existing_data, size.total_size() * bitsize, cudaMemcpyHostToDevice));
+            }
             
             return ptr;
         };
@@ -31,28 +34,20 @@ AllocationMap* create_cuda_mapper(int device_id){
             
         };
 
-        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, size_t size) {
+        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr) {
             auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-            void* host_ptr = host_device.allocate(size);
+            void* host_ptr = host_device.allocate(size, bitsize, compute_type); // dont pass existing data to host allocator, it doesnt know how to handle that
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMemcpy(host_ptr, ptr, size, cudaMemcpyDeviceToHost));
+            CUDA_ERROR_CHECK(cudaMemcpy((char*)host_ptr, (char*)ptr, size.total_size()*bitsize, cudaMemcpyDeviceToHost));
             
             return host_ptr;
         };
 
-        mapper->memory_type_converters[MemoryType::kCUDA_VRAM] = [device_id](void* ptr, size_t size) {
-            return ptr; // No conversion needed
-        };
-
-        mapper->memory_type_converters[MemoryType::kCUDA_VRAM] = [device_id](void* ptr, size_t size) {
-            std::cerr << "Conversion from Cuda_VRAM to CUDA_VRAM not implemented" << std::endl;
-            return nullptr;
-        };
        
-        mapper->compute_device_massagers[ComputeType::kOPENGL] = [](unsigned int ptr) {
+        mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr) {
             cudaGraphicsResource* m = nullptr;
             cudaGraphicsResource_t* resource = &m;
-            auto err = cudaGraphicsGLRegisterBuffer(resource, (GLuint)ptr, cudaGraphicsRegisterFlagsNone);
+            auto err = cudaGraphicsGLRegisterBuffer(resource, (GLuint)(unsigned long long)ptr, cudaGraphicsRegisterFlagsNone);
             if (err != cudaSuccess) {
                 if(err == 999){
                     std::cout << "CUDA–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
@@ -77,16 +72,52 @@ AllocationMap* create_cuda_mapper(int device_id){
             return temp;
         };
 
+        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCUDA}] = [](void* ptr) {
+            cudaGraphicsResource* m = nullptr;
+            cudaGraphicsResource_t* resource = &m;
+            // read and writable 2d array
+            auto err = cudaGraphicsGLRegisterImage(resource, (((GLuint)(unsigned long long)ptr) - 0x10000), GL_TEXTURE_2D, cudaGraphicsRegisterFlagsSurfaceLoadStore);
+            if (err != cudaSuccess) {
+                if (err == 999) {
+                    std::cout << "CUDA–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
+                }
+                std::cout << "CUDA–GL interop registration failed with error code: " << err << std::endl;
+                std::string errorMsg = "Failed to register CUDA-GL texture interop: " + 
+                    std::string(cudaGetErrorString(err));
+                throw std::runtime_error(errorMsg);   
+            }
+            
+            auto errMap = cudaGraphicsMapResources(1, resource);
+            if (errMap != cudaSuccess) {
+                throw std::runtime_error("Failed to map CUDA-GL texture resources: " + std::string(cudaGetErrorString(errMap)));
+            }
+            
+            cudaArray_t* array = new cudaArray_t[1];
+            auto cudaError = cudaGraphicsSubResourceGetMappedArray(array, resource[0], 0, 0);
+            if (cudaError != cudaSuccess) {
+                throw std::runtime_error("Failed to get mapped array from CUDA-GL texture resource: " + std::string(cudaGetErrorString(cudaError)));
+            }
+            
+            return array;
+        };
+
+        mapper->image_copy_function = [device_id,mapper](void* dst, Shape<-1> size, void* src) {
+            CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+            // for cudaArray, we need to use cudaMemcpy2DToArray (not cudaMemcpy or cudaMemcpy2D)
+            cudaArray_t dst_array = static_cast<cudaArray_t*>(dst)[0];
+            
+            CUDA_ERROR_CHECK(cudaMemcpyToArray(dst_array, 0, 0, (void*)src, size.total_size() * sizeof(char), cudaMemcpyHostToDevice));
+            mapper->synchronize_function();
+        };
+
         mapper->synchronize_function = [device_id]() {
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
             CUDA_ERROR_CHECK(cudaDeviceSynchronize());
         };
 
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-        mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](void* ptr, size_t size) {
-            void* device_ptr = mapper->allocate(size);
-            CUDA_ERROR_CHECK(cudaMemcpy(device_ptr, ptr, size, cudaMemcpyHostToDevice));
-            return device_ptr;
+        mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr) {
+            return mapper->allocate(size, bitsize, targetct, ptr);
         };
 
         mapper->this_device_type = MemoryType::kCUDA_VRAM;

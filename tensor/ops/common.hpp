@@ -228,7 +228,7 @@ template <ComputeType device, typename OP,
 class BinaryKernel: public Kernel<device, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>, Parameter<Args>...> 
 {
     // Specializations will be defined below
-    void call( unsigned long total_size,
+    void inline call( unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
     )
@@ -261,7 +261,7 @@ struct BinaryKernel<ComputeType::kCUDA, OP, Args...>
 {
 public:
 
-    void call(
+    void inline call(
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
@@ -281,7 +281,7 @@ struct BinaryKernel<ComputeType::kHIP, OP, Args...>
 {
 public:
 
-    void call(
+    void inline call(
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
@@ -302,7 +302,7 @@ struct BinaryKernel<ComputeType::kCPU, OP, Args...>
 {
 public:
 
-    void call(
+    void inline call(
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
@@ -396,7 +396,7 @@ struct OperationSelector {
     auto apply(const Params&... params);
 
     template <int AD, typename A, typename... B>                     
-    inline static auto run(Tensor<A, AD> a, B... b)           
+    inline static auto run(const Tensor<A, AD>& a, const B&... b)           
     {                                   
         // OPERATION is the current class calling this operator(), including its decendents, so if a decendent calls this function, it will use its own apply function                                               
         auto& mem_device = *a.device;

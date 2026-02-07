@@ -30,7 +30,7 @@ class KernelBufferAllocator {
                 if(pointers[i-1] == nullptr){
                     auto& device = global_device_manager.get_compute_device(dtype, 0);
                     MemoryType memtype = device.default_memory_type;
-                    pointers[i-1] = global_device_manager.get_device(memtype,0).allocate(size * sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
+                    pointers[i-1] = global_device_manager.get_device(memtype,0).allocate({size} , sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
 
                 }
             }
@@ -54,7 +54,9 @@ public:
 
     Kernel() = default;
    
-    virtual void call(Args...);
+    virtual void inline call(Args...){
+        std::cerr << "Base kernel call function called. This should be overridden by specializations." << std::endl;
+    };
     
 
 

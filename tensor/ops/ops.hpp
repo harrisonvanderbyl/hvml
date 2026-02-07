@@ -10,7 +10,7 @@
 
 #define CREATE_OP(func_name, OPERATION)                                     \
 template <int AD, typename A, typename... B>                     \
-auto func_name(Tensor<A, AD> a, B... b)           \
+auto func_name(Tensor<A, AD>& a, B&... b)           \
 {                                                                                  \
     return OPERATION::run(a, b...);                                                                           \
 }

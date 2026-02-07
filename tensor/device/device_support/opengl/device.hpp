@@ -23,8 +23,6 @@
 #include <functional>
 #include <vector>
 #include <chrono>
-#include "vector/float4.hpp"
-#include "vector/int2.hpp"
 
 // OpenGL function pointer typedefs
 typedef GLuint (APIENTRY *PFNGLCREATESHADERPROC)(GLenum type);
@@ -214,44 +212,75 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
 
     auto& mem_device = global_device_manager.get_device(mem, 0);
     mem_device.supports_compute_device[ComputeType::kOPENGL] = true;
-    mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](size_t size) {
+    mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](Shape<-1> size, size_t bitsize, void* existing_data) {
         GLuint buffer;
         GLFuncs->glGenBuffers(1, &buffer);
         GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-        GLFuncs->glBufferData(GL_SHADER_STORAGE_BUFFER, size, nullptr, GL_DYNAMIC_DRAW);
+        GLFuncs->glBufferData(GL_SHADER_STORAGE_BUFFER, size.total_size() * bitsize, existing_data, GL_DYNAMIC_DRAW);
         GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         return reinterpret_cast<void*>(static_cast<uintptr_t>(buffer));
     };
+    mem_device.compute_device_allocators[ComputeType::kOPENGLTEXTURE] = [](Shape<-1> size, size_t bitsize, void* existing_data) {
+        GLuint texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        // size.C == 3 for RGB, size.C == 4 for RGBA
+        int channels;
+        if(size.ndim() == 3){
+            channels = size.C * bitsize;
+        }else if(size.ndim() == 2){
+            channels = bitsize;
+        }else{
+            std::cerr << "Unsupported number of dimensions for OpenGL texture: " << size.ndim() << std::endl;
+            throw std::runtime_error("Unsupported number of dimensions for OpenGL texture");
+        }
+
+
+        if (bitsize == 3) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGB, GL_UNSIGNED_BYTE, existing_data);
+        } else if (bitsize == 4) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGBA, GL_UNSIGNED_BYTE, existing_data);
+        } else if (bitsize == 6) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGB, GL_FLOAT, existing_data);
+        } else if (bitsize == 8) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGBA, GL_FLOAT, existing_data);
+        } else {
+            std::cerr << "Unsupported bitsize for OpenGL texture: " << bitsize << std::endl;
+            throw std::runtime_error("Unsupported bitsize for OpenGL texture");
+        }
+        
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // prevent collisions, += 10k
+        texture += 0x10000;
+
+        return reinterpret_cast<void*>(static_cast<uintptr_t>(texture));
+    };
+
+    mem_device.compute_device_deallocators[ComputeType::kOPENGL] = [](void* ptr) {
+        GLuint buffer = static_cast<GLuint>(reinterpret_cast<uintptr_t>(ptr));
+        GLFuncs->glDeleteBuffers(1, &buffer);
+    };
+
+    mem_device.compute_device_deallocators[ComputeType::kOPENGLTEXTURE] = [](void* ptr) {
+        GLuint texture = static_cast<GLuint>(reinterpret_cast<uintptr_t>(ptr));
+        glDeleteTextures(1, &texture);
+    };
+
+    
    
 
     
 
     std::cout << "OpenGL device default memory type: " << mem << std::endl;
     
-    // // Get compute capabilities (if available)
-    // GLint max_compute_work_group_count[3];
-    // GLFuncs->glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, &max_compute_work_group_count[0]);
-    // device->compute_units = max_compute_work_group_count[0];
-    
-    // // Register with memory device
-    // 
-    
-    // // Setup OpenGL buffer allocator
-    // mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](size_t size) {
-    //     GLuint buffer;
-    //     GLFuncs->glGenBuffers(1, &buffer);
-    //     GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-    //     GLFuncs->glBufferData(GL_SHADER_STORAGE_BUFFER, size, nullptr, GL_DYNAMIC_DRAW);
-    //     GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    //     return reinterpret_cast<void*>(static_cast<uintptr_t>(buffer));
-    // };
-    
-    // mem_device.compute_device_deallocators[ComputeType::kOPENGL] = [](void* ptr) {
-    //     GLuint buffer = static_cast<GLuint>(reinterpret_cast<uintptr_t>(ptr));
-    //     GLFuncs->glDeleteBuffers(1, &buffer);
-    // };
-    
-    
+    global_device_manager.compute_device_counts[ComputeType::kOPENGL] = 1;
+    global_device_manager.compute_devices[ComputeType::kOPENGL] = new ComputeDeviceBase*[1];
+    global_device_manager.compute_devices[ComputeType::kOPENGL][0] = device;
     return device;
 }
 

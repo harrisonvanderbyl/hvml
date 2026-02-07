@@ -1,50 +1,41 @@
 #include "tensor.hpp"
 #include "device/device.hpp"
+#include "vector/vectors.hpp"
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
-class GLBackend {
-public:
-    SDL_Window* window = nullptr;
+
+
+
+class VectorDisplay {
+
+    public:
     SDL_GLContext glctx = nullptr;
 
-    GLuint pbo = 0;  // Pixel Buffer Object for CUDA interop
     GLuint tbo = 0;  // Texture Buffer Object
     GLuint bufferTexture = 0;  // Buffer texture handle
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint program = 0;
-
     int width = 0;
     int height = 0;
-
+    GLuint pbo = 0; // Pixel Buffer Object
    
 
     void preinit() {
-        SDL_Init(SDL_INIT_VIDEO);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+
     }
 
-    void initialize(GLuint ptr, SDL_Window* win, int w, int h, int depth = 24) {
-        width = w;
-        height = h;
-        window = win;
-
-        if (!window) {
-            throw std::runtime_error("Failed to create SDL window");
+    VectorDisplay(Tensor<uint84,2>& buffer) {
+        if(buffer.device->allocation_compute_types[buffer.storage_pointer] != ComputeType::kOPENGL){
+            throw std::runtime_error("Buffer must be allocated with OpenGL compute type for VectorDisplay");
         }
-
-        pbo = (GLuint)ptr;
-
-        // Create buffer for CUDA interop
-        
-        
+        this->width = buffer.shape[0];
+        this->height = buffer.shape[1];
+        pbo = (GLuint)(unsigned long long)buffer.storage_pointer;
         // Create buffer texture that references the buffer
         glGenTextures(1, &bufferTexture);
         glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+
         GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, pbo);
         
         auto glErr = glGetError();
@@ -102,40 +93,9 @@ public:
         glBindTexture(GL_TEXTURE_BUFFER, 0);
         GLFuncs->glBindVertexArray(0);
 
-        SDL_GL_SwapWindow(window);
     }
 
-    void resize(int w, int h) {
-        if (width == w && height == h) return;
-        
-        width = w;
-        height = h;
 
-        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, pbo);
-        GLFuncs->glBufferData(GL_TEXTURE_BUFFER, 
-                              width * height * 4, 
-                              nullptr, 
-                              GL_DYNAMIC_DRAW);
-        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, 0);
-        
-        // Update buffer texture binding
-        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
-        GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, pbo);
-        glBindTexture(GL_TEXTURE_BUFFER, 0);
-        
-        glFinish();
-
-    }
-
-    ~GLBackend() {
-     
-        if (bufferTexture) glDeleteTextures(1, &bufferTexture);
-        if (pbo) GLFuncs->glDeleteBuffers(1, &pbo);
-        if (vbo) GLFuncs->glDeleteBuffers(1, &vbo);
-        if (vao) GLFuncs->glDeleteVertexArrays(1, &vao);
-        if (program) GLFuncs->glDeleteProgram(program);
-        if (glctx) SDL_GL_DestroyContext(glctx);
-    }
 
 private:
     static constexpr const char* vertexSrc = R"(
@@ -204,6 +164,7 @@ private:
         return p;
     }
 
+   
 };
 
 class CurrentScreenInputInfo {
@@ -270,10 +231,10 @@ public:
 
     int32x4 getLocalSelectedArea() const {
         return int32x4(
-            selectedarea.x - currentWindowPosition.x,
-            selectedarea.y - currentWindowPosition.y,
-            selectedarea.z,
-            selectedarea.w
+            selectedarea[0] - currentWindowPosition[0],
+            selectedarea[1] - currentWindowPosition[1],
+            selectedarea[2],
+            selectedarea[3]
         );
     }
 
@@ -287,8 +248,8 @@ public:
                 } else {
                     mouse_buttons_pressed.erase(SDL_BUTTON_LEFT);
                     float32x2 mx = getGlobalMousePosition();
-                    if (sqrt(pow(mx.x - lastClicked.x, 2) + pow(mx.y - lastClicked.y, 2)) > 5.0f) {
-                        selectedarea = float32x4(lastClicked.x, lastClicked.y, mx.x - lastClicked.x, mx.y - lastClicked.y);
+                    if (sqrt(pow(mx[0] - lastClicked[0], 2) + pow(mx[1] - lastClicked[1], 2)) > 5.0f) {
+                        selectedarea = float32x4(lastClicked.x(), lastClicked[1], mx.x() - lastClicked.x(), mx[1] - lastClicked[1]);
                     }
                     just_selected_area = true;
                 }
@@ -486,13 +447,16 @@ public:
     }
 };
 
-class VectorDisplay : public Tensor<uint84, 2> {
+struct OpenGLDisplay
+{
 public:
     void* display = nullptr;
     SDL_Window* window;
     void* root_window = nullptr;
     int screen;
-    int depth;
+    int depth = 32;
+    int height = 0;
+    int width = 0;
     bool borderless = false;
     bool alpha_enabled = false;
     bool is_fullscreen = false;
@@ -500,20 +464,23 @@ public:
     bool on_top = false;
     bool resizable = false;
     CurrentScreenInputInfo current_screen_input_info;
+    ComputeDeviceBase* device = nullptr;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     
-    GLBackend backend = GLBackend();
     Clock clock;
-    
-    VectorDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : borderless(properties.borderless), 
-          alpha_enabled(properties.alpha_enabled), 
-          is_fullscreen(properties.fullscreen),  
-          clickthrough(properties.clickthrough), 
-          on_top(properties.on_top),
-          resizable(properties.resizable) {
 
-        backend.preinit();
+    void init_display(int width, int height) {
+        if(GLFuncs)        {
+            std::cerr << "OpenGL functions already loaded!" << std::endl;
+            throw std::runtime_error("OpenGL functions already loaded!");
+            return;
+        }
+        SDL_Init(SDL_INIT_VIDEO);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
         std::cout << GLFuncs << std::endl;
 
         std::cout << "finished preinit" << std::endl;
@@ -529,7 +496,8 @@ public:
 
         window = SDL_CreateWindow(
             "CUDA → OpenGL",
-            shape[1], shape[0],
+            // width and height
+            width, height,
             window_flags
         );
 
@@ -543,6 +511,9 @@ public:
 
         screen = SDL_GetDisplayForWindow(window);
 
+        // GL enable blending
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         
         
@@ -557,31 +528,39 @@ public:
             throw std::runtime_error("Failed to create OpenGL context: " + error);
         }
         
+        glEnable(GL_DEPTH_TEST);
         SDL_GL_SetSwapInterval(0);
 
 
-        auto* opengl_device = create_opengl_compute_device(0);
 
+        std::cout << "created GL context" << std::endl;
+    }
+    
+    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
+        : borderless(properties.borderless), 
+          alpha_enabled(properties.alpha_enabled), 
+          is_fullscreen(properties.fullscreen),  
+          clickthrough(properties.clickthrough), 
+          on_top(properties.on_top),
+          resizable(properties.resizable),
+          width(shape[0]),
+          height(shape[1])
+    {
 
-        this->bitsize = sizeof(uint84);
-        this->device = &global_device_manager.get_device(opengl_device->default_memory_type, 0);
-        // printf("ndim: %d\n", __a.ndim());
-        this->shape = shape;
-        this->strides = shape.clone();
-        calculate_metadata();
-        auto previous_compute_type = device->default_compute_type;
-        device->default_compute_type = ComputeType::kOPENGL;
-        GLuint pbo = (unsigned long long)(device->allocate(total_bytes));
-        data =  (uint84*)device->compute_device_massagers[kOPENGL](pbo);
-        device->default_compute_type = previous_compute_type;
         
-        storage_pointer = data;
+        
 
-        backend.initialize(pbo, window, shape[1], shape[0], depth);
+        init_display(shape[1], shape[0]);
+        device = create_opengl_compute_device(0);
+
+
+
 
     }
     
 private:
+
+
     void updateMousePositionFromRoot() {
         // Get global mouse state
         float gx, gy;
@@ -592,6 +571,7 @@ private:
         SDL_GetWindowPosition(window, &wx, &wy);
         
         // Calculate relative position
+       
         current_screen_input_info.updateMousePositionAbsolute(gx - wx, gy - wy);
     }
 
@@ -641,27 +621,19 @@ public:
     
     void updateDisplay() {
         auto oldWindowPosition = current_screen_input_info.currentWindowPosition;
-        SDL_GetWindowPosition(window, &current_screen_input_info.currentWindowPosition.x, &current_screen_input_info.currentWindowPosition.y);
+        SDL_GetWindowPosition(window, &current_screen_input_info.currentWindowPosition[0], &current_screen_input_info.currentWindowPosition[1]);
         current_screen_input_info.relativeWindowMove = int32x2(
-            current_screen_input_info.currentWindowPosition.x - oldWindowPosition.x,
-            current_screen_input_info.currentWindowPosition.y - oldWindowPosition.y
+            current_screen_input_info.currentWindowPosition.x() - oldWindowPosition.x(),
+            current_screen_input_info.currentWindowPosition.y() - oldWindowPosition.y()
         );
         
-        if (shape[0] > 0 && shape[1] > 0) {
-            device->synchronize_function();
-            backend.present();
-        }
+        SDL_GL_SwapWindow(window);
     }
 
     void resizeDisplay() {
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
-        if (w != shape[1] || h != shape[0]) {
-            shape[0] = h;
-            shape[1] = w;
-            backend.resize(w, h);
-            current_screen_input_info.setScreenSize(0, 0, w, h);
-        }
+        
     }
     
     bool processEvents() {
@@ -718,14 +690,19 @@ public:
             }
         }
         
+        
         return true;
     }
+
     
     void displayLoop() {
         bool running = true;
 
         while (running) {
             resizeDisplay();
+
+            glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+
             
             // Call display loop functions
             for (const auto& callback : display_loop_functions) {
@@ -733,51 +710,19 @@ public:
             }
 
             // Process events
+
             running = processEvents();
             
             updateDisplay();
-            updateMousePositionFromRoot();
+
+
+            
+
         }
-    }
-
-    void displayLoopWithFPS(int target_fps) {
-        bool running = true;
-
-        while (running) {
-            resizeDisplay();
-            
-            // Call display loop functions
-            for (const auto& callback : display_loop_functions) {
-                callback(current_screen_input_info);
-            }
-
-            // Process events
-            running = processEvents();
-            
-            updateDisplay();
-            updateMousePositionFromRoot();
-            
-            clock.tick(target_fps);
-        }
-    }
+    }    
+   
     
-    // Clear display with specified color
-    void clear(uint8_t r = 0, uint8_t g = 0, uint8_t b = 0, uint8_t a = 0) {
-        uint84 color;
-        if (alpha_enabled && depth == 32) {
-            color = (a << 24) | (r << 16) | (g << 8) | b;
-        } else {
-            color = (r << 16) | (g << 8) | b;
-        }
-        
-        for (int y = 0; y < shape[0]; y++) {
-            for (int x = 0; x < shape[1]; x++) {
-                (*this)[y][x] = color;
-            }
-        }
-    }
-    
-    ~VectorDisplay() {
+    ~OpenGLDisplay() {
         if (window) {
             SDL_DestroyWindow(window);
         }
@@ -832,13 +777,13 @@ public:
     }
 
     void blitSurface(const Surface& surf, int x, int y) {
-        for (int sy = 0; sy < surf.height && (y + sy) < shape[0]; sy++) {
-            for (int sx = 0; sx < surf.width && (x + sx) < shape[1]; sx++) {
-                if (x + sx >= 0 && y + sy >= 0) {
-                    (*this)[y + sy][x + sx] = surf.pixels[sy * surf.width + sx];
-                }
-            }
-        }
+        // for (int sy = 0; sy < surf.height && (y + sy) < shape[0]; sy++) {
+        //     for (int sx = 0; sx < surf.width && (x + sx) < shape[1]; sx++) {
+        //         if (x + sx >= 0 && y + sy >= 0) {
+        //             (*this)[y + sy][x + sx] = surf.pixels[sy * surf.width + sx];
+        //         }
+        //     }
+        // }
     }
 
     // Font rendering placeholder (requires SDL_ttf)

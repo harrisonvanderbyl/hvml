@@ -5,40 +5,10 @@
 #include <assert.h>
 #include <atomic>
 #include "module/linear/linear.hpp"
-
-
-struct SuperReal2{
-    float real;
-    float zeta; // zeta^2 = 0
-    __device__ __host__ SuperReal2(float a, float b):real(a),zeta(b){}
-    __device__ __host__ SuperReal2(float a):real(a),zeta(1){}
-    __device__ __host__ SuperReal2 operator+(const SuperReal2& a) const{
-        return SuperReal2(a.real+real, a.zeta+zeta);
-    };
-    __device__ __host__ SuperReal2 operator*(const SuperReal2 a) const{
-        return SuperReal2(
-            real * a.real,
-            real * a.zeta + zeta * a.real
-        );
-    };
-    __device__ __host__ SuperReal2 operator-(const SuperReal2 a) const{
-        return SuperReal2(real - a.real, zeta - a.zeta);
-    };
-    float toFloat() const{
-        return real;
-    };
-
-    // cout
-    friend std::ostream &operator<<(std::ostream &os, const SuperReal2& sr)
-    {
-        os << "(" << sr.real << " + " << sr.zeta << "ζ)";
-        return os;
-    }
-
-};
-
-
-
+#include "camera/camera.hpp"
+#include "file_loaders/gltf.hpp"
+#include "display/materials/materials.hpp"
+#include "display/scene/scene.hpp"
 #define BENCHMARK(...) { \
     auto start = std::chrono::high_resolution_clock::now(); \
     \
@@ -54,12 +24,13 @@ template<typename T>
 struct Field: public T {
     using T::T; // Inherit constructors
 
-    __device__ __host__ Field<T>& get_field_relative(int32x2 fieldsize, int32x2 direction){
+    __device__ __host__ Field<T>& get_field_relative(int32x4 fieldsize, int32x4 direction){
         // get pointer to this
         Field<T>* ptr = (Field<T>*)this;
         // move pointer
-        long int offset = (long int)(direction.y * fieldsize.x + direction.x);
-        
+        long int offset = (long int)(direction[2] * fieldsize[0] * fieldsize[1] + 
+                             direction[1] * fieldsize[0] + 
+                             direction[0]);
         ptr += offset ;
         return *ptr;
     };
@@ -69,114 +40,185 @@ struct Field: public T {
     };
  };
 
+// uint8_t swappoint = 0b000; // 
 
 
 
 struct Particle
 {
     public:
-    double x;
-    double y; 
-    float filled = 0.0f; // pointer to filled velocity field
+    float32x3 position; // x, y, z
+    float32x2 temperatureopacity = float32x2(0.0f, 1.0f); // density and opacity
     uint84 color = uint84(0xff, 0x00, 0x00, 0xff); // Default red color
 
-    Particle() : x(0), y(0) {}
+    Particle() : position(0.0f, 0.0f, 0.0f) {};
 
-    __device__ __host__ Particle(double a, double b):x(a),y(b){}
+    __device__ __host__ Particle(float a, float b, float c):position(a,b,c){}
 
-    __device__ __host__ Particle(double a):x(a),y(a){}
-    
-    __device__ __host__ Particle operator+(const Particle& a) const{
-        return Particle(a.x+x, a.y+y);
-    };
+    __device__ __host__ Particle(float a):position(a,a,a){}
 
-     __device__ __host__ Particle& operator+=(const Particle& a){
-        this->x += a.x;
-        this->y += a.y;
-        return *this;
-    };
-
-    __device__ __host__ Particle& atomic_plus_equals(const Particle& a){
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-        atomicAdd((double*)&this->x, a.x);
-        atomicAdd((double*)&this->y, a.y);
-        #else
-        std::atomic<double>{this->x}.fetch_add(a.x);
-        std::atomic<double>{this->y}.fetch_add(a.y);
-        #endif
-        return *this;
-    };
-
-    __device__ __host__ Particle operator*(const Particle& a) const{
-        Particle r = {
-            x * a.x,
-            y * a.y
-        };
-        return r;
-    };
+    __device__ __host__ Particle(float32x3 pos):position(pos){}
     
 
-    __device__ __host__ void zero(){
-        x = 0;
-        y = 0;
-    };
-    
-    __device__ __host__ Particle operator-(const Particle& a) const{
-        return Particle(x - a.x, y - a.y);
-    };
-
-    __device__ __host__ Particle operator/(double a) const{
-        return Particle(x / a, y / a);
-    };
-
-    __device__ __host__ Particle operator*(double a) const{
-        return Particle(x * a, y * a);
-    };
-
-    __device__ __host__ Particle operator /(const Particle& a) const{
-        return Particle(x / a.x, y / a.y);
-    };
-    // cout
     friend std::ostream &operator<<(std::ostream &os, const Particle& q)
     {
-        os << "(" << q.x << " , " << q.y << ")";
+        os << "(" << q.position[0] << ", " << q.position[1] << ", " << q.position[2] << ")";
         return os;
     }
-
-    
-
-    __device__ __host__ Particle swap0(){
-        // swap with zero, using copy elision
-        // 64 bit atomic swap
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-        // double oldx = this->x;
-        // double oldy = this->y;
-        // this->x = 0.0f;
-        // this->y = 0.0f;
-        unsigned long long oldx = atomicExch((unsigned long long int*)&this->x, __double_as_longlong(0.0));
-        unsigned long long oldy = atomicExch((unsigned long long int*)&this->y, __double_as_longlong(0.0));     
-        
-        return Particle(__longlong_as_double(oldx), __longlong_as_double(oldy));
-        
-        #else
-        return Particle(std::atomic<double>{this->x}.exchange(0.0f), std::atomic<double>{this->y}.exchange(0.0f));
-        #endif
-    };
-
-    __device__ __host__ float addFilled(float increment = 1.0f){
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-        return atomicAdd((float*)&this->filled, increment);
-        #else
-        return std::atomic<float>{this->filled}.fetch_add(increment);
-        #endif
-    };
-    
 
 };
 
 
+struct FractalField {
+    float32x3 velocity;
+    FractalField* subfields[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    FractalField* neighboringFields[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    FractalField* parentField = nullptr;
+    FractalField* freelistNext = nullptr;
+    Particle* occupant = nullptr;
 
-using ParticleField = Field<Particle>;
+    __device__ __host__ void freeOccupant(){
+        occupant = nullptr;
+        bool freeself = true;
+        for (int i = 0; i < 8; i++){
+            if (subfields[i] != nullptr){
+                if (subfields[i]->occupant != nullptr){
+                    freeself = false;
+                }
+            }
+        };
+        if (freeself){
+            freeSelf();
+        }
+    };
+
+    __device__ __host__ void freeSelf(){
+        for (int i = 0; i < 8; i++){
+            if (subfields[i] != nullptr){
+                for (int j = 0; j < 8; j++){
+                    if (subfields[i]->subfields[j] == this){
+                        subfields[i]->subfields[j] = nullptr;
+                    }
+                }
+            }
+        };
+        FractalField* attachpoint = parentField->freelistNext;
+        while(attachpoint->freelistNext != nullptr){
+            attachpoint = attachpoint->freelistNext;
+        }
+        attachpoint->freelistNext = freelistNext;
+        
+        freelistNext = parentField->freelistNext;
+        parentField->freelistNext = this;
+        parentField = nullptr;  
+    };
+
+    FractalField* getFreeFromList(){
+        if (freelistNext != nullptr){
+            FractalField* newfield = freelistNext;
+            freelistNext = freelistNext->freelistNext;
+            return newfield;
+        }
+        else{
+            if (parentField != nullptr){
+                return parentField->getFreeFromList();
+            }
+            else{
+                return nullptr;
+            }
+        }
+    }
+
+    FractalField* get_field_relative(int32x4 direction){
+        // x,y,z,depth
+        if(direction[3] == 0){
+            return this;
+        }
+        int32x4 reduce = int32x4(direction[0] >> direction[3], direction[1] >> direction[3], direction[2] >> direction[3], 0); // 0-7 -> 0, 8-15 -> 1 => rightshifts by depth to get index of subfield
+        int index = reduce[2] * 4 + reduce[1] * 2 + reduce[0];
+        if (subfields[index] != nullptr){
+            return subfields[index]->get_field_relative(int32x4(direction[0] & ((1 << direction[3]) - 1), direction[1] & ((1 << direction[3]) - 1), direction[2] & ((1 << direction[3]) - 1), direction[3] - 1));
+        }
+        else{
+            if (freelistNext != nullptr){
+                FractalField* newfield = freelistNext;
+                freelistNext = freelistNext->freelistNext;
+                newfield->parentField = this;
+                subfields[index] = newfield;
+                return newfield->get_field_relative(int32x4(direction[0] & ((1 << direction[3]) - 1), direction[1] & ((1 << direction[3]) - 1), direction[2] & ((1 << direction[3]) - 1), direction[3] - 1));
+            }
+            else{
+                // allocate new field
+                FractalField* newfield = new FractalField();
+                newfield->parentField = this;
+                subfields[index] = newfield;
+                return newfield->get_field_relative(int32x4(direction[0] & ((1 << direction[3]) - 1), direction[1] & ((1 << direction[3]) - 1), direction[2] & ((1 << direction[3]) - 1), direction[3] - 1));
+            }
+        }
+    }
+};
+
+struct ChunkOfSpace{
+    float32x3 velocity;
+    Particle* occupant = nullptr;
+    // ChunkOfSpace* neighboringChunks[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+     __device__ __host__ Particle* addFilled(Particle* increment = nullptr){
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        return (Particle*)(void*)atomicExch((unsigned long long*)&this->occupant, (unsigned long long)increment);
+        #else
+        Particle* oldOccupant = std::atomic<Particle*>{this->occupant}.exchange(increment);
+        return oldOccupant;
+        #endif
+    };
+
+    ChunkOfSpace() : velocity(0.0f, 0.0f, 0.0f, 0.0f) {};
+
+
+
+
+    __device__ __host__ float32x3 swap0(){
+        // swap with zero, using copy elision
+        // 64 bit atomic swap
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        
+        return float32x3(atomicExch((float*)&this->velocity[0], 0.0f), atomicExch((float*)&this->velocity[1], 0.0f), atomicExch((float*)&this->velocity[2], 0.0f));
+        
+        #else
+        return float32x3(std::atomic<float>{this->velocity[0]}.exchange(0.0f),
+                        std::atomic<float>{this->velocity[1]}.exchange(0.0f),
+                        std::atomic<float>{this->velocity[2]}.exchange(0.0f));
+        #endif
+    };
+    __device__ __host__ float32x3& atomic_plus_equals(const float32x3& a){
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        atomicAdd((float*)&this->velocity[0], a[0]);
+        atomicAdd((float*)&this->velocity[1], a[1]);
+        atomicAdd((float*)&this->velocity[2], a[2]);
+        #else
+        std::atomic<float>{this->velocity[0]}.fetch_add(a[0]);
+        std::atomic<float>{this->velocity[1]}.fetch_add(a[1]);
+        std::atomic<float>{this->velocity[2]}.fetch_add(a[2]);
+        #endif
+        return this->velocity.xyz();
+    };
+
+    // cout
+    friend std::ostream &operator<<(std::ostream &os, const ChunkOfSpace& q)
+    {
+        os << "Velocity: (" << q.velocity[0] << ", " << q.velocity[1] << ", " << q.velocity[2] << ")";
+        if (q.occupant != nullptr) {
+            os << ", Occupant: " << *(q.occupant);
+        } else {
+            os << ", Occupant: None";
+        }
+        return os;
+    }
+};
+
+
+
+
+using SpaceField = Field<ChunkOfSpace>;
 using Uint84Field = Field<uint84>;
 
 struct FractalParticle
@@ -185,34 +227,43 @@ struct FractalParticle
     FractalParticle* subparticles;
 };
 
-constexpr int SIZE = 2;
+constexpr int SIZE = 1;
 constexpr int size = SIZE;
 constexpr int compression = 1;
-constexpr int allowDensity = 5;
+constexpr int allowDensity = 1;
 
 #define repulsionFactor(r, distance) r
 
-#define FADEOFF(io,jo) (sqrtf(float(io*io+jo*jo))+1) //sqrt((io*io+jo*jo + 1.0))
-// #define FADEOFF(io,jo) 1
+#define FADEOFF(io,jo, ko) 1 //sqrt((io*io+jo*jo + 1.0))
+
+static __host__ __device__ float maxx(float a, float b){
+    return a > b ? a : b;
+}
+
+static __host__ __device__ float minn(float a, float b){
+    return a < b ? a : b;
+}
+
+
 struct VelocitySpread:public HardamardOperation<VelocitySpread> {
 
     __host__ __device__ static inline
-    void apply(ParticleField& velocityField, ParticleField& particle, int32x2& screenDims, uint84& displayPixel, int32x2 globalAddVelocity) {
+    void apply(SpaceField& velocityField, Particle& particle, int32x4& screenDims, float32x3 globalAddVelocity) {
         // Simple example: add spread to velocity
-        if(particle.x <=0 || particle.y <=0){
+        if(particle.position[0] <=0 || particle.position[1] <=0 || particle.position[2] <=0){
             return;
         }
 
-        ParticleField oldparticle = particle;
+        float32x3 oldparticle = particle.position;
         
-        
-        auto oldrelative = int32x2(round(oldparticle.x), round(oldparticle.y));
+        auto oldrelative = int32x4(round(oldparticle[0]), round(oldparticle[1]), round(oldparticle[2]), 0);
         
         if(
-        velocityField.get_field_relative(screenDims, oldrelative).filled == 0.0f){
+        velocityField.get_field_relative(screenDims, oldrelative).occupant == nullptr){
             // not initialized yet
-            velocityField.get_field_relative(screenDims, oldrelative).addFilled(1.0f);
+            velocityField.get_field_relative(screenDims, oldrelative).addFilled(&particle);
         }
+
         // if(particle.filled == nullptr){
         //     particle.filled = &velocityField.get_field_relative(screenDims, oldrelative);
         //     // particle.filled->swapfilled(particle);
@@ -224,78 +275,120 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
         {
             for (int j = -size; j <= size ; j++)
             {
-                friction += 1 / FADEOFF(i, j);
+                for (int k = -size; k <= size ; k++)
+                {
+                    friction += 1 / FADEOFF(i, j, k);
+                }
             }
         }
         friction = 1. / friction;
+        size_t width = screenDims[0];
 
-        size_t width = screenDims.x;
-        size_t height = screenDims.y;
+        size_t height = screenDims[1];
+        size_t depth = screenDims[2];
         
 
-        ParticleField momentum(0.0,0.0);
+        float32x3 momentum(0.0, 0.0, 0.0);
+        float allfilled = 0.0f;
+        // float32x3 normals = float32x3(0.0f, 0.0f, 0.0f);
         for (int i = - SIZE; i <= SIZE; i++) {
             for (int j = - SIZE; j <= SIZE; j++) {
-                momentum += velocityField.get_field_relative(screenDims, int32x2(round(particle.x)+i, round(particle.y)+j)).swap0();
+                for (int k = - SIZE; k <= SIZE; k++) {
+                    auto& part = velocityField.get_field_relative(screenDims, int32x4(round(particle.position[0])+i, round(particle.position[1])+j, round(particle.position[2])+k, 0));
+                    momentum += part.swap0();
+                    if (part.occupant != nullptr) {
+                        allfilled += part.occupant->color[3] > 200 ? 1.0f : 0.0f;
+                    }
+                    // if(part.occupant != nullptr){
+                    //     normals += particle.position - part.occupant->position;
+                    // }
+                }
             }
+        }
+
+        // particle.normal = normals;
+
+
+        if(allfilled < (SIZE*2+1) * (SIZE*2+1) * (SIZE*2+1)){
+            // no velocity
+            // particle.color = uint84(particle.color.xyz(), 0xff);
+            particle.temperatureopacity[1] = 1.0f;
+             
+        }else{
+            // particle.color = uint84(particle.color.xyz(), 0x00);
+            particle.temperatureopacity[1] = 0.0f;
+            momentum[1] -= 0.1f;
+            momentum = momentum * 0.9f;
+            momentum = momentum * friction;
+            auto dis = sqrt(momentum.dot(momentum)+1.0);
+            for (int i = - SIZE; i <= SIZE; i++) {
+                for (int j = - SIZE; j <= SIZE; j++) {
+                    for (int k = - SIZE; k <= SIZE; k++) {
+                        auto& neighbor = velocityField.get_field_relative(screenDims, int32x4(round(particle.position[0])+ i , round(particle.position[1])+ j , round(particle.position[2]) + k, 0));
+                        neighbor.atomic_plus_equals( momentum + (float32x3(i*dis, j*dis, k*dis) * particle.temperatureopacity[0]) / FADEOFF(i, j, k));
+                    }
+                }
+            }
+
+            return;
         }
               
-        
-        
-        particle += momentum;
-        particle += Particle(-globalAddVelocity.x, -globalAddVelocity.y) * compression;
+        // momentum +=  ;
+        particle.position += momentum - globalAddVelocity;
+        // momentum += Particle(globalAddVelocity[0], globalAddVelocity[1],0.0)*0.1f;
 
-        momentum.y += 0.5f;
-
-        if ( particle.x < 1 + size || particle.x > width - 1 - size || particle.y < 1 + size || particle.y > height - 1 - size)
+        momentum[1] -= 0.1f;
+        if ( particle.position[0] < 1 + size || particle.position[0] > width - 1 - size || particle.position[1] < 1 + size || particle.position[1] > height - 1 - size || particle.position[2] < 1 + size || particle.position[2] > depth - 1 -size)
         {
 
-            if (particle.y < 1 + size || particle.y > height - 1 - size)
+            // Particle beforebounce = particle;
+            if (particle.position[1] < 1 + size || particle.position[1] > height - 1 - size)
             {
-                momentum.y *= -0.5;
-                particle.y = max(2.0f + size, min(double(height - (2.0 + size)), particle.y));
+                particle.position[1] = maxx(2.0f + size, minn(float(height - (2.0 + size)), particle.position[1]));
+                momentum[1] *= -0.25f;
             }
-            if (particle.x < 1 + size || particle.x > width - 1 - size)
+            if (particle.position[0] < 1 + size || particle.position[0] > width - 1 - size)
             {
-                momentum.x *= -0.5;
-                particle.x = max(2.0f + size, min(double(width - (2.0 + size)), particle.x));
+                particle.position[0] = maxx(2.0f + size, minn(float(width - (2.0 + size)), particle.position[0]));
+                momentum[0] *= -0.25f;
             }
-            
+            if (particle.position[2] < 1 + size || particle.position[2] > depth - 1 - size)
+            {
+                particle.position[2] = maxx(2.0f + size, minn(float(depth - (2.0 + size)), particle.position[2]));
+                momentum[2] *= -0.25f;
+            }
             
         }
         
-        auto relative = int32x2(round(particle.x), round(particle.y));
+        auto relative = int32x4(round(particle.position[0]), round(particle.position[1]), round(particle.position[2]), 0);
         
        
-        
 
-        if(oldrelative.x != relative.x || oldrelative.y != relative.y){
+        if(oldrelative[0] != relative[0] || oldrelative[1] != relative[1] || oldrelative[2] != relative[2]){
 
             // velocityField.get_field_relative(screenDims, oldrelative).filled = 0.0;   
             auto& newpos = velocityField.get_field_relative(screenDims, relative);   
             // should be safe
-            float curra = newpos.addFilled(1.0f);
+            auto curra = newpos.addFilled(&particle);
 
             // // should be safe:
             
-            if(curra >= allowDensity){ // collision
-                particle = oldparticle; // revert position
-                if(curra < allowDensity+1){
-                    Particle assumed_oppos = {float(relative.x) , float(relative.y) };
-                    auto norm = (particle - assumed_oppos);
-                    // reflect momentum along normal
-                    float dot = (momentum.x * norm.x + momentum.y * norm.y) / (norm.x * norm.x + norm.y * norm.y);
-                    momentum = momentum - norm * (2.0 * dot);
-                    momentum = momentum * 0.5; // bounce back
-                    newpos.atomic_plus_equals(momentum * -1.0f);
-                }else{
-                    momentum = momentum * -1.0; // bounce back with half momentum
-                }
-                newpos.addFilled(-1.0f);
+            if(curra != nullptr){ // collision
+                particle.position = oldparticle; // revert position
+                //  newpos.atomic_plus_equals(momentum * -1.0f);
+                // Particle assumed_oppos = {float(relative[0]) , float(relative[1]), float(relative[2]) };
+                // auto norm = (particle - assumed_oppos);
+                // // reflect momentum along normal
+                // float dot = (momentum[0] * norm[0] + momentum[1] * norm[1] + momentum[2] * norm[2]) / (norm[0] * norm[0] + norm[1] * norm[1] + norm[2] * norm[2]);
+                // momentum = momentum - norm * (2.0 * dot);
+                momentum = momentum * 0.5; // bounce back
+                newpos.atomic_plus_equals(momentum);
+            
+                newpos.addFilled(curra);
             }
             else{
                 // particle.swapfilled(newpos);
-                velocityField.get_field_relative(screenDims, oldrelative).addFilled(-1.0f);
+                velocityField.get_field_relative(screenDims, oldrelative).addFilled(nullptr);
 
             }
         }
@@ -305,44 +398,21 @@ struct VelocitySpread:public HardamardOperation<VelocitySpread> {
         // if(a)->swapfilled(particle);
         
         
-
-        double repulsion = 0.02;
-        double drag = 0.99;
-        auto aa = momentum * drag ;
+\
+        auto aa = momentum * friction;
         
         // auto& curr = *particle.filled;
-        auto& mpos = velocityField.get_field_relative(screenDims, int32x2(round(particle.x) , round(particle.y) ));
-        float mfilled = mpos.filled;
-        mpos.atomic_plus_equals(aa);
-
+        auto& mpos = velocityField.get_field_relative(screenDims, int32x4(round(particle.position[0]) , round(particle.position[1]) , round(particle.position[2]), 0));
+       
+        // mpos.atomic_plus_equals(aa);
+        auto dis = sqrt(aa.dot(aa)+1.0);
         for (int i = - SIZE; i <= SIZE; i++) {
             for (int j = - SIZE; j <= SIZE; j++) {
-                auto& neighbor = velocityField.get_field_relative(screenDims, int32x2(round(particle.x)+ i , round(particle.y)+ j ));
-                neighbor.atomic_plus_equals( (ParticleField(i, j) * repulsion*(mfilled+1)) / FADEOFF(i, j));
+                for (int k = - SIZE; k <= SIZE; k++) {
+                    auto& neighbor = velocityField.get_field_relative(screenDims, int32x4(round(particle.position[0])+ i , round(particle.position[1])+ j , round(particle.position[2]) + k, 0));
+                    neighbor.atomic_plus_equals( aa +  (float32x3(i*dis, j*dis, k*dis) * particle.temperatureopacity[0]) / FADEOFF(i, j, k) );
+                }
             }
-        }
-        
-        // displayPixel = uint84(0xff, 0x00, 0x00, 0xff); // Red particle
-        for (int i = - SIZE/compression; i <= SIZE/compression; i++) {
-            for (int j = - SIZE/compression; j <= SIZE/compression; j++) {
-                auto& neighborPixel =  ((Field<uint84>*)&displayPixel)->get_field_relative(int32x2(screenDims.x/compression,screenDims.y/compression), int32x2(particle.x/compression+ i , particle.y/compression + j ));
-                neighborPixel = uint84(
-                    particle.color.x / FADEOFF(i,j) * float(particle.color.w ) / 255.0f + neighborPixel.x * float(particle.color.w ) / 255.0f,
-                    particle.color.y / FADEOFF(i,j) * float(particle.color.w ) / 255.0f + neighborPixel.y * float(particle.color.w ) / 255.0f,
-                    particle.color.z / FADEOFF(i,j) * float(particle.color.w ) / 255.0f + neighborPixel.z * float(particle.color.w ) / 255.0f,
-                    particle.color.w + neighborPixel.w
-                );
-            }
-        }
-    }
-};
-
-struct UpdateFieldDetails:public HardamardOperation<UpdateFieldDetails> {
-
-    __host__ __device__ static inline
-    void apply(ParticleField& particlefield, uint84& displayPixel){
-        if(particlefield.filled > 0.0f){
-            displayPixel = uint84(0x00, 0xff, 0x00, 0xff); // Green for filled
         }
     }
 };
@@ -355,153 +425,183 @@ __weak int main(){
     setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 1);
     setenv("SDL_VIDEO_DRIVER", "x11", 1);
     setenv("EGL_PLATFORM", "x11", 1);
+
+    // test float32x3
+
     // setenv("SDL_DEBUG", "1", 1);
     /*
     export SDL_VIDEO_DRIVER=x11
 export EGL_PLATFORM=x11
     */
 
-    int size = 768;
-    int horizontal_size = 1024;
+    int size = 128;
+    int horizontal_size = 512;
+    int depth_size = 512;
 
 
-    VectorDisplay display({size,horizontal_size},  WP_ON_TOP|WP_ALPHA_ENABLED);
+    OpenGLDisplay window({1024,1024},  WP_ON_TOP);
+    Scene scene(&window);
+
+    Tensor<uint84,2> mypointer = Tensor<uint84,2>({1024,768}, window.device->default_memory_type, kOPENGL);
+ 
+    VectorDisplay display(mypointer);
+
+    global_device_manager.get_device(MemoryType::kDDR,0).default_compute_type = ComputeType::kCPU;
+
+    scene.setCamera({0, 0, -5.0f}, {0, 0, 1.0f}, {0, 1, 0});
+
+    Tensor<float32x4, 1> pointlist = Tensor<float32x4, 1>({4}, MemoryType::kDDR);
+    pointlist[{0}] = float32x4(0.0f, 0.0f, 0.0f, 1.0);
+    pointlist[{1}] = float32x4(128.0f, 0.0f, 0.0f, 1.0);
+    pointlist[{2}] = float32x4(0.0f, 128.0f, 0.0f, 1.0);
+    pointlist[{3}] = float32x4(128.0f, 128.0f, 0.0f, 1.0);
 
 
-
-
+    gltf model = gltf("examples/porygon/","scene.gltf");
+    std::cout << model << std::endl;
+    scene.loadGLTF(model);
 
 //     // using QT = Quaternion<SuperReal2>;
 
-   Tensor<ParticleField, 2> patch = Tensor<ParticleField, 2>({100,100}, MemoryType::kDDR);
+   Tensor<Particle, 3> patch = Tensor<Particle, 3>({100,100,100}, MemoryType::kDDR);
     for(int i = 0; i < 100; i++){
         for(int j = 0; j < 100; j++){
-            patch[{i,j}] = ParticleField(i+30, j+30); // 10 by 10 block of particles
-        }
-    }
-    auto patchcuda = patch.view(Shape<1>{-1}).to(*display.device);
-    
-    
-    Tensor<ParticleField,2> Field = Tensor<ParticleField,2>({size*compression,horizontal_size*compression}, *display.device);
-    Field[{{}}] = ParticleField(0.0f, 0.0f);
+            for(int k = 0; k < 100; k++){
+            patch[{j,k,i}] = Particle(i+5, j+5, k+5); // 10 by 10 block of particles
+            patch[{j,k,i}].color = uint84(0xff,0xff,0xff, 0xff); // Green color
+            float randomfactor = ((float)(rand() % 1000)) / 1000.0f * 0.1f;
+            patch[{j,k,i}].temperatureopacity = float32x2(0.001, 1.0f); // random density and full opacity
+            if (j >= 80){
+                patch[{j,k,i}].color = uint84(0x00, 0x00, 0xff, 0x11); // Red color
+                // repulsion at 0.01
+                patch[{j,k,i}].temperatureopacity = float32x2(0.04f, 1.0f); // low density and half opacity
 
-    Tensor<ParticleField, 1> particles = Tensor<ParticleField, 1>({5000*100}, *display.device);
-    particles[{{}}] = ParticleField(-10.0f, -10.0f);
-//     // particles[{{0,100*100}}] = patchcuda;
+            }
+            }
+
+        }
+
+    }
+
+    auto patchcuda = patch.view(Shape<1>{-1}).to(window.device->default_memory_type);
+
     
+    Tensor<SpaceField,3> Field = Tensor<SpaceField,3>({size*compression,horizontal_size*compression, depth_size*compression}, window.device->default_memory_type);
+    
+    Field[{{}}] = SpaceField();
+
+    RenderStruct<float32x3, float32x2, uint84> particles_renderable(
+        Shape<1>{100*100*100}
+    );
+
+    particles_renderable.count = 100*100*80;
+
+    RenderStruct<float32x3, float32x2, uint84> particles_renderable_liquid(
+       particles_renderable
+    );
+
+    particles_renderable_liquid.count = 100*100*20;
+    particles_renderable_liquid.offset = 100*100*80;
+
+
+    // sampler2D rock = load_texture("./image.png");
+    // auto rockdevice = rock.to(window.device->default_memory_type, kOPENGLTEXTURE);
+    Tensor<Particle, 1> particles = particles_renderable.view<Particle,1>({-1});
+    // // particles[{{}}] = Particle(-10.0f, -10.0f, -10.0f); // Initialize all particles off-screen
+    particles[{{}}] = patchcuda;
+    particles_renderable.material = new Shader<ParticleShader>();
+    // particles_renderable.material->textures_ids["texture1"] = (unsigned long long)rockdevice.storage_pointer - 0x10000;
+    particles_renderable_liquid.material = particles_renderable.material;
 //     Tensor<unsigned long, 1> particleindex = Tensor<unsigned long, 1>({5000*100}, MemoryType::kDDR);
 
-    
-    
-//     // auto MappedDisplay = display.view<Uint84Field,1>({-1}).tensor_index(particleindex);
-
-    size_t currentIndex = 100*100;
-    int currentFrame = 0;
+    window.setMouseGrab(true);
+// //     // auto MappedDisplay = display.view<Uint84Field,1>({-1}).tensor_index(particleindex);
+//     size_t currentIndex = 100*100;
+//     int currentFrame = 0;
 //     // get current time in milliseconds
-    auto start_time = std::chrono::high_resolution_clock::now();
-    display.add_on_update([&](CurrentScreenInputInfo& info){
-        display[{{}}] = 0xffffff00; // White background
-        currentFrame++;
-        // std::cout << "Frame " << currentFrame << std::endl;
+    glEnable(GL_PROGRAM_POINT_SIZE);
+    // mypointer[{{}}] = 0xffffff00; // White background
+    // auto start_time = std::chrono::high_resolution_clock::now();
+    Camera& camera = scene.getCamera();
+    window.add_on_update([&](CurrentScreenInputInfo& info){
 
-        auto current_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double, std::milli> elapsed = current_time - start_time;
-        float time_seconds = elapsed.count() / 1000.0f;
-        start_time = current_time;
-        // std::cout << "Fps: " << 1.0f / time_seconds << std::endl;
-        
-        
-        // auto particleOffsets = round(particles.view<float, 2>({-1,2})[{{},1}])*horizontal_size;
-        // auto particleHeights = round(particles.view<float, 2>({-1,2})[{{},0}]);
-        // particleindex = (particleOffsets + particleHeights);
-        // UpdateParticleIndex::run(
-        //     particles,
-        //     horizontal_size,
-        //     particleindex
-        // );
-
-
-        display[{{}}] = 0x00000000; // Black background
-
-        UpdateFieldDetails::run(
-            Field[{{0,{},compression},{0,{},compression}}],//[{0,{0,1}}],
-            display[{{}}]//[{0,{0,1}}]
-        );
-        
-        VelocitySpread::run(
-            Field[{0,{0,1}}],
-            particles,
-            int32x2(horizontal_size*compression, size*compression),
-            display[{0,{0,1}}],
-            info.relativeWindowMove
-        );
-        
-
-
-        if(info.just_selected_area){
-            int solid = info.isMouseRightButtonPressed();
-            auto area = info.getLocalSelectedArea();
-            std::cout << "Selected area: " << area.x << "," << area.y << " to " << area.z << "," << area.w << std::endl;
-            std::cout << "Adding particles..." << std::endl;
-            if(!solid){
-                area.z /= SIZE*2+1;
-                area.w /= SIZE*2+1;
-                area.x = area.x - (int(area.x) % (2*SIZE + 1));
-                area.y = area.y - (int(area.y) % (2*SIZE + 1));
-                area = int32x4(
-                    (area.x)*compression,
-                    (area.y)*compression,
-                    (area.z)*compression,
-                    (area.w)*compression
-                );
-                unsigned long count = (unsigned long)(area.z) * (unsigned long)area.w ;
-                Tensor<ParticleField, 2> newparticles = Tensor<ParticleField, 2>({area.z,area.w}, MemoryType::kDDR);
-                // cudaDeviceSynchronize();
-                for(int i = 0; i < area.z; i++){
-                    for(int j = 0; j < area.w; j++){
-                        newparticles[{i , j}] = ParticleField(area.x + i*(2*SIZE + 1) , area.y + j*(2*SIZE + 1) );
-                        newparticles[{i , j}].color = uint84(
-                            (rand() % 256),
-                            (rand() % 256),
-                            (rand() % 256),
-                            0x99
-                        );
-                    }
-                }
-                // cudaDeviceSynchronize();
-                auto newparticles_cuda = newparticles.view(Shape<1>{-1}).to(*display.device);
-                // cudaDeviceSynchronize();
-                if(currentIndex + count > particles.shape[0]){
-                    std::cout << "Particle limit reached, cannot add more particles." << std::endl;
-                    return;
-                }
-                particles[{{currentIndex, currentIndex + count}}] = newparticles_cuda;
-                // cudaDeviceSynchronize();
-
-
-                currentIndex += count;
-            }
-            
+        float32x3 forward = camera.forward.normalized();
+        float32x3 right = forward.cross(float32x3(0.0,1.0,0.0)).normalized();
+        if(info.isKeyPressed(SDLK_A)){
+            camera.position -= right * 1.0f;
+            // camera.target -= right * 1.0f;
         }
-        if(info.isMouseRightButtonPressed())
-        {
-                auto part = ParticleField(
-                    0,0
-                );
-                part.filled = 5.0f;
-                Field[
-                    {
-                        {info.getLocalMousePosition().y*compression, (info.getLocalMousePosition().y + 10)*compression},
-                        {info.getLocalMousePosition().x*compression, (info.getLocalMousePosition().x + 10)*compression}
-                    }
-                ] = part;
-            }
+        if(info.isKeyPressed(SDLK_D)){
+            camera.position += right * 1.0f;
+            // camera.target += right * 1.0f;
+        }
+        if(info.isKeyPressed(SDLK_W)){
+            camera.position += forward * 1.0f;
+            // camera.target += forward * 1.0f;
+        }
+        if(info.isKeyPressed(SDLK_S)){
+            camera.position -= forward * 1.0f;
+            // camera.target -= forward * 1.0f;
+        }
+        if (info.isKeyPressed(SDLK_SPACE)) {
+            camera.position[1] += 1.0f;
+            // camera.target[1] += 1.0f;
+        }
+        if (info.isKeyPressed(SDLK_LCTRL)) {
+            camera.position[1] -= 1.0f;
+            // camera.target[1] -= 1.0f;
+        }
 
-        // limit 60fps
+        if (info.isMouseGrabbed()) {
+            camera.forward = mat4::identity().rotated(-info.getMouseRel().first * 0.005f,float32x3(0.0f, 1.0f, 0.0f)) * (camera.forward );
+            camera.forward = mat4::identity().rotated(-info.getMouseRel().second * 0.005f, right) * (camera.forward );
+            camera.up = -(camera.forward).cross(right);
+        }
+
+        if(info.isKeyPressed(SDLK_TAB)){
+            window.setMouseGrab(!info.isMouseGrabbed());
+        }
+ 
+
+        VelocitySpread::run(
+            Field[{0,{0,1},{0,1}}],
+            particles,
+            int32x4(horizontal_size*compression, size*compression, depth_size*compression, 0),
+            info.relativeWindowMove.xxx() * right + info.relativeWindowMove.yyy() * forward.cross(right)
+        );
+        particles.device->synchronize_function();
+
+        // // print aly gl errors
+        
+        // // set point size to 10
+        particles_renderable.bind();
+        camera.bind(particles_renderable.material->shader_program);
+        // // // blend mode additive
+        glEnable(GL_BLEND);
+        // // // add blend mode, source + destination
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        mat4::identity().bind(particles_renderable.material->shader_program, "model");
+        particles_renderable.draw();
+ 
+        GLenum err;
+        while ((err = glGetError()) != GL_NO_ERROR) {
+            std::cerr << "OpenGL error: " << err << std::endl;
+        }
+
+        // water, have it glow by having it be additive blended with itself
+        // glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        glDepthMask(false); // disable depth writing for water to prevent z-fighting
+
+        particles_renderable_liquid.bind();
+        camera.bind(particles_renderable_liquid.material->shader_program);
+        particles_renderable_liquid.draw();
+
+        glDepthMask(true); // re-enable depth writing
+        // 60fps
         // SDL_Delay(16);
     });
-
-    display.displayLoop();
+    // std::cout << Field << std::endl;
+    window.displayLoop();
 
     return 0;
 }

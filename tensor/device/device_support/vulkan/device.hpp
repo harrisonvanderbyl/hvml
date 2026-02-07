@@ -128,12 +128,12 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
         mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
 
         // Setup allocator
-        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](size_t size) {
+        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](Shape<-1> size, size_t bitsize, void* existing_data) {
             VkDeviceMemory* device_memory = new VkDeviceMemory();
             
             VkMemoryAllocateInfo alloc_info = {};
             alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = size;
+            alloc_info.allocationSize = size.total_size() * bitsize;
             
             // Find device-local memory type
             alloc_info.memoryTypeIndex = find_memory_type(
