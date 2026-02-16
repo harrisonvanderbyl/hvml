@@ -53,6 +53,17 @@ typedef void (APIENTRY *PFNGLUNIFORMMATRIX4FVPROC)(GLint location, GLsizei count
 typedef void (APIENTRY *PFNGLUNIFORM3FVPROC)(GLint location, GLsizei count, const GLfloat *value);
 typedef void (APIENTRY *PFNGLUNIFORM1FPROC)(GLint location, GLfloat value);
 typedef void (APIENTRY *PFNGLUNIFORM1IPROC)(GLint location, GLint value);
+typedef void (APIENTRY *PFNGLGENFRAMEBUFFERSPROC)(GLsizei n, GLuint *framebuffers);
+typedef void (APIENTRY *PFNGLBINDFRAMEBUFFERPROC)(GLenum target, GLuint framebuffer);
+typedef void (APIENTRY *PFNGLDELETEFRAMEBUFFERSPROC)(GLsizei n, const GLuint *framebuffers);
+typedef void (APIENTRY *PFNGLFRAMEBUFFERTEXTURE2DPROC)(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+typedef void (APIENTRY *PFNGLGENRENDERBUFFERSPROC)(GLsizei n, GLuint *renderbuffers);
+typedef void (APIENTRY *PFNGLBINDRENDERBUFFERPROC)(GLenum target, GLuint renderbuffer);
+typedef void (APIENTRY *PFNGLDELETERENDERBUFFERSPROC)(GLsizei n, const GLuint *renderbuffers);
+typedef void (APIENTRY *PFNGLRENDERBUFFERSTORAGEPROC)(GLenum target, GLenum internalformat, GLsizei width, GLsizei height);
+typedef void (APIENTRY *PFNGLFRAMEBUFFERRENDERBUFFERPROC)(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
+typedef GLenum (APIENTRY *PFNGLCHECKFRAMEBUFFERSTATUSPROC)(GLenum target);
+typedef void (APIENTRY *PFNGLVIEWPORTPROC)(GLint x, GLint y, GLsizei width, GLsizei height);
 
 typedef GLboolean (APIENTRY *PFNGLUNMAPBUFFERPROC)(GLenum target);
 
@@ -89,7 +100,18 @@ struct OpenGLFunctions {
     PFNGLUNMAPBUFFERPROC glUnmapBuffer = nullptr;
     PFNGLGETINTEGERI_VPROC glGetIntegeri_v = nullptr;
     PFNGLUNIFORM2IPROC glUniform2i = nullptr;
-    PFNGLTEXBUFFERPROC glTexBuffer = nullptr;
+    PFNGLTEXBUFFERPROC glTexBuffer = nullptr; 
+    PFNGLGENFRAMEBUFFERSPROC glGenFramebuffers = nullptr;
+    PFNGLBINDFRAMEBUFFERPROC glBindFramebuffer = nullptr;
+    PFNGLDELETEFRAMEBUFFERSPROC glDeleteFramebuffers = nullptr;
+    PFNGLFRAMEBUFFERTEXTURE2DPROC glFramebufferTexture2D = nullptr;
+    PFNGLGENRENDERBUFFERSPROC glGenRenderbuffers = nullptr;
+    PFNGLBINDRENDERBUFFERPROC glBindRenderbuffer = nullptr;
+    PFNGLDELETERENDERBUFFERSPROC glDeleteRenderbuffers = nullptr;
+    PFNGLRENDERBUFFERSTORAGEPROC glRenderbufferStorage = nullptr;
+    PFNGLFRAMEBUFFERRENDERBUFFERPROC glFramebufferRenderbuffer = nullptr;
+    PFNGLCHECKFRAMEBUFFERSTATUSPROC glCheckFramebufferStatus = nullptr;
+    PFNGLVIEWPORTPROC glViewport = nullptr;
 };
 
 __weak OpenGLFunctions* GLFuncs = nullptr;
@@ -138,6 +160,17 @@ __weak void loadGLFunctions() {
     funcs->glGetIntegeri_v = (PFNGLGETINTEGERI_VPROC)SDL_GL_GetProcAddress("glGetIntegeri_v");
     funcs->glUniform2i = (PFNGLUNIFORM2IPROC)SDL_GL_GetProcAddress("glUniform2i");
     funcs->glTexBuffer = (PFNGLTEXBUFFERPROC)SDL_GL_GetProcAddress("glTexBuffer");
+    funcs->glGenFramebuffers = (PFNGLGENFRAMEBUFFERSPROC)SDL_GL_GetProcAddress("glGenFramebuffers");
+    funcs->glBindFramebuffer = (PFNGLBINDFRAMEBUFFERPROC)SDL_GL_GetProcAddress("glBindFramebuffer");
+    funcs->glDeleteFramebuffers = (PFNGLDELETEFRAMEBUFFERSPROC)SDL_GL_GetProcAddress("glDeleteFramebuffers");
+    funcs->glFramebufferTexture2D = (PFNGLFRAMEBUFFERTEXTURE2DPROC)SDL_GL_GetProcAddress("glFramebufferTexture2D");
+    funcs->glGenRenderbuffers = (PFNGLGENRENDERBUFFERSPROC)SDL_GL_GetProcAddress("glGenRenderbuffers");
+    funcs->glBindRenderbuffer = (PFNGLBINDRENDERBUFFERPROC)SDL_GL_GetProcAddress("glBindRenderbuffer");
+    funcs->glDeleteRenderbuffers = (PFNGLDELETERENDERBUFFERSPROC)SDL_GL_GetProcAddress("glDeleteRenderbuffers");
+    funcs->glRenderbufferStorage = (PFNGLRENDERBUFFERSTORAGEPROC)SDL_GL_GetProcAddress("glRenderbufferStorage");
+    funcs->glFramebufferRenderbuffer = (PFNGLFRAMEBUFFERRENDERBUFFERPROC)SDL_GL_GetProcAddress("glFramebufferRenderbuffer");
+    funcs->glCheckFramebufferStatus = (PFNGLCHECKFRAMEBUFFERSTATUSPROC)SDL_GL_GetProcAddress("glCheckFramebufferStatus");
+    funcs->glViewport = (PFNGLVIEWPORTPROC)SDL_GL_GetProcAddress("glViewport");
 
     if (funcs->glCreateShader == nullptr || funcs->glShaderSource == nullptr ||
         funcs->glCompileShader == nullptr || funcs->glGetShaderiv == nullptr ||
@@ -154,9 +187,16 @@ __weak void loadGLFunctions() {
         funcs->glUniformMatrix4fv == nullptr || funcs->glUniform3fv == nullptr ||
         funcs->glUniform1f == nullptr || funcs->glUniform1i == nullptr ||
         funcs->glMapBuffer == nullptr || funcs->glUnmapBuffer == nullptr ||
-        funcs->glGetIntegeri_v == nullptr) {
+        funcs->glGetIntegeri_v == nullptr || funcs->glUniform2i == nullptr || funcs->glTexBuffer == nullptr ||
+        funcs->glGenFramebuffers == nullptr || funcs->glBindFramebuffer == nullptr ||
+        funcs->glDeleteFramebuffers == nullptr || funcs->glFramebufferTexture2D == nullptr ||
+        funcs->glGenRenderbuffers == nullptr || funcs->glBindRenderbuffer == nullptr ||
+        funcs->glDeleteRenderbuffers == nullptr || funcs->glRenderbufferStorage == nullptr ||
+        funcs->glFramebufferRenderbuffer == nullptr || funcs->glCheckFramebufferStatus == nullptr ||
+        funcs->glViewport == nullptr) {
         throw std::runtime_error("Failed to load required OpenGL functions");
     }
+    
     std::cout << "Successfully loaded OpenGL functions" << std::endl;
 }
 
@@ -196,6 +236,10 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
     if (vendor) {
         const char* vendor_str = reinterpret_cast<const char*>(vendor);
         if (strstr(vendor_str, "NVIDIA") != nullptr) {
+            // enable uint16_t support for NVIDIA GPUs
+
+            // NVIDIA GPUs typically support uint16_t in shaders, but we should verify this with the renderer string
+
             mem = MemoryType::kCUDA_VRAM;
         } else if (strstr(vendor_str, "AMD") != nullptr || 
                    strstr(vendor_str, "ATI") != nullptr) {

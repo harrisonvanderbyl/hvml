@@ -173,6 +173,22 @@ struct VertexAttribute<float>
     static constexpr GLboolean normalized = GL_FALSE;
 };
 
+template <>
+struct VertexAttribute<uint16_t>
+{
+    static constexpr GLint size = 1;
+    static constexpr GLenum type = GL_UNSIGNED_SHORT;
+    static constexpr GLboolean normalized = GL_FALSE;
+};
+
+template <>
+struct VertexAttribute<uint32_t>
+{
+    static constexpr GLint size = 1;
+    static constexpr GLenum type = GL_UNSIGNED_INT;
+    static constexpr GLboolean normalized = GL_FALSE;
+};
+
 template <typename T>
 struct VertexAttributeToGLType {
     static constexpr const char* get() {
@@ -200,6 +216,14 @@ struct VertexAttributeToGLType {
             }
         }
 
+        if constexpr (A::type == GL_UNSIGNED_SHORT) {
+            if constexpr (A::size == 1) return "uint16_t";
+        }
+
+        if constexpr (A::type == GL_UNSIGNED_INT) {
+            if constexpr (A::size == 1) return "uint";
+        }
+
         return "unknown";
     }
 };
@@ -214,7 +238,7 @@ template <typename... Ts>
 struct mytuple
 {
     // tuple implementation with __device__ and __host__ constructors
-    char data[(sizeof(Ts) + ... + 0)] = {};
+    uint8_t data[(sizeof(Ts) + ... + 0)] = {};
     __host__ __device__ mytuple(Ts... args)
     {
         size_t offset = 0;
@@ -245,6 +269,14 @@ struct CopyDataHelper : HardamardOperation<CopyDataHelper<vertex_types...>>
     __host__ __device__ static inline void apply(const vertex_types &...vals, mytuple<vertex_types...> &out)
     {
         out = VertexLayout<vertex_types...>({vals...});
+    }
+};
+
+struct IntToUnsignedLongConverter : public HardamardOperation<IntToUnsignedLongConverter>
+{
+    __host__ __device__ static inline void apply(const int &val, unsigned long &out)
+    {
+        out = static_cast<unsigned long>(val);
     }
 };
 
@@ -292,60 +324,60 @@ struct ShaderProgram
     void discard(){};
 
 
-    float32x3 reflect(const float32x3 &I, const float32x3 &N) {
-        return I - N * 2.0f * dot(N, I);
-    }
+    float32x3 reflect(const float32x3 &I, const float32x3 &N); 
 
-    mat4 inverse(const mat4 &m) {
-        // Implement matrix inversion (omitted for brevity)
-        return mat4::identity(); // Placeholder
-    }
+    mat4 inverse(const mat4 &m);
 
     mat4 transpose(const mat4 &m) {
         return mat4::identity(); // Placeholder
     }
 
     template <typename T>
-    float length(const T &v) {
-        return v.length();
-    }
+    float length(const T &v);
 
     template <typename T>
-    T max(const T &v, const T &other) {
-        return std::max(v, other);
-    };
+    T max(const T &v, const T &other);
 
     template <typename T>
-    T min(const T &v, const T &other) {
-        return std::min(v, other);
-    };
+    T min(const T &v, const T &other);
 
     template <typename T>
-    float dot(const T &a, const T &b) {
-        return a.dot(b);
-    }
+    float dot(const T &a, const T &b);
 
     template <typename T>
-    T normalize(const T &v) {
-        return v.normalized();
-    }
+    T normalize(const T &v);
 
     template <typename T>
-    T floor(const T &v) {
-        return v;
-    }
+    T abs(const T &v);
 
     template <typename T>
-    T mix(const T &a, const T &b, float t) {
-        return a * (1.0f - t) + b * t;
-    }
+    T floor(const T &v);
+
+    template <typename T>
+    T mix(const T &a, const T &b, float t);
     
-    uint84 texture2D(const sampler2D &sampler, const float32x2 &uv) {
-        // Placeholder implementation
-        return sampler[{int(uv[0]), int(uv[1])}];
-    }
+    uint84 texture2D(const sampler2D &sampler, const float32x2 &uv);
 
+    template <typename T>
+    T mod(const T &x, const T &y);
+
+    template <typename T>
+    T asin(const T &x);
+
+    template <typename T>
+    T atan(const T &y, const T &x);
+
+    template <typename T>
+    T acos(const T &x);
+
+    template <typename T>
+    T cos(const T &x);
+
+    template <typename T>
+    T sin(const T &x);
     // no template named function traits
+    template <typename T, typename TT, typename TTT>
+    T clamp(const T &x, const TT &minVal, const TTT &maxVal);
   
 };
 

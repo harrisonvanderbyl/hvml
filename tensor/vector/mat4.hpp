@@ -1,11 +1,11 @@
 
 #ifndef MAT4_HPP
 #define MAT4_HPP
-#include "vector/simplevec.hpp"
+#include "vector/Hvec.hpp"
 #include "device/device.hpp"
-struct mat4 : public simpleVec<float32x4, 4>
+struct mat4 : public Hvec<float32x4, 4>
 {
-    using simpleVec<float32x4, 4>::simpleVec;
+    using Hvec<float32x4, 4>::Hvec;
 
 
     mat4  __host__ __device__  transpose()

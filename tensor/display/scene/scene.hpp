@@ -106,7 +106,7 @@ public:
         {
             std::cout << "Processing mesh: " << mesh.name << std::endl;
 
-            for (const auto &primitive : mesh.primitives)
+            for (auto &primitive : mesh.primitives)
             {
 
                 auto pos_it = primitive.attributes.find("POSITION");

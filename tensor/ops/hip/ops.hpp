@@ -1,6 +1,39 @@
 
 #include "ops/common.hpp"
 #include <hip/hip_runtime.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_bf16.h>
+#include <hipcub/hipcub.hpp>
+// #include <thrust/sort.h>
+// #include <thrust/device_ptr.h>
+
+#define __nv_bfloat16 __hip_bfloat16
+#define __nv_bfloat162 __hip_bfloat162
+
+void hip_thrust_sort(float* keys, int* indices, size_t count) {
+    
+     // Allocate temp storage
+    void* d_temp = nullptr;
+    size_t temp_bytes = 0;
+    
+    HIP_ERROR_CHECK(hipcub::DeviceRadixSort::SortPairs(
+        d_temp, temp_bytes,
+        keys, keys,  // in-place sort
+        indices, indices,
+        count
+    ));
+    
+    HIP_ERROR_CHECK(hipMalloc(&d_temp, temp_bytes));  // or hipMalloc
+    
+    HIP_ERROR_CHECK(hipcub::DeviceRadixSort::SortPairs(
+        d_temp, temp_bytes,
+        keys, keys,
+        indices, indices,
+        count
+    ));
+    
+    HIP_ERROR_CHECK(hipFree(d_temp));  // or hipFree
+}
 
 template <typename A, typename B> 
 __host__ __device__ void atomicAddCuda(A* a, const B& b){
@@ -44,7 +77,7 @@ void call_hip(
 
         int threadsPerBlock = 256;
         auto firstParamShape = std::get<0>(std::tuple<Parameter<Args>...>(params...)).shape;
-        int loopsize = 32;//(firstParamShape[-1]+32-1)/32; // adjust loopsize for performance/memory tradeoff, 32 threads
+        int loopsize = 256;//(firstParamShape[-1]+32-1)/32; // adjust loopsize for performance/memory tradeoff, 32 threads
         
         int numBlocks = (total_size + (threadsPerBlock*loopsize) - 1) / (threadsPerBlock*loopsize);
 

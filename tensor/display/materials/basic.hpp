@@ -8,6 +8,7 @@ struct __shader BasicShader : public ShaderProgram
     mat4 model;
     mat4 view;
     mat4 projection;
+    mat4 projectionview;
     mat4 bone_matrices[100]; // Array of bone matrices for skeletal animation
     float32x3 lightPos;
     float32x3 lightColor;

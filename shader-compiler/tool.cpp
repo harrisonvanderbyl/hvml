@@ -37,6 +37,9 @@ static std::string VertexAttributeToGLType(StringRef type) {
     if (type == "float32x3") return "vec3";
     if (type == "float32x4") return "vec4";
     if (type == "uint84") return "vec4";
+    if (type == "float") return "float";
+    if (type == "uint16_t") return "uint16_t";
+    if (type == "uint32_t") return "uint";
     return type.str();
 }
 
@@ -86,6 +89,7 @@ private:
         // Find vertex() and fragment() methods
         CXXMethodDecl *vertexMethod = nullptr;
         CXXMethodDecl *fragmentMethod = nullptr;
+        bool hasuint16_t = false;
 
         for (auto *method : decl->methods()) {
             if (!method->getIdentifier()) continue;
@@ -98,6 +102,9 @@ private:
                     std::string type = VertexAttributeToGLType(param->getType().getAsString());
                     std::string pname = param->getNameAsString();
                     vertexInputs.push_back({type, pname});
+                    if (type == "uint16_t") {
+                        hasuint16_t = true;
+                    }
                 }
             } else if (name == "fragment") {
                 fragmentMethod = method;
@@ -116,7 +123,7 @@ private:
             
             shaders.push_back(generateGLSL(uniforms, vertexInputs, fragmentInputs, 
                                           vertexBody, fragmentBody, 
-                                            SM.getFilename(decl->getLocation()).str(), decl->getNameAsString()));
+                                            SM.getFilename(decl->getLocation()).str(), decl->getNameAsString(), hasuint16_t));
         }
     }
 
@@ -217,13 +224,18 @@ private:
         const std::string &vertexBody,
         const std::string &fragmentBody,
         const std::string &original_filename = "",
-        const std::string &struct_name = ""
+        const std::string &struct_name = "",
+        bool hasuint16_t = false
     ) {
         GLSLShader s;
 
         // ---- Vertex Shader
         std::string vs;
         vs += "#version 330 core\n";
+        if (hasuint16_t) {
+            std::string nv_ext = "#extension GL_NV_gpu_shader5 : enable\n";
+            vs =  vs + nv_ext;
+        }
         
         // Input attributes
         for (size_t i = 0; i < vertexInputs.size(); i++)

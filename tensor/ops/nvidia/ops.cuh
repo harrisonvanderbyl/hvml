@@ -1,6 +1,22 @@
 
 #include "ops/common.hpp"
 #include <cuda_runtime.h>
+// bfloat16
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
+#include <thrust/sort.h>
+#include <thrust/device_ptr.h>
+
+void cuda_thrust_sort(float* keys, int* indices, size_t size) {
+    thrust::device_ptr<float> keys_ptr(keys);
+    thrust::device_ptr<int> indices_ptr(indices);
+
+    thrust::sort_by_key(
+        keys_ptr,
+        keys_ptr + size,
+        indices_ptr
+    );
+}
 
 template <typename A, typename B> 
 __host__ __device__ void atomicAddCuda(A* a, const B& b){
@@ -54,7 +70,7 @@ void call_cuda(
 
     int threadsPerBlock = 256;
     auto firstParamShape = std::get<0>(std::tuple<Parameter<Args>...>(params...)).shape;
-    int loopsize = 32;//(firstParamShape[-1]+32-1)/32; // adjust loopsize for performance/memory tradeoff, 32 threads
+    int loopsize = 256;//(firstParamShape[-1]+32-1)/32; // adjust loopsize for performance/memory tradeoff, 32 threads
     
     int numBlocks = (total_size + (threadsPerBlock*loopsize) - 1) / (threadsPerBlock*loopsize);
 

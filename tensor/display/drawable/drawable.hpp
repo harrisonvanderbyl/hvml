@@ -91,6 +91,18 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         setupVAO();
     }
 
+    RenderStruct(
+        Shape<1> shape,
+        Tensor<int, 1> inindices
+    ) : Tensor<mytuple<vertex_types...>, 1>(
+            shape,
+            global_device_manager.get_compute_device(kOPENGL).default_memory_type,
+            kOPENGL),
+        indices(inindices.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL))
+    {
+        setupVAO();
+    }
+
     RenderStruct(Skeleton bones, Tensor<int, 1> inindices, Tensor<vertex_types, 1>... inputs) : Tensor<mytuple<vertex_types...>, 1>(
         std::get<0>(std::make_tuple(inputs.shape...)), global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL), bone_matrices(bones)
     {
@@ -109,12 +121,13 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         this->primitive_type = GL_TRIANGLES;
     }
 
-    // RenderStruct(
-    //     const RenderStruct<vertex_types...>& other
-    // ) :  Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(other.indices)
-    // {
-    //     setupVAO();
-    // }
+    RenderStruct(
+        const RenderStruct<vertex_types...>& other,
+        Tensor<int, 1> inindices
+    ) :  Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(inindices.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL))
+    {
+        setupVAO();
+    }
 
     void draw() const
     {
@@ -146,7 +159,13 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         if (indices.data != nullptr)
         {
             GLFuncs->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
+            if (count > 0){
+                glDrawElements(primitive_type, count, GL_UNSIGNED_INT, (void*)(unsigned long)offset);
+                return;
+            }
+            
             glDrawElements(primitive_type, indices.shape[0], GL_UNSIGNED_INT,0);
+            
         }
         else
         {

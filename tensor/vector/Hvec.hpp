@@ -1,7 +1,7 @@
 #include <iostream>
 #include <cstdint>
-#ifndef SIMPLEVEC_HPP
-#define SIMPLEVEC_HPP
+#ifndef Hvec_HPP
+#define Hvec_HPP
 #if !defined(__host__)
 #define __host__
 #define __device__
@@ -124,9 +124,9 @@ struct combine_swizzles // xxyy swizzled by xy = xx
 
 #define createDuoOperation(opname, oper)                                      \
     template <uint8_t otherswizzle, typename U, typename shared = std::common_type_t<T,U>> \
-    __host__ __device__ auto opname(const simpleVec<U, numitems, otherswizzle>& other) const \
+    __host__ __device__ auto opname(const Hvec<U, numitems, otherswizzle>& other) const \
     {                                                                        \
-        simpleVec<shared, numitems> out;                                         \
+        Hvec<shared, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
             out.data[i] = this->data[get_swizzle_component(swizzle,i)] oper \
@@ -138,7 +138,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
 #define createSingleOperation(opname, oper)                                   \
     __host__ __device__ auto opname() const                                 \
     {                                                                        \
-        simpleVec<T, numitems> out;                                         \
+        Hvec<T, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
             out.data[i] = oper(this->data[get_swizzle_component(swizzle,i)]); \
@@ -150,7 +150,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     template <typename U>                                                    \
     __host__ __device__ auto opname(const U& scalar) const                 \
     {                                                                        \
-        simpleVec<T, numitems> out;                                         \
+        Hvec<T, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
             out.data[i] = this->data[get_swizzle_component(swizzle,i)] oper scalar; \
@@ -159,8 +159,8 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     };
 
 #define createDuoAssignmentOperation(opname, oper)                           \
-    template <uint8_t otherswizzle, typename U, typename shared = std::common_type_t<T,U>> \
-    __host__ __device__ simpleVec<T, numitems, swizzle>& opname(const simpleVec<U, numitems, otherswizzle>& other) \
+    template <uint8_t otherswizzle, typename U> \
+    __host__ __device__ Hvec<T, numitems, swizzle>& opname(const Hvec<U, numitems, otherswizzle>& other) \
     {                                                                        \
         T temp[numitems];                                                   \
         \
@@ -178,7 +178,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     };
     
 #define createScalarAssignmentOperation(opname, oper)                           \
-    __host__ __device__ simpleVec<T, numitems, swizzle>& opname(const T& scalar) \
+    __host__ __device__ Hvec<T, numitems, swizzle>& opname(const T& scalar) \
     {                                                                        \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
@@ -188,12 +188,12 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     };
 
 #define createSwizzleReference(swizzeleName, swizzleBits, numout)  \
-    __host__ __device__  inline  typename constIfSwizzleRepeats<simpleVec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type& swizzeleName()  { \
-        return *reinterpret_cast<typename constIfSwizzleRepeats<simpleVec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type *>(this); \
+    __host__ __device__  inline  typename constIfSwizzleRepeats<Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type& swizzeleName()  { \
+        return *reinterpret_cast<typename constIfSwizzleRepeats<Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type *>(this); \
     }\
 \
-    __host__ __device__  inline  const simpleVec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>& swizzeleName() const { \
-        return *reinterpret_cast<const simpleVec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz> *>(this); \
+    __host__ __device__  inline  const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>& swizzeleName() const { \
+        return *reinterpret_cast<const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz> *>(this); \
     }
 
 #define createSwizzleSingle(swizzeleName, number)  \
@@ -233,16 +233,16 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     
 
 
-template <typename T, int numitems = 1, uint8_t swizzle = 0b00011011, Intrinsics intrin = Intrinsics::None>
-struct simpleVec
+template <typename T, int numitems = 1, uint8_t swizzle = 0b00011011>
+struct Hvec
 {
     T data[numitems] = {};
 
-    __host__ __device__ simpleVec()
+    __host__ __device__ Hvec()
     {
     };
 
-    __host__ __device__ simpleVec(const T& val)
+    __host__ __device__ Hvec(const T& val)
     {
         for (int i = 0; i < numitems; i++)
         {
@@ -257,7 +257,7 @@ struct simpleVec
     // };
 
     template <typename U, uint8_t oswiz, typename... Args>
-    __host__ __device__ simpleVec(const simpleVec<U, numitems - sizeof...(Args), oswiz>& other, Args... args)
+    __host__ __device__ Hvec(const Hvec<U, numitems - sizeof...(Args), oswiz>& other, Args... args)
     {
         for (int i = 0; i < numitems - sizeof...(Args); i++)
         {
@@ -273,7 +273,7 @@ struct simpleVec
 
     // equality operator
     template <uint8_t oswiz>
-    __host__ __device__ bool operator==(const simpleVec<T, numitems, oswiz>& other) const
+    __host__ __device__ bool operator==(const Hvec<T, numitems, oswiz>& other) const
     {
         for (int i = 0; i < numitems; i++)
         {
@@ -286,7 +286,7 @@ struct simpleVec
     };
 
      template <typename U, uint8_t oswiz>
-    __host__ __device__ simpleVec(const simpleVec<U, numitems, oswiz>& other)
+    __host__ __device__ Hvec(const Hvec<U, numitems, oswiz>& other)
     {
         for (int i = 0; i < numitems; i++)
         {
@@ -295,7 +295,7 @@ struct simpleVec
     };
 
     template <typename... Args>
-    __host__ __device__ simpleVec(Args... args)
+    __host__ __device__ Hvec(Args... args)
     {
         T vals[] = {static_cast<T>(args)...};
         for (int i = 0; i < numitems; i++)
@@ -305,7 +305,7 @@ struct simpleVec
     };
 
     template <uint8_t otherSwizzle>
-    __host__ __device__ simpleVec(const simpleVec<T, numitems, otherSwizzle>& other)
+    __host__ __device__ Hvec(const Hvec<T, numitems, otherSwizzle>& other)
     {
         for (int i = 0; i < numitems; i++)
         {
@@ -314,7 +314,7 @@ struct simpleVec
     };
 
     template <uint8_t otherSwizzle>
-    __host__ __device__ simpleVec& operator=(const simpleVec<T, numitems, otherSwizzle>& other)
+    __host__ __device__ Hvec& operator=(const Hvec<T, numitems, otherSwizzle>& other)
     {
 
         T temp[numitems];
@@ -340,14 +340,9 @@ struct simpleVec
         return data[get_swizzle_component(swizzle,index)];
     };
 
-    createDuoOperation(operator+, +)
-    createDuoOperation(operator-, -)
-    createDuoOperation(operator*, *)
-    createDuoOperation(operator/, /)
-
     // operator dot and operator length
     template <uint8_t swizzle2>
-    __host__ __device__ T dot(const simpleVec<T, numitems, swizzle2>& other) const
+    __host__ __device__ T dot(const Hvec<T, numitems, swizzle2>& other) const
     {
         T result = T(0);
         for (int i = 0; i < numitems; i++)
@@ -362,10 +357,10 @@ struct simpleVec
         return sqrt(this->dot(*this));
     };
 
-    __host__ __device__ simpleVec<T, numitems> normalized() const
+    __host__ __device__ Hvec<T, numitems> normalized() const
     {
         T len = length();
-        simpleVec<T, numitems> out;
+        Hvec<T, numitems> out;
         for (int i = 0; i < numitems; i++)
         {
             out.data[i] = this->data[get_swizzle_component(swizzle,i)] / len;
@@ -374,10 +369,10 @@ struct simpleVec
     };
 
     // cross product for 3D vectors
-    __host__ __device__ simpleVec<T, 3> cross(const simpleVec<T, 3, swizzle>& other) const
+    __host__ __device__ Hvec<T, 3> cross(const Hvec<T, 3, swizzle>& other) const
     {
         assert(numitems == 3 && "Cross product is only defined for 3D vectors.");
-        simpleVec<T, 3> result;
+        Hvec<T, 3> result;
         result.data[0] = this->data[get_swizzle_component(swizzle,1)] * other.data[get_swizzle_component(swizzle,2)] -
                          this->data[get_swizzle_component(swizzle,2)] * other.data[get_swizzle_component(swizzle,1)];
         result.data[1] = this->data[get_swizzle_component(swizzle,2)] * other.data[get_swizzle_component(swizzle,0)] -
@@ -386,6 +381,12 @@ struct simpleVec
                          this->data[get_swizzle_component(swizzle,1)] * other.data[get_swizzle_component(swizzle,0)];
         return result;
     };
+
+
+    createDuoOperation(operator+, +)
+    createDuoOperation(operator-, -)
+    createDuoOperation(operator*, *)
+    createDuoOperation(operator/, /)
 
     createScalarOperation(operator+, +)
     createScalarOperation(operator-, -)
@@ -407,7 +408,7 @@ struct simpleVec
     createSwizzle1()
 
     // std cout
-    friend std::ostream &operator<<(std::ostream &os, const simpleVec<T, numitems, swizzle> &vec)
+    friend std::ostream &operator<<(std::ostream &os, const Hvec<T, numitems, swizzle> &vec)
     {
         os << "(";
         for (int i = 0; i < numitems; i++)
@@ -424,22 +425,31 @@ struct simpleVec
 };
 
 
-typedef simpleVec<float, 2> float32x2;
+typedef Hvec<float, 2> float32x2;
 
-typedef simpleVec<float, 3> float32x3;
+typedef Hvec<float, 3> float32x3;
 
-typedef simpleVec<float, 4> float32x4;
+typedef Hvec<float, 4> float32x4;
 
-typedef simpleVec<int, 2> int32x2;
 
-typedef simpleVec<int, 3> int32x3;
 
-typedef simpleVec<int, 4> int32x4;
+typedef Hvec<int, 2> int32x2;
 
-struct uint84: public simpleVec<uint8_t, 4>
+typedef Hvec<int, 3> int32x3;
+
+typedef Hvec<int, 4> int32x4;
+
+typedef Hvec<bfloat16,4> bfloat16x4;
+
+typedef Hvec<bfloat16,3> bfloat16x3;
+
+struct uint84: public Hvec<uint8_t, 4>
 {
 
-    using simpleVec<uint8_t, 4>::simpleVec;
+    using Hvec<uint8_t, 4>::Hvec;
+
+    __host__ __device__ uint84(Hvec<uint8_t, 4> other) : Hvec<uint8_t, 4>(other) {}
+
     __host__ __device__ uint84(uint32_t v){
         data[0] = (v >> 24) & 0xFF;
         data[1] = (v >> 16) & 0xFF;

@@ -64,6 +64,9 @@ struct Camera {
         // Set camera uniforms
         getViewMatrix().bind(shader_program, "view");
         getProjectionMatrix().bind(shader_program, "projection");
+        (getViewMatrix() * getProjectionMatrix() ).bind(shader_program, "projectionview");
+        getViewMatrix().inverse().bind(shader_program, "inv_view");
+        getProjectionMatrix().inverse().bind(shader_program, "inv_projection");
     }
         
 };

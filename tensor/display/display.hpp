@@ -19,7 +19,7 @@ class VectorDisplay {
     int width = 0;
     int height = 0;
     GLuint pbo = 0; // Pixel Buffer Object
-   
+    bool is_framebuffer = false;
 
     void preinit() {
 
@@ -49,6 +49,14 @@ class VectorDisplay {
 
 
         // Setup quad vertices (position and texture coordinates)
+        setupQuad();
+
+        program = createProgram(vertexSrc, fragmentSrc);
+
+        bool isFramebuffer = false;
+    }
+
+    void setupQuad() {
         float verts[] = {
             -1, -1, 0, 1,
              1, -1, 1, 1,
@@ -70,29 +78,54 @@ class VectorDisplay {
                               (void*)(2 * sizeof(float)));
 
         GLFuncs->glBindVertexArray(0);
+    }
 
-        program = createProgram(vertexSrc, fragmentSrc);
+    VectorDisplay(Tensor<Hvec<float16,4>,2>& framebuffer) {
+        if(framebuffer.device->allocation_compute_types[framebuffer.storage_pointer] != ComputeType::kOPENGLTEXTURE){
+            throw std::runtime_error("Framebuffer must be allocated with OpenGL texture compute type for VectorDisplay");
+        }
+        this->width = framebuffer.shape[0];
+        this->height = framebuffer.shape[1];
+        
+        // Store the texture ID
+        bufferTexture = (GLuint)((unsigned long long)framebuffer.storage_pointer - 0x10000);
+        
+        // Setup quad and shader
+        setupQuad();
+        program = createProgram(vertexSrc, fragmentSrcTexture);
+        
+        is_framebuffer = true;
     }
 
     void present() {
-        // Render using shader that samples from buffer texture
         glViewport(0, 0, width, height);
-        glClear(GL_COLOR_BUFFER_BIT);
+        // Don't clear here - we're displaying, not rendering
+        // glClear(GL_COLOR_BUFFER_BIT);
 
         GLFuncs->glUseProgram(program);
         GLFuncs->glBindVertexArray(vao);
 
-        // Bind buffer texture
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
-        GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "bufferTex"), 0);
-        GLFuncs->glUniform2i(GLFuncs->glGetUniformLocation(program, "dimensions"), width, height);
+        
+        if (is_framebuffer) {
+            // Bind as 2D texture
+            glBindTexture(GL_TEXTURE_2D, bufferTexture);
+            GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "framebufferTex"), 0);
+        } else {
+            // Bind as buffer texture
+            glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+            GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "bufferTex"), 0);
+            GLFuncs->glUniform2i(GLFuncs->glGetUniformLocation(program, "dimensions"), width, height);
+        }
 
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
-        glBindTexture(GL_TEXTURE_BUFFER, 0);
+        if (is_framebuffer) {
+            glBindTexture(GL_TEXTURE_2D, 0);
+        } else {
+            glBindTexture(GL_TEXTURE_BUFFER, 0);
+        }
         GLFuncs->glBindVertexArray(0);
-
     }
 
 
@@ -125,6 +158,17 @@ private:
             
             // Fetch color directly from buffer
             color = texelFetch(bufferTex, index);
+        }
+    )";
+
+    static constexpr const char* fragmentSrcTexture = R"(
+        #version 330 core
+        in vec2 vUV;
+        out vec4 color;
+        uniform sampler2D framebufferTex;
+        
+        void main() {
+            color = texture(framebufferTex, vec2(vUV.x, 1.0 - vUV.y)); // Flip Y for correct orientation
         }
     )";
 
@@ -371,19 +415,19 @@ public:
 };
 
 enum WindowProperties {
-    WP_BORDERLESS = 1 << 0,
-    WP_ALPHA_ENABLED = 1 << 1,
-    WP_FULLSCREEN = 1 << 2,
-    WP_CLICKTHROUGH = 1 << 3,
-    WP_ON_TOP = 1 << 4,
-    WP_RESIZABLE = 1 << 5
+    WP_BORDERLESS = SDL_WINDOW_BORDERLESS,
+    WP_ALPHA_ENABLED = SDL_WINDOW_TRANSPARENT,
+    WP_FULLSCREEN = SDL_WINDOW_FULLSCREEN,
+    // WP_CLICKTHROUGH = 1 << 3, // SDL doesn't have a built-in click-through flag, so we define our own
+    WP_ON_TOP = SDL_WINDOW_ALWAYS_ON_TOP,
+    WP_RESIZABLE = SDL_WINDOW_RESIZABLE
 };
 
 struct WindowPropertiesFlags {
     bool borderless = false;
     bool alpha_enabled = false;
     bool fullscreen = false;
-    bool clickthrough = true;
+    // bool clickthrough = true;
     bool on_top = false;
     bool resizable = false;
 
@@ -391,7 +435,7 @@ struct WindowPropertiesFlags {
         borderless = properties & WP_BORDERLESS;
         alpha_enabled = properties & WP_ALPHA_ENABLED;
         fullscreen = properties & WP_FULLSCREEN;
-        clickthrough = properties & WP_CLICKTHROUGH;
+        // clickthrough = properties & WP_CLICKTHROUGH;
         on_top = properties & WP_ON_TOP;
         resizable = properties & WP_RESIZABLE;
     }
@@ -400,7 +444,7 @@ struct WindowPropertiesFlags {
         borderless = flags & WP_BORDERLESS;
         alpha_enabled = flags & WP_ALPHA_ENABLED;
         fullscreen = flags & WP_FULLSCREEN;
-        clickthrough = flags & WP_CLICKTHROUGH;
+        // clickthrough = flags & WP_CLICKTHROUGH;
         on_top = flags & WP_ON_TOP;
         resizable = flags & WP_RESIZABLE;
     }
@@ -410,11 +454,23 @@ struct WindowPropertiesFlags {
         if (borderless) props = (WindowProperties)(props | WP_BORDERLESS);
         if (alpha_enabled) props = (WindowProperties)(props | WP_ALPHA_ENABLED);
         if (fullscreen) props = (WindowProperties)(props | WP_FULLSCREEN);
-        if (clickthrough) props = (WindowProperties)(props | WP_CLICKTHROUGH);
+        // if (clickthrough) props = (WindowProperties)(props | WP_CLICKTHROUGH);
         if (on_top) props = (WindowProperties)(props | WP_ON_TOP);
         if (resizable) props = (WindowProperties)(props | WP_RESIZABLE);
         return props;
     }
+
+        operator int() const {
+            int flags = 0;
+            if (borderless) flags |= WP_BORDERLESS;
+            if (alpha_enabled) flags |= WP_ALPHA_ENABLED;
+            if (fullscreen) flags |= WP_FULLSCREEN;
+            // if (clickthrough) flags |= WP_CLICKTHROUGH;
+            if (on_top) flags |= WP_ON_TOP;
+            if (resizable) flags |= WP_RESIZABLE;
+            return flags;
+        }
+    
 };
 
 // FPS Clock for frame rate limiting
@@ -447,6 +503,7 @@ public:
     }
 };
 
+
 struct OpenGLDisplay
 {
 public:
@@ -457,65 +514,95 @@ public:
     int depth = 32;
     int height = 0;
     int width = 0;
-    bool borderless = false;
-    bool alpha_enabled = false;
-    bool is_fullscreen = false;
-    bool clickthrough = true;
-    bool on_top = false;
-    bool resizable = false;
+    GLuint fbo_solid = 0; // Framebuffer Object
+    GLuint depthBuffer_solid = 0; // Depth buffer for solid framebuffer
+    GLuint fbo_final = 0; // Framebuffer Object for final render
+    GLuint depthBuffer_final = 0; // Depth buffer for final framebuffer
+    GLuint backbufferTexture = 0; // Texture attached to framebuffer for rendering
+    GLuint depthBuffer = 0; // Depth buffer for framebuffer
+    WindowPropertiesFlags properties;
     CurrentScreenInputInfo current_screen_input_info;
     ComputeDeviceBase* device = nullptr;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
+    VectorDisplay* vectordisplay = nullptr;
+    VectorDisplay* solid_particles_display = nullptr;
+    Tensor<Hvec<float16,4>, 2> solidParticlesTexture;
+    Tensor<Hvec<float16,4>, 2> finalRenderTexture;
     
     Clock clock;
 
-    void init_display(int width, int height) {
-        if(GLFuncs)        {
-            std::cerr << "OpenGL functions already loaded!" << std::endl;
-            throw std::runtime_error("OpenGL functions already loaded!");
-            return;
+    
+    void setupRenderTextures(Shape<2> shape) {
+    // Create SHARED depth buffer first
+        GLFuncs->glGenRenderbuffers(1, &depthBuffer_solid);
+        GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, depthBuffer_solid);
+        GLFuncs->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, shape[0], shape[1]);
+        
+        // === FRAMEBUFFER 1: Solid particles ===
+        solidParticlesTexture = Tensor<Hvec<float16,4>, 2>(shape, device->default_memory_type, kOPENGLTEXTURE);
+        
+        GLFuncs->glGenFramebuffers(1, &fbo_solid);
+        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_solid);
+        
+        GLuint solidTexID = (GLuint)(unsigned long long)solidParticlesTexture.storage_pointer - 0x10000;
+        GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, solidTexID, 0);
+        
+        // Attach SHARED depth buffer
+        GLFuncs->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthBuffer_solid);
+        
+        if (GLFuncs->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            throw std::runtime_error("Solid framebuffer not complete!");
         }
+        
+        // === FRAMEBUFFER 2: Final render ===
+        finalRenderTexture = Tensor<Hvec<float16,4>, 2>(shape, device->default_memory_type, kOPENGLTEXTURE);
+        
+        GLFuncs->glGenFramebuffers(1, &fbo_final);
+        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_final);
+        
+        GLuint finalTexID = (GLuint)(unsigned long long)finalRenderTexture.storage_pointer - 0x10000;
+        GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, finalTexID, 0);
+        
+        // Attach SAME depth buffer
+        GLFuncs->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthBuffer_solid);
+        
+        if (GLFuncs->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            throw std::runtime_error("Final framebuffer not complete!");
+        }
+        
+        // Unbind
+        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
+
+   
+
+    
+
+    
+    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
+        : properties(properties),
+          width(shape[0]),
+          height(shape[1])
+    {
         SDL_Init(SDL_INIT_VIDEO);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
         SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
         SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-        std::cout << GLFuncs << std::endl;
-
-        std::cout << "finished preinit" << std::endl;
-      
-        Uint32 window_flags = SDL_WINDOW_OPENGL;
-        
-        if (is_fullscreen) window_flags |= SDL_WINDOW_FULLSCREEN;
-        if (borderless) window_flags |= SDL_WINDOW_BORDERLESS;
-        if (alpha_enabled) window_flags |= SDL_WINDOW_TRANSPARENT;
-        if (on_top) window_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
-        if (resizable) window_flags |= SDL_WINDOW_RESIZABLE;
-        
 
         window = SDL_CreateWindow(
             "CUDA → OpenGL",
-            // width and height
             width, height,
-            window_flags
+            SDL_WINDOW_OPENGL | int(properties)
         );
 
         if (!window) {
             throw std::runtime_error("Failed to create SDL window: " + std::string(SDL_GetError()));
         }
 
-        std::cout << "created window" << std::endl;
-
         display = (void *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
-
-        screen = SDL_GetDisplayForWindow(window);
-
-        // GL enable blending
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-        
+        screen = SDL_GetDisplayForWindow(window);        
         
         SDL_ShowWindow(window);
 
@@ -524,38 +611,18 @@ public:
 
         auto glctx = SDL_GL_CreateContext(window);
         if (!glctx) {
-            std::string error = SDL_GetError();
-            throw std::runtime_error("Failed to create OpenGL context: " + error);
+            throw std::runtime_error("Failed to create OpenGL context: " + std::string(SDL_GetError()));
         }
         
         glEnable(GL_DEPTH_TEST);
         SDL_GL_SetSwapInterval(0);
 
-
-
-        std::cout << "created GL context" << std::endl;
-    }
-    
-    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
-        : borderless(properties.borderless), 
-          alpha_enabled(properties.alpha_enabled), 
-          is_fullscreen(properties.fullscreen),  
-          clickthrough(properties.clickthrough), 
-          on_top(properties.on_top),
-          resizable(properties.resizable),
-          width(shape[0]),
-          height(shape[1])
-    {
-
-        
-        
-
-        init_display(shape[1], shape[0]);
         device = create_opengl_compute_device(0);
 
+        setupRenderTextures(shape);
 
-
-
+        vectordisplay = new VectorDisplay(finalRenderTexture);
+        solid_particles_display = new VectorDisplay(solidParticlesTexture);
     }
     
 private:
@@ -576,6 +643,8 @@ private:
     }
 
 public:
+
+  
     void setWindowCaption(const char* title) {
         SDL_SetWindowTitle(window, title);
     }
@@ -615,7 +684,7 @@ public:
     }
     
     void setWindowOpacity(float opacity) {
-        if (!alpha_enabled) return;
+        if (!properties.alpha_enabled) return;
         SDL_SetWindowOpacity(window, opacity);
     }
     
@@ -694,32 +763,48 @@ public:
         return true;
     }
 
+    void activateBackBuffer(){
+        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_final);
+        glViewport(0, 0, width, height);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // turn off depth write and copy the solid particles texture to the back buffer
+        glDepthMask(GL_FALSE);
+        solid_particles_display->present();
+        glDepthMask(GL_TRUE);
+    }
     
     void displayLoop() {
         bool running = true;
 
         while (running) {
             resizeDisplay();
-
-            glClear(GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
-
             
-            // Call display loop functions
+            // === PASS 1: Render ONLY solid particles to solidParticlesTexture ===
+            GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_solid);
+            glViewport(0, 0, width, height);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glEnable(GL_DEPTH_TEST);
+            
             for (const auto& callback : display_loop_functions) {
                 callback(current_screen_input_info);
             }
-
-            // Process events
-
+            
+            // === Display final result to screen ===
+            GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            displayRenderTexture();
+            
             running = processEvents();
-            
             updateDisplay();
-
-
-            
-
         }
-    }    
+    }
+
+    void displayRenderTexture() {
+        if (vectordisplay) {
+            vectordisplay->present();
+        }
+    }
    
     
     ~OpenGLDisplay() {
@@ -748,7 +833,7 @@ public:
         } else {
             SDL_SetWindowFullscreen(window, false);
         }
-        is_fullscreen = fullscreen;
+        properties.fullscreen = fullscreen;
         current_screen_input_info.setFullscreen(fullscreen);
     }
 
@@ -774,16 +859,6 @@ public:
 
     Surface createSurface(int w, int h) {
         return Surface(w, h);
-    }
-
-    void blitSurface(const Surface& surf, int x, int y) {
-        // for (int sy = 0; sy < surf.height && (y + sy) < shape[0]; sy++) {
-        //     for (int sx = 0; sx < surf.width && (x + sx) < shape[1]; sx++) {
-        //         if (x + sx >= 0 && y + sy >= 0) {
-        //             (*this)[y + sy][x + sx] = surf.pixels[sy * surf.width + sx];
-        //         }
-        //     }
-        // }
     }
 
     // Font rendering placeholder (requires SDL_ttf)

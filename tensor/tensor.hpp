@@ -256,7 +256,7 @@ public:
                 }
                 else
                 {
-                    int spot = ((inp[i].end) - (inp[i].start) + (shape[i]))%shape[i];
+                    int spot = (int(inp[i].end) - int(inp[i].start) + (shape[i]))%shape[i];
                     if(inp[i].end.is_default){
                         spot = shape[i] - (inp[i].start);
                     }

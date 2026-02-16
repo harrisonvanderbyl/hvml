@@ -602,3 +602,43 @@ private:
     }
 };
 
+__weak void cuda_thrust_sort(float* keys, int* indices, size_t size);
+__weak void hip_thrust_sort(float* keys, int* indices, size_t size);
+__weak void cpu_sort(float* keys, int* indices, size_t size){
+    // create vector of indices
+    std::vector<int> idx(size);
+    for (size_t i = 0; i < size; i++) {
+        idx[i] = i;
+    }
+
+    // sort indices based on corresponding keys
+    std::sort(idx.begin(), idx.end(), [&](int a, int b) {
+        return keys[a] > keys[b]; // Sort in descending order
+    });
+
+    // copy sorted indices to output
+    for (size_t i = 0; i < size; i++) {
+        indices[i] = idx[i];
+    }
+}
+
+__weak void call_sort(
+    float* keys,
+    int* indices,
+    size_t size,
+    ComputeType compute_type
+){
+    switch (compute_type) {
+        case ComputeType::kCPU:
+            cpu_sort(keys, indices, size);
+            break;
+        case ComputeType::kCUDA:
+            cuda_thrust_sort(keys, indices, size);
+            break;
+        case ComputeType::kHIP:
+            // hip_thrust_sort(keys, indices, size);
+            break;
+        default:
+            throw std::runtime_error("Unsupported compute type for sorting");
+    }
+}
