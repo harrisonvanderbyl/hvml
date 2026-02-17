@@ -52,8 +52,6 @@ class VectorDisplay {
         setupQuad();
 
         program = createProgram(vertexSrc, fragmentSrc);
-
-        bool isFramebuffer = false;
     }
 
     void setupQuad() {

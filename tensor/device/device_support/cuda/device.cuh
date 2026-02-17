@@ -101,15 +101,6 @@ AllocationMap* create_cuda_mapper(int device_id){
             return array;
         };
 
-        mapper->image_copy_function = [device_id,mapper](void* dst, Shape<-1> size, void* src) {
-            CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            // for cudaArray, we need to use cudaMemcpy2DToArray (not cudaMemcpy or cudaMemcpy2D)
-            cudaArray_t dst_array = static_cast<cudaArray_t*>(dst)[0];
-            
-            CUDA_ERROR_CHECK(cudaMemcpyToArray(dst_array, 0, 0, (void*)src, size.total_size() * sizeof(char), cudaMemcpyHostToDevice));
-            mapper->synchronize_function();
-        };
-
         mapper->synchronize_function = [device_id]() {
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
             CUDA_ERROR_CHECK(cudaDeviceSynchronize());

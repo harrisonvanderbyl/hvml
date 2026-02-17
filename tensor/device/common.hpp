@@ -100,10 +100,6 @@ struct AllocationMap{
     std::map<std::tuple<ComputeType, ComputeType>, std::function<void*(void*)>> compute_type_converters;
     std::map<std::tuple<ComputeType, ComputeType, void*>, void*> compute_type_conversion_cache;
     std::function<void()> synchronize_function = []() {};
-    std::function<void(void*, Shape<-1>, void*)> image_copy_function = [](void* dst, Shape<-1> size, void* src) {
-        std::cerr << "No image copy function defined for this allocation map" << std::endl;
-        throw std::runtime_error("No image copy function defined for this allocation map");
-    };
     
     ComputeType default_compute_type = ComputeType::kUnknown;
 
