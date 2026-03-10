@@ -72,7 +72,7 @@ public:
 
 
     
-    Slice& operator[](int i)
+    const Slice& operator[](int i) const
     {
         if (i == 0)
         {
@@ -104,6 +104,67 @@ public:
         }
     }
 
+    operator std::string() const
+    {
+        std::string result = "[";
+        for (int i = 0; i < 7; i++)
+        {
+            if (i > 0)
+            {
+                result += ", ";
+            }
+            result += std::to_string((*this)[i].start) + ":" + std::to_string((*this)[i].end) + ":" + std::to_string((*this)[i].step);
+        }
+        result += "]";
+        return result;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const SliceList& sl)
+    {
+        os << static_cast<std::string>(sl);
+        return os;
+    }
+
+    SliceList operator,(const Slice& other) const
+    {
+        auto copy = *this;
+        for (int i = 0; i < 7; i++)
+        {
+            if (copy[i].is_empty)
+            {
+                copy[i] = other;
+                break;
+            }
+        }
+        return copy;
+    }
+
+    SliceList<reducedims+1> operator,(const int& other) const
+    {
+        auto copy = *this;
+        for (int i = 0; i < 7; i++)
+        {
+            if (copy[i].is_empty)
+            {
+                copy[i] = Slice(other);
+                break;
+            }
+        }
+        return SliceList<reducedims+1>(copy.A, copy.B, copy.C, copy.D, copy.E, copy.F, copy.G);
+    }
+
+};
+
+__weak SliceList<0> operator,(const Slice& a, const Slice& b){
+    return SliceList<0>{a,b};
+};
+
+__weak SliceList<1> operator,(const Slice& a, const int& b){
+    return SliceList<1>{a,b};
+};
+
+__weak SliceList<1> operator,(const int& a, const Slice& b){
+    return SliceList<1>{a,b};
 };
 
 
@@ -149,7 +210,7 @@ public:
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        storage_pointer = (R*)device->allocate(__a, bitsize, compute_type);;
+        storage_pointer = (R*)device->allocate(__a, bitsize, compute_type, nullptr, GetAllocationMetadataIfExists<R>::value);
         
         data = (R*)device->get_massaged_pointer(storage_pointer, device->default_compute_type);
     }
@@ -651,10 +712,10 @@ public:
             Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type);
+            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type, temp.storage_pointer);
         }
         else{
-            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type);
+            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type, storage_pointer);
         }
 
         return {
@@ -668,7 +729,7 @@ public:
         };
     };
 
-    Tensor<R,rank> to_compute(ComputeType compute_type){
+    Tensor<R,rank> to_compute(ComputeType compute_type) const{
         
         if(!this->device->supports_compute_device[compute_type]){
             std::cerr << "Compute type " << compute_type << " not supported on device type " << this->device->this_device_type << std::endl;

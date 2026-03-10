@@ -11,7 +11,7 @@ struct Camera {
     float far_plane;
     
     Camera() : position(0, 0, 5), forward(0, 0, 0), up(0, 1, 0), 
-               fov(45.0f), aspect(1.0f), near_plane(0.1f), far_plane(1000.0f) {}
+               fov(45.0f), aspect(1.0f), near_plane(0.1f), far_plane(10000.0f) {}
 
  
 

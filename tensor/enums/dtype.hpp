@@ -183,7 +183,7 @@ std::string get_type_string()
 {
     
     std::string s = "";
-    int bits = sizeof(T) * 8;
+    size_t bits = sizeof(T) * 8;
 
     std::string similar = "";
 

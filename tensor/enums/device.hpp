@@ -24,6 +24,7 @@ enum MemoryType
     kDDR,
     kCUDA_VRAM,
     kHIP_VRAM,
+    kDISK,
     kUnknown_MEM
 };
 
@@ -48,6 +49,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(MemoryType, {
                                              {kDDR, "DDR_RAM"},
                                                 {kCUDA_VRAM, "CUDA_VRAM"},
                                                 {kHIP_VRAM, "HIP_VRAM"},
+                                                {kDISK, "DISK"},
                                                 {kUnknown_MEM, "UNKNOWN"}
                                          })
 

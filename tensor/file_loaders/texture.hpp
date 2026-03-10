@@ -10,6 +10,13 @@ struct sampler2D: public Tensor<uint84, 2>
     sampler2D(Tensor<uint84, 2> other):Tensor<uint84, 2>(other){}
 };
 
+struct samplerBuffer: public Tensor<Hvec<float16,4>,2>
+{
+    using Tensor<Hvec<float16,4>,2>::Tensor;
+
+    samplerBuffer(Tensor<Hvec<float16,4>,2> other):Tensor<Hvec<float16,4>,2>(other){}
+};
+
 static sampler2D load_texture(std::string filename) {
     int w, h, channels;
     uint8_t* data = (uint8_t*)(void*)stbi_load(filename.c_str(), &w, &h, &channels, 0);

@@ -32,34 +32,20 @@ enum Intrinsics
 // 255 = wwww
 
 
-
-static constexpr __device__ __host__ uint8_t get_swizzle_component(uint8_t swizzle, int index)
+template <int numitems = 4>
+static constexpr __device__ __host__ std::conditional_t<numitems <= 4, uint8_t, size_t> get_swizzle_component(uint8_t swizzle, int index)
 {
-    // 0b00000000 = xxxx -> index = 0 -> 0, 1->0, 2->0, 3->0
-    // 0b00000001 = xxxy -> index = 0 -> 0, 1->0, 2->0, 3->1
-    // 0b00000010 = xxxz
-    // 0b00000011 = xxxw
-    // ...
-    
-    return (swizzle >> ((3-index) * 2)) & 0b11;
+    if constexpr (numitems <= 4)
+    {
+        return (swizzle >> ((3 - index) * 2)) & 0b11;
+    }
+    else
+    {
+        return index;
+    }
 }
 
-// run swizzle tests
-// void swizzle_tests()
-// {
-//     for (int i = 0; i < 256; i++)
-//     {
-//         uint8_t swizzle = i;
-//         for (int j = 0; j < 4; j++)
-//         {
-//             // expected x property = swizzle >> 6 & 0b11
-//             uint8_t component = get_swizzle_component(swizzle, j);
-//             std::cout << "Swizzle: " << (int)swizzle << " Index: " << j << " Component: " << (int)component << std::endl;
 
-//         }
-//     }
-    
-// }
 template <typename T, uint8_t swizzle, int numitems>
 struct constIfSwizzleRepeats;
 
@@ -129,8 +115,8 @@ struct combine_swizzles // xxyy swizzled by xy = xx
         Hvec<shared, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            out.data[i] = this->data[get_swizzle_component(swizzle,i)] oper \
-                              other.data[get_swizzle_component(otherswizzle,i)]; \
+            out.data[i] = this->data[get_swizzle_component<numitems>(swizzle,i)] oper \
+                              other.data[get_swizzle_component<numitems>(otherswizzle,i)]; \
         }                                                                    \
         return out;                                                         \
     };
@@ -141,7 +127,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
         Hvec<T, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            out.data[i] = oper(this->data[get_swizzle_component(swizzle,i)]); \
+            out.data[i] = oper(this->data[get_swizzle_component<numitems>(swizzle,i)]); \
         }                                                                    \
         return out;                                                         \
     };
@@ -153,7 +139,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
         Hvec<T, numitems> out;                                         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            out.data[i] = this->data[get_swizzle_component(swizzle,i)] oper scalar; \
+            out.data[i] = this->data[get_swizzle_component<numitems>(swizzle,i)] oper scalar; \
         }                                                                    \
         return out;                                                         \
     };
@@ -166,13 +152,13 @@ struct combine_swizzles // xxyy swizzled by xy = xx
         \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            temp[i] = this->data[get_swizzle_component(swizzle,i)];         \
+            temp[i] = this->data[get_swizzle_component<numitems>(swizzle,i)];         \
         }                                                                    \
                                                                              \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            this->data[get_swizzle_component(swizzle,i)] = temp[i] oper     \
-                other.data[get_swizzle_component(otherswizzle,i)];          \
+            this->data[get_swizzle_component<numitems>(swizzle,i)] = temp[i] oper     \
+                other.data[get_swizzle_component<numitems>(otherswizzle,i)];          \
         }                                                                    \
         return *this;                                                       \
     };
@@ -182,52 +168,70 @@ struct combine_swizzles // xxyy swizzled by xy = xx
     {                                                                        \
         for (int i = 0; i < numitems; i++)                                  \
         {                                                                    \
-            this->data[get_swizzle_component(swizzle,i)] oper scalar;                                                     \
+            this->data[get_swizzle_component<numitems>(swizzle,i)] oper scalar;                                                     \
         }                                                                    \
         return *this;                                                       \
     };
 
-#define createSwizzleReference(swizzeleName, swizzleBits, numout)  \
-    __host__ __device__  inline  typename constIfSwizzleRepeats<Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type& swizzeleName()  { \
-        return *reinterpret_cast<typename constIfSwizzleRepeats<Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, combine_swizzles<swizzle, swizzleBits>::swiz, numout>::type *>(this); \
-    }\
-\
-    __host__ __device__  inline  const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>& swizzeleName() const { \
-        return *reinterpret_cast<const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz> *>(this); \
+#define createSwizzleReference(swizzeleName, swizzleBits, numout, maxvalues)  \
+    template <int numitemss = numitems, \
+              typename = std::enable_if_t<(numitemss >= maxvalues && numitemss <= 4)>> \
+    __host__ __device__ inline \
+    typename constIfSwizzleRepeats< \
+        Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, \
+        combine_swizzles<swizzle, swizzleBits>::swiz, numout \
+    >::type& swizzeleName() { \
+        return *reinterpret_cast< \
+            typename constIfSwizzleRepeats< \
+                Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>, \
+                combine_swizzles<swizzle, swizzleBits>::swiz, numout \
+            >::type * \
+        >(this); \
+    } \
+    \
+    template <int numitemss = numitems, \
+              typename = std::enable_if_t<(numitemss >= maxvalues && numitemss <= 4)>> \
+    __host__ __device__ inline \
+    const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz>& swizzeleName() const { \
+        return *reinterpret_cast< \
+            const Hvec<T, numout, combine_swizzles<swizzle, swizzleBits>::swiz> * \
+        >(this); \
     }
 
-#define createSwizzleSingle(swizzeleName, number)  \
-    __host__ __device__ inline T& swizzeleName()  { \
-        return this->data[get_swizzle_component(swizzle,number)]; \
-    }\
+#define createSwizzleSingle(swizzeleName, number, maxvalues)  \
+    template <int numitemss = numitems, \
+              typename = std::enable_if_t<(numitemss >= maxvalues && numitemss <= 4)>> \
+    __host__ __device__ inline T& swizzeleName() { \
+        return this->data[get_swizzle_component<numitems>(swizzle, number)]; \
+    }
 
 // 0 -> x, 1 -> y, 2 -> z, 3 -> w
-#define createSwizzle4(firstThreeletters, firstthreedigits) \
-    createSwizzleReference(x##firstThreeletters, 0b00##firstthreedigits,4) \
-    createSwizzleReference(y##firstThreeletters, 0b01##firstthreedigits,4) \
-    createSwizzleReference(z##firstThreeletters, 0b10##firstthreedigits,4) \
-    createSwizzleReference(w##firstThreeletters, 0b11##firstthreedigits,4) \
-    createSwizzleReference(firstThreeletters, 0b##firstthreedigits##11,3)
+#define createSwizzle4(firstThreeletters, firstthreedigits, maxvalues) \
+    createSwizzleReference(x##firstThreeletters, 0b00##firstthreedigits,4, std::max(maxvalues, 1)) \
+    createSwizzleReference(y##firstThreeletters, 0b01##firstthreedigits,4, std::max(maxvalues, 2)) \
+    createSwizzleReference(z##firstThreeletters, 0b10##firstthreedigits,4, std::max(maxvalues, 3)) \
+    createSwizzleReference(w##firstThreeletters, 0b11##firstthreedigits,4, std::max(maxvalues, 4)) \
+    createSwizzleReference(firstThreeletters, 0b##firstthreedigits##11,3, maxvalues)
 
-#define createSwizzle3(firstTwoletters, firsttwodigits) \
-    createSwizzle4(x##firstTwoletters, 00##firsttwodigits) \
-    createSwizzle4(y##firstTwoletters, 01##firsttwodigits) \
-    createSwizzle4(z##firstTwoletters, 10##firsttwodigits) \
-    createSwizzle4(w##firstTwoletters, 11##firsttwodigits) \
-    createSwizzleReference(firstTwoletters, 0b##firsttwodigits##1011,2)
+#define createSwizzle3(firstTwoletters, firsttwodigits, maxvalues) \
+    createSwizzle4(x##firstTwoletters, 00##firsttwodigits, std::max(maxvalues, 1)) \
+    createSwizzle4(y##firstTwoletters, 01##firsttwodigits, std::max(maxvalues, 2)) \
+    createSwizzle4(z##firstTwoletters, 10##firsttwodigits, std::max(maxvalues, 3)) \
+    createSwizzle4(w##firstTwoletters, 11##firsttwodigits, std::max(maxvalues, 4)) \
+    createSwizzleReference(firstTwoletters, 0b##firsttwodigits##1011,2, maxvalues)
 
-#define createSwizzle2(firstletter, firstdigit) \
-    createSwizzle3(x##firstletter, 00##firstdigit) \
-    createSwizzle3(y##firstletter, 01##firstdigit) \
-    createSwizzle3(z##firstletter, 10##firstdigit) \
-    createSwizzle3(w##firstletter, 11##firstdigit) \
-    createSwizzleSingle(firstletter, 0b##firstdigit)
+#define createSwizzle2(firstletter, firstdigit, maxvalues) \
+    createSwizzle3(x##firstletter, 00##firstdigit, std::max(maxvalues, 1)) \
+    createSwizzle3(y##firstletter, 01##firstdigit, std::max(maxvalues, 2)) \
+    createSwizzle3(z##firstletter, 10##firstdigit, std::max(maxvalues, 3)) \
+    createSwizzle3(w##firstletter, 11##firstdigit, std::max(maxvalues, 4)) \
+    createSwizzleSingle(firstletter, 0b##firstdigit, maxvalues)
 
 #define createSwizzle1() \
-    createSwizzle2(x, 00) \
-    createSwizzle2(y, 01) \
-    createSwizzle2(z, 10) \
-    createSwizzle2(w, 11) \
+    createSwizzle2(x, 00, 1) \
+    createSwizzle2(y, 01, 2) \
+    createSwizzle2(z, 10, 3) \
+    createSwizzle2(w, 11, 4) \
     // createSwizzleReference(all, 0b00000000)
 
     
@@ -236,7 +240,7 @@ struct combine_swizzles // xxyy swizzled by xy = xx
 template <typename T, int numitems = 1, uint8_t swizzle = 0b00011011>
 struct Hvec
 {
-    T data[numitems] = {};
+    T data[numitems];
 
     __host__ __device__ Hvec()
     {
@@ -246,14 +250,15 @@ struct Hvec
     {
         for (int i = 0; i < numitems; i++)
         {
-            data[get_swizzle_component(swizzle,i)] = val;
+            data[get_swizzle_component<numitems>(swizzle,i)] = val;
         }
     };
+    
 
     // __host__ __device__ operator T&()
     // {
     //     static_assert(numitems == 1, "Can only convert to T& if numitems is 1");
-    //     return *((T*)data + get_swizzle_component(swizzle,0));
+    //     return *((T*)data + get_swizzle_component<numitems>(swizzle,0));
     // };
 
     template <typename U, uint8_t oswiz, typename... Args>
@@ -261,12 +266,12 @@ struct Hvec
     {
         for (int i = 0; i < numitems - sizeof...(Args); i++)
         {
-            data[get_swizzle_component(swizzle,i)] = other.data[get_swizzle_component(oswiz,i)];
+            data[get_swizzle_component<numitems>(swizzle,i)] = other.data[get_swizzle_component<numitems>(oswiz,i)];
         }
         T vals[] = {static_cast<T>(args)...};
         for (int i = 0; i < sizeof...(Args); i++)
         {
-            data[get_swizzle_component(swizzle,i + numitems - sizeof...(Args))] = vals[i];
+            data[get_swizzle_component<numitems>(swizzle,i + numitems - sizeof...(Args))] = vals[i];
         }
         
     };
@@ -277,7 +282,7 @@ struct Hvec
     {
         for (int i = 0; i < numitems; i++)
         {
-            if (this->data[get_swizzle_component(swizzle,i)] != other.data[get_swizzle_component(oswiz,i)])
+            if (this->data[get_swizzle_component<numitems>(swizzle,i)] != other.data[get_swizzle_component<numitems>(oswiz,i)])
             {
                 return false;
             }
@@ -290,26 +295,28 @@ struct Hvec
     {
         for (int i = 0; i < numitems; i++)
         {
-            data[get_swizzle_component(swizzle,i)] = other.data[get_swizzle_component(oswiz,i)];
+            data[get_swizzle_component<numitems>(swizzle,i)] = other.data[get_swizzle_component<numitems>(oswiz,i)];
         }
     };
 
     template <typename... Args>
-    __host__ __device__ Hvec(Args... args)
+    __host__ __device__ Hvec(const Args&... args)
     {
         T vals[] = {static_cast<T>(args)...};
         for (int i = 0; i < numitems; i++)
         {
-            data[get_swizzle_component(swizzle,i)] = vals[i];
+            data[get_swizzle_component<numitems>(swizzle,i)] = vals[i];
         }
     };
+
+    
 
     template <uint8_t otherSwizzle>
     __host__ __device__ Hvec(const Hvec<T, numitems, otherSwizzle>& other)
     {
         for (int i = 0; i < numitems; i++)
         {
-            data[get_swizzle_component(swizzle,i)] = other.data[get_swizzle_component(otherSwizzle,i)];
+            data[get_swizzle_component<numitems>(swizzle,i)] = other.data[get_swizzle_component<numitems>(otherSwizzle,i)];
         }
     };
 
@@ -320,24 +327,24 @@ struct Hvec
         T temp[numitems];
         for (int i = 0; i < numitems; i++)
         {
-            temp[i] = other.data[get_swizzle_component(otherSwizzle,i)];
+            temp[i] = other.data[get_swizzle_component<numitems>(otherSwizzle,i)];
         }
 
         for (int i = 0; i < numitems; i++)
         {
-            data[get_swizzle_component(swizzle,i)] = temp[i];
+            data[get_swizzle_component<numitems>(swizzle,i)] = temp[i];
         }
         return *this;
     };
 
     __host__ __device__ T &operator[](int index)
     {
-        return data[get_swizzle_component(swizzle,index)];
+        return data[get_swizzle_component<numitems>(swizzle,index)];
     };
 
     __host__ __device__ const T &operator[](int index) const
     {
-        return data[get_swizzle_component(swizzle,index)];
+        return data[get_swizzle_component<numitems>(swizzle,index)];
     };
 
     // operator dot and operator length
@@ -347,7 +354,7 @@ struct Hvec
         T result = T(0);
         for (int i = 0; i < numitems; i++)
         {
-            result += this->data[get_swizzle_component(swizzle,i)] * other.data[get_swizzle_component(swizzle2,i)];
+            result += this->data[get_swizzle_component<numitems>(swizzle,i)] * other.data[get_swizzle_component<numitems>(swizzle2,i)];
         }
         return result;
     };
@@ -363,7 +370,7 @@ struct Hvec
         Hvec<T, numitems> out;
         for (int i = 0; i < numitems; i++)
         {
-            out.data[i] = this->data[get_swizzle_component(swizzle,i)] / len;
+            out.data[i] = this->data[get_swizzle_component<numitems>(swizzle,i)] / len;
         }
         return out;
     };
@@ -373,12 +380,12 @@ struct Hvec
     {
         assert(numitems == 3 && "Cross product is only defined for 3D vectors.");
         Hvec<T, 3> result;
-        result.data[0] = this->data[get_swizzle_component(swizzle,1)] * other.data[get_swizzle_component(swizzle,2)] -
-                         this->data[get_swizzle_component(swizzle,2)] * other.data[get_swizzle_component(swizzle,1)];
-        result.data[1] = this->data[get_swizzle_component(swizzle,2)] * other.data[get_swizzle_component(swizzle,0)] -
-                         this->data[get_swizzle_component(swizzle,0)] * other.data[get_swizzle_component(swizzle,2)];
-        result.data[2] = this->data[get_swizzle_component(swizzle,0)] * other.data[get_swizzle_component(swizzle,1)] -
-                         this->data[get_swizzle_component(swizzle,1)] * other.data[get_swizzle_component(swizzle,0)];
+        result.data[0] = this->data[get_swizzle_component<numitems>(swizzle,1)] * other.data[get_swizzle_component<numitems>(swizzle,2)] -
+                         this->data[get_swizzle_component<numitems>(swizzle,2)] * other.data[get_swizzle_component<numitems>(swizzle,1)];
+        result.data[1] = this->data[get_swizzle_component<numitems>(swizzle,2)] * other.data[get_swizzle_component<numitems>(swizzle,0)] -
+                         this->data[get_swizzle_component<numitems>(swizzle,0)] * other.data[get_swizzle_component<numitems>(swizzle,2)];
+        result.data[2] = this->data[get_swizzle_component<numitems>(swizzle,0)] * other.data[get_swizzle_component<numitems>(swizzle,1)] -
+                         this->data[get_swizzle_component<numitems>(swizzle,1)] * other.data[get_swizzle_component<numitems>(swizzle,0)];
         return result;
     };
 
@@ -413,7 +420,7 @@ struct Hvec
         os << "(";
         for (int i = 0; i < numitems; i++)
         {
-            os << vec.data[get_swizzle_component(swizzle,i)];
+            os << vec.data[get_swizzle_component<numitems>(swizzle,i)];
             if (i < numitems - 1)
             {
                 os << ", ";
@@ -442,6 +449,8 @@ typedef Hvec<int, 4> int32x4;
 typedef Hvec<bfloat16,4> bfloat16x4;
 
 typedef Hvec<bfloat16,3> bfloat16x3;
+
+typedef Hvec<float16,4> float16x4;
 
 struct uint84: public Hvec<uint8_t, 4>
 {

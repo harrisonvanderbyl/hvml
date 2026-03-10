@@ -11,7 +11,6 @@
 #include "vector/vectors.hpp"
 // #include "../vector/uint84.hpp"
 #include "file_loaders/gltf.hpp"
-#include "display/display.hpp"
 #include "ops/ops.hpp"
 #include "display/materials/materials.hpp"
 
@@ -143,16 +142,6 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         if (bone_matrices.data != nullptr){
             GLint bonesLoc = GLFuncs->glGetUniformLocation(material->shader_program, "bone_matrices");
             GLFuncs->glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data); // Assuming 100 bones for simplicity
-        }
-        // Set double-sided rendering if needed
-        if (material->double_sided)
-        {
-            glDisable(GL_CULL_FACE);
-        }
-        else
-        {
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
         }
 
 

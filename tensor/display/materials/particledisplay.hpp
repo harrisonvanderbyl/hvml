@@ -15,6 +15,8 @@ struct __shader ParticleShader : public ShaderProgram
 
     sampler2D texture1;
     sampler2D screentexture;
+    float32x3 chunksizes;
+    float32x3 chunksperrotation;
 
     // === Vertex → Fragment interpolants ===
     
@@ -31,16 +33,40 @@ struct __shader ParticleShader : public ShaderProgram
             gl_Position  = float32x4(0.0f);
             return;
         }
+
+        float32x3 tubesize = chunksizes.xyz() * chunksperrotation.xyz(); // size of the cuboid in each dimension before transformation
         
-        float32x4 worldPos = model * float32x4(floor(position), 1.0);
-        float32x4 worldposnature = model * float32x4(position, 1.0);
+        float R = tubesize.x() / (2.0f * 3.1415f); // recalculate R based on desired tube size and circumference
         
+
+        float r = (tubesize.z() / (2.0f * 3.1415f)); // recalculate r based on desired tube size// top of data maps to halfway through the tube radius, so multiply by 2 to get full radius
+        
+
+        // X wraps around the big ring
+        float phi = (position.x() / tubesize.x() + 0.5) * 2.0f * 3.1415;
+
+        // z wraps around the tube cross section
+        float theta = (position.z() / tubesize.z() - 0.25) * 2.0f * 3.1415;
+
+        // y goes from tube surface toward center of tube
+        float tubeR = r - position.y();
+
+        float32x3 positiona = position; // start with the world position as the base, then add the tube offset to it, so that the shader calculations for lighting and depth are based on the actual position of the particle in world space, not just the center of the tube
+
+        // positiona.x() = (R + tubeR * cos(theta)) * cos(phi) + R; // add R to x to center the tube around the origin instead of having it wrap around the origin
+        // positiona.z() = (R + tubeR * cos(theta)) * sin(phi);
+        // positiona.y() = tubeR * sin(theta) + r;
+        
+        float32x4 worldposnature = model * float32x4(positiona, 1.0);
+        uint84 mcol = color;
         // Sphere radius in world space
-        float radiusgrow = 0.25f;
-        float radius = 0.0f;
+        float radiusgrow = 0.125f;
+        float radius = -0.125f;
         if(color.w() < 0.8f){
-            radius = 0.0f;
-            radiusgrow = 0.5f;
+            radius = 1.0f;
+            radiusgrow = 0.0f;
+            mcol.xyz() = mix(float32x3(color.xyz()), float32x3(0.5f), pow(1.0f-float(neighborsfilled/15.0f), 3.0f));
+            // worldposnature = worldPos; // for non-liquid particles, use the floored position for the shader calculations to create a more blocky look
         }
         
         radius += float(neighborsfilled) * radiusgrow; 
@@ -70,7 +96,7 @@ struct __shader ParticleShader : public ShaderProgram
             radius,
             worldposnature,
             camPos,
-            color
+            mcol
         );
     }
 
@@ -142,7 +168,7 @@ struct __shader ParticleShader : public ShaderProgram
 
             if(vColor.w() < 0.5f){
     // Simple screen-space distortion
-                float distortionStrength = 0.01f;
+                float distortionStrength = 0.02f;
                 
                 // Use surface normal to distort UV
                 float32x2 distortion = normal.xy() * distortionStrength;
@@ -157,7 +183,7 @@ struct __shader ParticleShader : public ShaderProgram
                 
                 // Water color with tint
                 float32x3 waterTint = float32x3(0.85f, 0.92f, 1.0f);
-                float32x3 finalColor = backgroundColor.xyz() * waterTint + float32x3(fresnel * 0.43f);
+                float32x3 finalColor = backgroundColor.xyz() * waterTint + vColor.xyz() + float32x3(fresnel * 0.143f);
                 
                 FragColor = uint84(finalColor, 1.0f);
                 return;
@@ -207,5 +233,7 @@ struct __shader ParticleShader : public ShaderProgram
 };
 
 // __weak ShaderSourceOb global_optimized_sphere_point_material = Shader<ParticleShader>();
+
+// Shader<ParticleShader>;
 
 #endif // TENSOR_DISPLAY_MATERIALS_PARTICLE_HPP

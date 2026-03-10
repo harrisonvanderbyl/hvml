@@ -23,6 +23,11 @@
 #include <functional>
 #include <vector>
 #include <chrono>
+#include "bfloat16/bf16.hpp"
+
+typedef TypeWithAllocationMetadata<int24, AllocationMetadata{ 0, GL_DEPTH_COMPONENT24}> DepthBufferInt; // used for depth buffer allocations, with metadata indicating the format to use for the depth buffer
+typedef TypeWithAllocationMetadata<float32, AllocationMetadata{ 0, GL_DEPTH_COMPONENT32F}> DepthBufferFloat; // used for depth buffer allocations, with metadata indicating the format to use for the depth buffer
+
 
 // OpenGL function pointer typedefs
 typedef GLuint (APIENTRY *PFNGLCREATESHADERPROC)(GLenum type);
@@ -256,7 +261,7 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
 
     auto& mem_device = global_device_manager.get_device(mem, 0);
     mem_device.supports_compute_device[ComputeType::kOPENGL] = true;
-    mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](Shape<-1> size, size_t bitsize, void* existing_data) {
+    mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
         GLuint buffer;
         GLFuncs->glGenBuffers(1, &buffer);
         GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
@@ -264,43 +269,61 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
         GLFuncs->glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         return reinterpret_cast<void*>(static_cast<uintptr_t>(buffer));
     };
-    mem_device.compute_device_allocators[ComputeType::kOPENGLTEXTURE] = [](Shape<-1> size, size_t bitsize, void* existing_data) {
+    mem_device.compute_device_allocators[ComputeType::kOPENGLTEXTURE] = [](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
         GLuint texture;
-        glGenTextures(1, &texture);
-        glBindTexture(GL_TEXTURE_2D, texture);
         // size.C == 3 for RGB, size.C == 4 for RGBA
-        int channels;
-        if(size.ndim() == 3){
-            channels = size.C * bitsize;
-        }else if(size.ndim() == 2){
-            channels = bitsize;
-        }else{
-            std::cerr << "Unsupported number of dimensions for OpenGL texture: " << size.ndim() << std::endl;
-            throw std::runtime_error("Unsupported number of dimensions for OpenGL texture");
-        }
+        std::cout << "Metadata for OpenGL texture allocation: " << metadata.format << std::endl;
+
+        if(metadata.format != 0){
+            if(metadata.format == GL_DEPTH_COMPONENT24){
+
+                GLFuncs->glGenRenderbuffers(1, &texture);
+                GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, texture);
+                GLFuncs->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, size.A, size.B);
+                GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, 0);
+            } else if (metadata.format == GL_DEPTH_COMPONENT32F){
+                GLFuncs->glGenRenderbuffers(1, &texture);
+                GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, texture);
+                GLFuncs->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, size.A, size.B);
+                GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, 0);
+            }
+            else{
+                std::cerr << "Unsupported metadata format for OpenGL texture: " << metadata.format << std::endl;
+                throw std::runtime_error("Unsupported metadata format for OpenGL texture");
+            }
+            
+            texture += 0x20000;
+
+            GL_CHECK();
+        } else
+        { // guess format based on bitsize and channels
+
+            glGenTextures(1, &texture);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            if (bitsize == 3) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGB, GL_UNSIGNED_BYTE, existing_data);
+            } else if (bitsize == 4) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGBA, GL_UNSIGNED_BYTE, existing_data);
+            } else if (bitsize == 6) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGB, GL_FLOAT, existing_data);
+            } else if (bitsize == 8) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGBA, GL_FLOAT, existing_data);
+            } else {
+                std::cerr << "Unsupported bitsize for OpenGL texture: " << bitsize << std::endl;
+                throw std::runtime_error("Unsupported bitsize for OpenGL texture");
+            }
 
 
-        if (bitsize == 3) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGB, GL_UNSIGNED_BYTE, existing_data);
-        } else if (bitsize == 4) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGBA, GL_UNSIGNED_BYTE, existing_data);
-        } else if (bitsize == 6) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGB, GL_FLOAT, existing_data);
-        } else if (bitsize == 8) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGBA, GL_FLOAT, existing_data);
-        } else {
-            std::cerr << "Unsupported bitsize for OpenGL texture: " << bitsize << std::endl;
-            throw std::runtime_error("Unsupported bitsize for OpenGL texture");
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            texture += 0x10000;
         }
         
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
 
         // prevent collisions, += 10k
-        texture += 0x10000;
 
         return reinterpret_cast<void*>(static_cast<uintptr_t>(texture));
     };
@@ -314,9 +337,6 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
         GLuint texture = static_cast<GLuint>(reinterpret_cast<uintptr_t>(ptr));
         glDeleteTextures(1, &texture);
     };
-
-    
-   
 
     
 

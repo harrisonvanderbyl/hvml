@@ -25,10 +25,12 @@ struct Material
     virtual const char* getGeometryShaderSource() {
         throw std::runtime_error("getVertexShaderSource not implemented for this material");
      };
-    GLuint shader_program;
+    GLuint shader_program = 0;
     std::string name;
     bool double_sided = false;
+    bool transparent = false;
     std::map<std::string, GLuint> textures_ids;
+    std::map<std::string, GLuint> texture_types;
     virtual bool createShaderProgram()
     {
 
@@ -112,9 +114,33 @@ struct Material
         {
             GLuint texture_unit = tex_pair.second;
             glActiveTexture(GL_TEXTURE0 + texture_unit);
-            glBindTexture(GL_TEXTURE_2D, tex_pair.second);
+            GLuint textype = GL_TEXTURE_2D;
+            if (texture_types.find(tex_pair.first) != texture_types.end()) {
+                textype = texture_types[tex_pair.first];
+            }
+            glBindTexture(textype, tex_pair.second);
             GLint uniform_location = GLFuncs->glGetUniformLocation(shader_program, tex_pair.first.c_str());
             GLFuncs->glUniform1i(uniform_location, texture_unit);
+        }
+
+        if (double_sided)
+        {
+            glDisable(GL_CULL_FACE);
+        }
+        else
+        {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
+
+        if (transparent)
+        {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        else
+        {
+            glDisable(GL_BLEND);
         }
     }
 };
@@ -289,6 +315,7 @@ struct Shader: public Material
     const char* getVertexShaderSource() override
     {
         throw(std::runtime_error("getVertexShaderSource not implemented for this shader struct"));
+
     }
 
     const char* getFragmentShaderSource() override
@@ -356,13 +383,24 @@ struct ShaderProgram
     template <typename T>
     T mix(const T &a, const T &b, float t);
     
-    uint84 texture2D(const sampler2D &sampler, const float32x2 &uv);
+    uint84 texture2D(const sampler2D &sampler, const float32x2 &uv){
+        return 0;
+    };
+
+    uint84 texture(const sampler2D &sampler, const float32x2 &uv){
+        return 0;
+    };
+
+    uint84 texelFetch(const samplerBuffer &sampler, const int &uv){
+        return 0;
+    }
 
     template <typename T>
     T mod(const T &x, const T &y);
 
     template <typename T>
     T asin(const T &x);
+    
 
     template <typename T>
     T atan(const T &y, const T &x);

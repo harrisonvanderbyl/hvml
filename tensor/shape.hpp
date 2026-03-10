@@ -76,7 +76,7 @@ struct Shape
         }
 
         if(length != -1){
-            if (other.ndim()!=length){
+            if (int(other.ndim())!=length){
 
                 std::cerr << "Cannot assign shape of a different rank to a static typed rank shape" << std::endl;
                 throw std::runtime_error("Cannot assign shapes of different ranks");

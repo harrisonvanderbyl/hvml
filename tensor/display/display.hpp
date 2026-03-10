@@ -1,213 +1,11 @@
 #include "tensor.hpp"
 #include "device/device.hpp"
 #include "vector/vectors.hpp"
+#include "display/displaytensor.hpp"
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
 
 
-
-class VectorDisplay {
-
-    public:
-    SDL_GLContext glctx = nullptr;
-
-    GLuint tbo = 0;  // Texture Buffer Object
-    GLuint bufferTexture = 0;  // Buffer texture handle
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLuint program = 0;
-    int width = 0;
-    int height = 0;
-    GLuint pbo = 0; // Pixel Buffer Object
-    bool is_framebuffer = false;
-
-    void preinit() {
-
-    }
-
-    VectorDisplay(Tensor<uint84,2>& buffer) {
-        if(buffer.device->allocation_compute_types[buffer.storage_pointer] != ComputeType::kOPENGL){
-            throw std::runtime_error("Buffer must be allocated with OpenGL compute type for VectorDisplay");
-        }
-        this->width = buffer.shape[0];
-        this->height = buffer.shape[1];
-        pbo = (GLuint)(unsigned long long)buffer.storage_pointer;
-        // Create buffer texture that references the buffer
-        glGenTextures(1, &bufferTexture);
-        glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
-
-        GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA8, pbo);
-        
-        auto glErr = glGetError();
-        if (glErr != GL_NO_ERROR) {
-            throw std::runtime_error("OpenGL error creating buffer texture: " + std::to_string(glErr));
-        }
-        
-        glBindTexture(GL_TEXTURE_BUFFER, 0);
-        GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, 0);
-        glFinish();
-
-
-        // Setup quad vertices (position and texture coordinates)
-        setupQuad();
-
-        program = createProgram(vertexSrc, fragmentSrc);
-    }
-
-    void setupQuad() {
-        float verts[] = {
-            -1, -1, 0, 1,
-             1, -1, 1, 1,
-             1,  1, 1, 0,
-            -1,  1, 0, 0
-        };
-
-        GLFuncs->glGenVertexArrays(1, &vao);
-        GLFuncs->glBindVertexArray(vao);
-
-        GLFuncs->glGenBuffers(1, &vbo);
-        GLFuncs->glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        GLFuncs->glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-
-        GLFuncs->glEnableVertexAttribArray(0);
-        GLFuncs->glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-        GLFuncs->glEnableVertexAttribArray(1);
-        GLFuncs->glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
-                              (void*)(2 * sizeof(float)));
-
-        GLFuncs->glBindVertexArray(0);
-    }
-
-    VectorDisplay(Tensor<Hvec<float16,4>,2>& framebuffer) {
-        if(framebuffer.device->allocation_compute_types[framebuffer.storage_pointer] != ComputeType::kOPENGLTEXTURE){
-            throw std::runtime_error("Framebuffer must be allocated with OpenGL texture compute type for VectorDisplay");
-        }
-        this->width = framebuffer.shape[0];
-        this->height = framebuffer.shape[1];
-        
-        // Store the texture ID
-        bufferTexture = (GLuint)((unsigned long long)framebuffer.storage_pointer - 0x10000);
-        
-        // Setup quad and shader
-        setupQuad();
-        program = createProgram(vertexSrc, fragmentSrcTexture);
-        
-        is_framebuffer = true;
-    }
-
-    void present() {
-        glViewport(0, 0, width, height);
-        // Don't clear here - we're displaying, not rendering
-        // glClear(GL_COLOR_BUFFER_BIT);
-
-        GLFuncs->glUseProgram(program);
-        GLFuncs->glBindVertexArray(vao);
-
-        glActiveTexture(GL_TEXTURE0);
-        
-        if (is_framebuffer) {
-            // Bind as 2D texture
-            glBindTexture(GL_TEXTURE_2D, bufferTexture);
-            GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "framebufferTex"), 0);
-        } else {
-            // Bind as buffer texture
-            glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
-            GLFuncs->glUniform1i(GLFuncs->glGetUniformLocation(program, "bufferTex"), 0);
-            GLFuncs->glUniform2i(GLFuncs->glGetUniformLocation(program, "dimensions"), width, height);
-        }
-
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-
-        if (is_framebuffer) {
-            glBindTexture(GL_TEXTURE_2D, 0);
-        } else {
-            glBindTexture(GL_TEXTURE_BUFFER, 0);
-        }
-        GLFuncs->glBindVertexArray(0);
-    }
-
-
-
-private:
-    static constexpr const char* vertexSrc = R"(
-        #version 330 core
-        layout(location = 0) in vec2 pos;
-        layout(location = 1) in vec2 uv;
-        out vec2 vUV;
-        void main() {
-            vUV = uv;
-            gl_Position = vec4(pos, 0, 1);
-        }
-    )";
-
-    static constexpr const char* fragmentSrc = R"(
-        #version 330 core
-        in vec2 vUV;
-        out vec4 color;
-        uniform samplerBuffer bufferTex;
-        uniform ivec2 dimensions;
-        
-        void main() {
-            // Convert UV coordinates to pixel coordinates
-            ivec2 pixelCoord = ivec2(vUV * vec2(dimensions));
-            
-            // Calculate linear index into buffer (row-major order)
-            int index = pixelCoord.y * dimensions.x + pixelCoord.x;
-            
-            // Fetch color directly from buffer
-            color = texelFetch(bufferTex, index);
-        }
-    )";
-
-    static constexpr const char* fragmentSrcTexture = R"(
-        #version 330 core
-        in vec2 vUV;
-        out vec4 color;
-        uniform sampler2D framebufferTex;
-        
-        void main() {
-            color = texture(framebufferTex, vec2(vUV.x, 1.0 - vUV.y)); // Flip Y for correct orientation
-        }
-    )";
-
-    GLuint createProgram(const char* vs, const char* fs) {
-        auto compile = [](GLenum type, const char* src) {
-            GLuint s = GLFuncs->glCreateShader(type);
-            GLFuncs->glShaderSource(s, 1, &src, nullptr);
-            GLFuncs->glCompileShader(s);
-            
-            GLint success;
-            GLFuncs->glGetShaderiv(s, GL_COMPILE_STATUS, &success);
-            if (!success) {
-                char infoLog[512];
-                GLFuncs->glGetShaderInfoLog(s, 512, nullptr, infoLog);
-                std::cerr << "Shader compilation failed: " << infoLog << std::endl;
-            }
-            return s;
-        };
-
-        GLuint v = compile(GL_VERTEX_SHADER, vs);
-        GLuint f = compile(GL_FRAGMENT_SHADER, fs);
-        GLuint p = GLFuncs->glCreateProgram();
-        GLFuncs->glAttachShader(p, v);
-        GLFuncs->glAttachShader(p, f);
-        GLFuncs->glLinkProgram(p);
-        
-        GLint success;
-        GLFuncs->glGetProgramiv(p, GL_LINK_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            GLFuncs->glGetProgramInfoLog(p, 512, nullptr, infoLog);
-            std::cerr << "Program linking failed: " << infoLog << std::endl;
-        }
-        
-        GLFuncs->glDeleteShader(v);
-        GLFuncs->glDeleteShader(f);
-        return p;
-    }
-
-   
-};
 
 class CurrentScreenInputInfo {
 private:
@@ -512,65 +310,30 @@ public:
     int depth = 32;
     int height = 0;
     int width = 0;
-    GLuint fbo_solid = 0; // Framebuffer Object
-    GLuint depthBuffer_solid = 0; // Depth buffer for solid framebuffer
-    GLuint fbo_final = 0; // Framebuffer Object for final render
-    GLuint depthBuffer_final = 0; // Depth buffer for final framebuffer
-    GLuint backbufferTexture = 0; // Texture attached to framebuffer for rendering
-    GLuint depthBuffer = 0; // Depth buffer for framebuffer
+
     WindowPropertiesFlags properties;
     CurrentScreenInputInfo current_screen_input_info;
     ComputeDeviceBase* device = nullptr;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
-    VectorDisplay* vectordisplay = nullptr;
-    VectorDisplay* solid_particles_display = nullptr;
-    Tensor<Hvec<float16,4>, 2> solidParticlesTexture;
-    Tensor<Hvec<float16,4>, 2> finalRenderTexture;
+    VectorDisplay<float16x4> solidParticlesTexture;
+    VectorDisplay<float16x4> finalRenderTexture;
+    VectorDisplay<DepthBufferFloat> depthbuffer;
     
     Clock clock;
 
     
     void setupRenderTextures(Shape<2> shape) {
-    // Create SHARED depth buffer first
-        GLFuncs->glGenRenderbuffers(1, &depthBuffer_solid);
-        GLFuncs->glBindRenderbuffer(GL_RENDERBUFFER, depthBuffer_solid);
-        GLFuncs->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, shape[0], shape[1]);
-        
         // === FRAMEBUFFER 1: Solid particles ===
-        solidParticlesTexture = Tensor<Hvec<float16,4>, 2>(shape, device->default_memory_type, kOPENGLTEXTURE);
-        
-        GLFuncs->glGenFramebuffers(1, &fbo_solid);
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_solid);
-        
-        GLuint solidTexID = (GLuint)(unsigned long long)solidParticlesTexture.storage_pointer - 0x10000;
-        GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, solidTexID, 0);
-        
-        // Attach SHARED depth buffer
-        GLFuncs->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthBuffer_solid);
-        
-        if (GLFuncs->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            throw std::runtime_error("Solid framebuffer not complete!");
-        }
+        depthbuffer = VectorDisplay<DepthBufferFloat>(shape, kOPENGLTEXTURE);
+
+        solidParticlesTexture = VectorDisplay<float16x4>(shape, kOPENGLTEXTURE);
+        solidParticlesTexture.attach_depth_buffer(depthbuffer);
         
         // === FRAMEBUFFER 2: Final render ===
-        finalRenderTexture = Tensor<Hvec<float16,4>, 2>(shape, device->default_memory_type, kOPENGLTEXTURE);
-        
-        GLFuncs->glGenFramebuffers(1, &fbo_final);
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_final);
-        
-        GLuint finalTexID = (GLuint)(unsigned long long)finalRenderTexture.storage_pointer - 0x10000;
-        GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, finalTexID, 0);
-        
-        // Attach SAME depth buffer
-        GLFuncs->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthBuffer_solid);
-        
-        if (GLFuncs->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            throw std::runtime_error("Final framebuffer not complete!");
-        }
-        
-        // Unbind
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        }
+        finalRenderTexture = VectorDisplay<float16x4>(shape, kOPENGLTEXTURE);
+        finalRenderTexture.depthbuffer = solidParticlesTexture.depthbuffer; // Share depth buffer with solid particles
+  
+    }
 
    
 
@@ -619,8 +382,6 @@ public:
 
         setupRenderTextures(shape);
 
-        vectordisplay = new VectorDisplay(finalRenderTexture);
-        solid_particles_display = new VectorDisplay(solidParticlesTexture);
     }
     
 private:
@@ -762,13 +523,13 @@ public:
     }
 
     void activateBackBuffer(){
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_final);
+        finalRenderTexture.bind_as_render_target();
         glViewport(0, 0, width, height);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // turn off depth write and copy the solid particles texture to the back buffer
         glDepthMask(GL_FALSE);
-        solid_particles_display->present();
+        solidParticlesTexture.present();
         glDepthMask(GL_TRUE);
     }
     
@@ -779,7 +540,7 @@ public:
             resizeDisplay();
             
             // === PASS 1: Render ONLY solid particles to solidParticlesTexture ===
-            GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, fbo_solid);
+            solidParticlesTexture.bind_as_render_target();
             glViewport(0, 0, width, height);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glEnable(GL_DEPTH_TEST);
@@ -789,7 +550,7 @@ public:
             }
             
             // === Display final result to screen ===
-            GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            finalRenderTexture.unbind_render_target();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             displayRenderTexture();
             
@@ -799,9 +560,8 @@ public:
     }
 
     void displayRenderTexture() {
-        if (vectordisplay) {
-            vectordisplay->present();
-        }
+       
+        finalRenderTexture.present();
     }
    
     

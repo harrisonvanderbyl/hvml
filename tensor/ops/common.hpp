@@ -3,6 +3,12 @@
 #include "tensor.hpp"
 #include "kernels/interface.hpp"
 
+struct ExampleNoScalarType {
+    int x;
+    float y;
+    static constexpr bool NoScalarType = true; // This is just a marker to indicate that this type should not have a scalar version
+};
+
 template <typename T>
 struct Parameter {
     T* data = 0;
@@ -11,7 +17,12 @@ struct Parameter {
     Shape<-1> strides;
     unsigned long* indexer = nullptr;
     bool istensor = true;
-    T data_scalar ;
+    // if T has a constexpr member NoScalarType, then do not define data_scalar, define it as deleted
+    // this is to prevent accidentally using the scalar version of a type that should not have one
+    // for example, if T is ExampleNoScalarType, then data_scalar should not be used, eg, defining a large tensor type that should not be accidentally used as a scalar
+    static constexpr bool NoScalar = requires { T::NoScalarType; };
+    using ScalarType = std::conditional_t<NoScalar, void*, T>;
+    ScalarType data_scalar;
 
     Parameter() {}
    
@@ -27,6 +38,7 @@ struct Parameter {
 
     
     Parameter(const T& indata) {
+        static_assert(!NoScalar, "This type cannot be used as a scalar");
         ndim = 1;
         shape = Shape<-1>(1);
         strides = Shape<-1>(1);
@@ -41,7 +53,12 @@ struct Parameter {
     __host__ __device__ T& get_index(long index_flat) {
 
         if(!istensor){
-            return data_scalar;
+            if constexpr(NoScalar) {
+                // This should never be used, but we need to return something to compile
+                return *(T*)data_scalar; // just return something to compile, but this should never be used
+            }else{
+                return data_scalar;
+            }
         }
 
         int rem = index_flat;

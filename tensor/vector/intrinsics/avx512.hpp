@@ -1,1115 +1,679 @@
 #ifndef AVX_HVEC_HPP
 #define AVX_HVEC_HPP
+
 #include "vector/Hvec.hpp"
-#if defined(__NEON__)
-#include "arm_neon.h"
+
+// ============================================================================
+// PLATFORM DETECTION & INTRINSIC HEADERS
+// ============================================================================
+
+#if defined(__NEON__) || defined(__ARM_NEON)
+    #include "arm_neon.h"
+    // For bf16 on ARM: requires -march=armv8.6-a+bf16 or equivalent
+    #if defined(__ARM_FEATURE_BF16)
+        #include "arm_bf16.h"
+    #endif
 #else
-#include "immintrin.h"
+    #include "immintrin.h"
+    // F16C: _mm256_cvtph_ps / _mm256_cvtps_ph  (requires __F16C__)
+    // AVX-512 FP16: native float16 arithmetic   (requires __AVX512FP16__)
+    // AVX-512 BF16: native bfloat16 arithmetic  (requires __AVX512BF16__)
 #endif
 
 // ============================================================================
-// FLOAT32 OPERATIONS - SIZE 4
+// HALF-PRECISION TYPE STUBS
+//
+// Where a native compiler type exists (_Float16, __bf16) we alias it.
+// Otherwise we define storage-only wrappers that hold the raw bit pattern.
+// Arithmetic always upcasts to float32 on paths without native HW support.
 // ============================================================================
 
-__weak Hvec<float, 4> __device__ __host__ operator+(Hvec<float, 4> a, Hvec<float, 4> b)
+// ----- float16 -----
+
+
+// ============================================================================
+// INTRINSICS ENUM  (must match Hvec.hpp)
+// ============================================================================
+
+__device__ __host__ static inline constexpr Intrinsics get_available_intrinsics()
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    float32x2& vec_a_low = *(float32x2*)&a.data[0];
-    float32x2& vec_a_high = *(float32x2*)&a.data[2];
-    float32x2& vec_b_low = *(float32x2*)&b.data[0];
-    float32x2& vec_b_high = *(float32x2*)&b.data[2];
-    float32x4 vec_result;
-    float32x2& vec_result_low = *(float32x2*)&vec_result.data[0];
-    float32x2& vec_result_high = *(float32x2*)&vec_result.data[2];
-    vec_result_low = vec_a_low + vec_b_low;
-    vec_result_high = vec_a_high + vec_b_high;
-    return vec_result;
+#if defined(__CUDA_ARCH__)
+    return Intrinsics::CUDA;
+#elif defined(__HIP_DEVICE_COMPILE__)
+    return Intrinsics::HIP;
 #elif defined(__AVX512F__)
-    __m512 vec_a = _mm512_loadu_ps(a.data);
-    __m512 vec_b = _mm512_loadu_ps(b.data);
-    __m512 vec_result = _mm512_add_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__AVX2__) || defined(__AVX__)
-    __m256 vec_a = _mm256_loadu_ps(a.data);
-    __m256 vec_b = _mm256_loadu_ps(b.data);
-    __m256 vec_result = _mm256_add_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
+    return Intrinsics::AVX512;
+#elif defined(__AVX__)
+    return Intrinsics::AVX;
 #elif defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_add_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__NEON__)
-    float32x4_t vec_a = vld1q_f32(a.data);
-    float32x4_t vec_b = vld1q_f32(b.data);
-    float32x4_t vec_result = vaddq_f32(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#else  
-    Hvec<float, 4> result;
-    for (int i = 0; i < 4; i++) {
-        result.data[i] = a.data[i] + b.data[i];
-    }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 4> __device__ __host__ operator-(Hvec<float, 4> a, Hvec<float, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    float32x2& vec_a_low = *(float32x2*)&a.data[0];
-    float32x2& vec_a_high = *(float32x2*)&a.data[2];
-    float32x2& vec_b_low = *(float32x2*)&b.data[0];
-    float32x2& vec_b_high = *(float32x2*)&b.data[2];
-    float32x4 vec_result;
-    float32x2& vec_result_low = *(float32x2*)&vec_result.data[0];
-    float32x2& vec_result_high = *(float32x2*)&vec_result.data[2];
-    vec_result_low = vec_a_low - vec_b_low;
-    vec_result_high = vec_a_high - vec_b_high;
-    return vec_result;
-#elif defined(__AVX512F__)
-    __m512 vec_a = _mm512_loadu_ps(a.data);
-    __m512 vec_b = _mm512_loadu_ps(b.data);
-    __m512 vec_result = _mm512_sub_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__AVX2__) || defined(__AVX__)
-    __m256 vec_a = _mm256_loadu_ps(a.data);
-    __m256 vec_b = _mm256_loadu_ps(b.data);
-    __m256 vec_result = _mm256_sub_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_sub_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__NEON__)
-    float32x4_t vec_a = vld1q_f32(a.data);
-    float32x4_t vec_b = vld1q_f32(b.data);
-    float32x4_t vec_result = vsubq_f32(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#else  
-    Hvec<float, 4> result;
-    for (int i = 0; i < 4; i++) {
-        result.data[i] = a.data[i] - b.data[i];
-    }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 4> __device__ __host__ operator*(Hvec<float, 4> a, Hvec<float, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    float32x2& vec_a_low = *(float32x2*)&a.data[0];
-    float32x2& vec_a_high = *(float32x2*)&a.data[2];
-    float32x2& vec_b_low = *(float32x2*)&b.data[0];
-    float32x2& vec_b_high = *(float32x2*)&b.data[2];
-    float32x4 vec_result;
-    float32x2& vec_result_low = *(float32x2*)&vec_result.data[0];
-    float32x2& vec_result_high = *(float32x2*)&vec_result.data[2];
-    vec_result_low = vec_a_low * vec_b_low;
-    vec_result_high = vec_a_high * vec_b_high;
-    return vec_result;
-#elif defined(__AVX512F__)
-    __m512 vec_a = _mm512_loadu_ps(a.data);
-    __m512 vec_b = _mm512_loadu_ps(b.data);
-    __m512 vec_result = _mm512_mul_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__AVX2__) || defined(__AVX__)
-    __m256 vec_a = _mm256_loadu_ps(a.data);
-    __m256 vec_b = _mm256_loadu_ps(b.data);
-    __m256 vec_result = _mm256_mul_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_mul_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__NEON__)
-    float32x4_t vec_a = vld1q_f32(a.data);
-    float32x4_t vec_b = vld1q_f32(b.data);
-    float32x4_t vec_result = vmulq_f32(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#else  
-    Hvec<float, 4> result;
-    for (int i = 0; i < 4; i++) {
-        result.data[i] = a.data[i] * b.data[i];
-    }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 4> __device__ __host__ operator/(Hvec<float, 4> a, Hvec<float, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    float32x2& vec_a_low = *(float32x2*)&a.data[0];
-    float32x2& vec_a_high = *(float32x2*)&a.data[2];
-    float32x2& vec_b_low = *(float32x2*)&b.data[0];
-    float32x2& vec_b_high = *(float32x2*)&b.data[2];
-    float32x4 vec_result;
-    float32x2& vec_result_low = *(float32x2*)&vec_result.data[0];
-    float32x2& vec_result_high = *(float32x2*)&vec_result.data[2];
-    vec_result_low = vec_a_low / vec_b_low;
-    vec_result_high = vec_a_high / vec_b_high;
-    return vec_result;
-#elif defined(__AVX512F__)
-    __m512 vec_a = _mm512_loadu_ps(a.data);
-    __m512 vec_b = _mm512_loadu_ps(b.data);
-    __m512 vec_result = _mm512_div_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__AVX2__) || defined(__AVX__)
-    __m256 vec_a = _mm256_loadu_ps(a.data);
-    __m256 vec_b = _mm256_loadu_ps(b.data);
-    __m256 vec_result = _mm256_div_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_div_ps(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#elif defined(__NEON__)
-    float32x4_t vec_a = vld1q_f32(a.data);
-    float32x4_t vec_b = vld1q_f32(b.data);
-    float32x4_t vec_result = vdivq_f32(vec_a, vec_b);
-    return *(Hvec<float, 4>*)&vec_result;
-#else  
-    Hvec<float, 4> result;
-    for (int i = 0; i < 4; i++) {
-        result.data[i] = a.data[i] / b.data[i];
-    }
-    return result;
-#endif
-}
-
-__weak float __device__ __host__ dot(Hvec<float, 4> a, Hvec<float, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    float32x2& vec_a_low = *(float32x2*)&a.data[0];
-    float32x2& vec_a_high = *(float32x2*)&a.data[2];
-    float32x2& vec_b_low = *(float32x2*)&b.data[0];
-    float32x2& vec_b_high = *(float32x2*)&b.data[2];
-    float32x2 prod_low = vec_a_low * vec_b_low;
-    float32x2 prod_high = vec_a_high * vec_b_high;
-    return prod_low.x() + prod_low.y() + prod_high.x() + prod_high.y();
-#elif defined(__AVX512F__)
-    __m512 vec_a = _mm512_loadu_ps(a.data);
-    __m512 vec_b = _mm512_loadu_ps(b.data);
-    __m512 prod = _mm512_mul_ps(vec_a, vec_b);
-    return _mm512_reduce_add_ps(prod);
-#elif defined(__AVX2__) || defined(__AVX__)
-    __m256 vec_a = _mm256_loadu_ps(a.data);
-    __m256 vec_b = _mm256_loadu_ps(b.data);
-    __m256 prod = _mm256_mul_ps(vec_a, vec_b);
-    __m128 sum_high = _mm256_extractf128_ps(prod, 1);
-    __m128 sum_low = _mm256_castps256_ps128(prod);
-    __m128 sum = _mm_add_ps(sum_low, sum_high);
-    __m128 shuf = _mm_movehdup_ps(sum);
-    __m128 sums = _mm_add_ps(sum, shuf);
-    shuf = _mm_movehl_ps(shuf, sums);
-    sums = _mm_add_ss(sums, shuf);
-    return _mm_cvtss_f32(sums);
-#elif defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 prod = _mm_mul_ps(vec_a, vec_b);
-    __m128 shuf = _mm_movehdup_ps(prod);
-    __m128 sums = _mm_add_ps(prod, shuf);
-    shuf = _mm_movehl_ps(shuf, sums);
-    sums = _mm_add_ss(sums, shuf);
-    return _mm_cvtss_f32(sums);
-#elif defined(__NEON__)
-    float32x4_t vec_a = vld1q_f32(a.data);
-    float32x4_t vec_b = vld1q_f32(b.data);
-    float32x4_t prod = vmulq_f32(vec_a, vec_b);
-    return vaddvq_f32(prod);
-#else  
-    float result = 0.0f;
-    for (int i = 0; i < 4; i++) {
-        result += a.data[i] * b.data[i];
-    }
-    return result;
+    return Intrinsics::SSE2;
+#elif defined(__NEON__) || defined(__ARM_NEON)
+    return Intrinsics::NEON;
+#else
+    return Intrinsics::None;
 #endif
 }
 
 // ============================================================================
-// FLOAT32 OPERATIONS - SIZE 2
+// GENERIC (SCALAR FALLBACK) OPERATION SET
 // ============================================================================
 
-__weak Hvec<float, 2> __device__ __host__ operator+(Hvec<float, 2> a, Hvec<float, 2> b)
+template <Intrinsics intrin, typename T, int N>
+struct vectorOperationSet
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] + b.data[i];
+    static Hvec<T, N> add(const Hvec<T, N>& a, const Hvec<T, N>& b)
+    {
+        Hvec<T, N> r;
+        for (int i = 0; i < N; i++) r.data[i] = a.data[i] + b.data[i];
+        return r;
     }
-    return result;
-#elif defined(__AVX512F__) || defined(__AVX2__) || defined(__AVX__) || defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_add_ps(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#elif defined(__NEON__)
-    float32x2_t vec_a = vld1_f32(a.data);
-    float32x2_t vec_b = vld1_f32(b.data);
-    float32x2_t vec_result = vadd_f32(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#else
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] + b.data[i];
+    static Hvec<T, N> sub(const Hvec<T, N>& a, const Hvec<T, N>& b)
+    {
+        Hvec<T, N> r;
+        for (int i = 0; i < N; i++) r.data[i] = a.data[i] - b.data[i];
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 2> __device__ __host__ operator-(Hvec<float, 2> a, Hvec<float, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] - b.data[i];
+    static Hvec<T, N> mul(const Hvec<T, N>& a, const Hvec<T, N>& b)
+    {
+        Hvec<T, N> r;
+        for (int i = 0; i < N; i++) r.data[i] = a.data[i] * b.data[i];
+        return r;
     }
-    return result;
-#elif defined(__AVX512F__) || defined(__AVX2__) || defined(__AVX__) || defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_sub_ps(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#elif defined(__NEON__)
-    float32x2_t vec_a = vld1_f32(a.data);
-    float32x2_t vec_b = vld1_f32(b.data);
-    float32x2_t vec_result = vsub_f32(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#else
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] - b.data[i];
+    static Hvec<T, N> div(const Hvec<T, N>& a, const Hvec<T, N>& b)
+    {
+        Hvec<T, N> r;
+        for (int i = 0; i < N; i++) r.data[i] = a.data[i] / b.data[i];
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 2> __device__ __host__ operator*(Hvec<float, 2> a, Hvec<float, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] * b.data[i];
+    // fma: (a * b) + c  — scalar fallback, not fused
+    static Hvec<T, N> fma(const Hvec<T, N>& a, const Hvec<T, N>& b, const Hvec<T, N>& c)
+    {
+        Hvec<T, N> r;
+        for (int i = 0; i < N; i++) r.data[i] = a.data[i] * b.data[i] + c.data[i];
+        return r;
     }
-    return result;
-#elif defined(__AVX512F__) || defined(__AVX2__) || defined(__AVX__) || defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_mul_ps(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#elif defined(__NEON__)
-    float32x2_t vec_a = vld1_f32(a.data);
-    float32x2_t vec_b = vld1_f32(b.data);
-    float32x2_t vec_result = vmul_f32(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#else
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] * b.data[i];
+    static T hsum(const Hvec<T, N>& a)
+    {
+        T acc = a.data[0];
+        for (int i = 1; i < N; i++) acc += a.data[i];
+        return acc;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float, 2> __device__ __host__ operator/(Hvec<float, 2> a, Hvec<float, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] / b.data[i];
-    }
-    return result;
-#elif defined(__AVX512F__) || defined(__AVX2__) || defined(__AVX__) || defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 vec_result = _mm_div_ps(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#elif defined(__NEON__)
-    float32x2_t vec_a = vld1_f32(a.data);
-    float32x2_t vec_b = vld1_f32(b.data);
-    float32x2_t vec_result = vdiv_f32(vec_a, vec_b);
-    return *(Hvec<float, 2>*)&vec_result;
-#else
-    Hvec<float, 2> result;
-    for (int i = 0; i < 2; i++) {
-        result.data[i] = a.data[i] / b.data[i];
-    }
-    return result;
-#endif
-}
-
-__weak float __device__ __host__ dot(Hvec<float, 2> a, Hvec<float, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    return a.data[0] * b.data[0] + a.data[1] * b.data[1];
-#elif defined(__AVX512F__) || defined(__AVX2__) || defined(__AVX__) || defined(__SSE2__)
-    __m128 vec_a = _mm_loadu_ps(a.data);
-    __m128 vec_b = _mm_loadu_ps(b.data);
-    __m128 prod = _mm_mul_ps(vec_a, vec_b);
-    __m128 shuf = _mm_shuffle_ps(prod, prod, _MM_SHUFFLE(2, 3, 0, 1));
-    __m128 sums = _mm_add_ps(prod, shuf);
-    return _mm_cvtss_f32(sums);
-#elif defined(__NEON__)
-    float32x2_t vec_a = vld1_f32(a.data);
-    float32x2_t vec_b = vld1_f32(b.data);
-    float32x2_t prod = vmul_f32(vec_a, vec_b);
-    return vaddv_f32(prod);
-#else
-    return a.data[0] * b.data[0] + a.data[1] * b.data[1];
-#endif
-}
+};
 
 // ============================================================================
-// FLOAT16 (HALF) OPERATIONS - SIZE 4
+// SCALAR FALLBACK FOR float16  (upcast -> f32 op -> downcast)
+// Covers all (intrin, float16, N) combos not explicitly specialised below.
 // ============================================================================
 
-
-
-__weak Hvec<float16, 4> __device__ __host__ operator+(Hvec<float16, 4> a, Hvec<float16, 4> b)
+template <Intrinsics intrin, int N>
+struct vectorOperationSet<intrin, float16, N>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __half2& vec_a_low = *(__half2*)&a.data[0];
-    __half2& vec_a_high = *(__half2*)&a.data[2];
-    __half2& vec_b_low = *(__half2*)&b.data[0];
-    __half2& vec_b_high = *(__half2*)&b.data[2];
-    Hvec<float16, 4> vec_result;
-    __half2& vec_result_low = *(__half2*)&vec_result.data[0];
-    __half2& vec_result_high = *(__half2*)&vec_result.data[2];
-    vec_result_low = __hadd2(vec_a_low, vec_b_low);
-    vec_result_high = __hadd2(vec_a_high, vec_b_high);
-    return vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_add_ph(vec_a, vec_b);
-    return *(Hvec<float16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vadd_f16(vec_a, vec_b);
-    Hvec<float16, 4> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa + fb);
-    }
-    return result;
-#endif
-}
+    using F16Vec = Hvec<float16, N>;
+    using F32Vec = Hvec<float,   N>;
 
-__weak Hvec<float16, 4> __device__ __host__ operator-(Hvec<float16, 4> a, Hvec<float16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __half2& vec_a_low = *(__half2*)&a.data[0];
-    __half2& vec_a_high = *(__half2*)&a.data[2];
-    __half2& vec_b_low = *(__half2*)&b.data[0];
-    __half2& vec_b_high = *(__half2*)&b.data[2];
-    Hvec<float16, 4> vec_result;
-    __half2& vec_result_low = *(__half2*)&vec_result.data[0];
-    __half2& vec_result_high = *(__half2*)&vec_result.data[2];
-    vec_result_low = __hsub2(vec_a_low, vec_b_low);
-    vec_result_high = __hsub2(vec_a_high, vec_b_high);
-    return vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_sub_ph(vec_a, vec_b);
-    return *(Hvec<float16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vsub_f16(vec_a, vec_b);
-    Hvec<float16, 4> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa - fb);
+    static F32Vec upcast(const F16Vec& v)
+    {
+        F32Vec r;
+        for (int i = 0; i < N; i++) r.data[i] = float(v.data[i]);
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float16, 4> __device__ __host__ operator*(Hvec<float16, 4> a, Hvec<float16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a_low = *(half2*)&a.data[0];
-    half2& vec_a_high = *(half2*)&a.data[2];
-    half2& vec_b_low = *(half2*)&b.data[0];
-    half2& vec_b_high = *(half2*)&b.data[2];
-    Hvec<float16, 4> vec_result;
-    half2& vec_result_low = *(half2*)&vec_result.data[0];
-    half2& vec_result_high = *(half2*)&vec_result.data[2];
-    vec_result_low = __hmul2(vec_a_low, vec_b_low);
-    vec_result_high = __hmul2(vec_a_high, vec_b_high);
-    return vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_mul_ph(vec_a, vec_b);
-    return *(Hvec<float16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vmul_f16(vec_a, vec_b);
-    Hvec<float16, 4> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa * fb);
+    static F16Vec downcast(const F32Vec& v)
+    {
+        F16Vec r;
+        for (int i = 0; i < N; i++) r.data[i] = float16(v.data[i]);
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float16, 4> __device__ __host__ operator/(Hvec<float16, 4> a, Hvec<float16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a_low = *(half2*)&a.data[0];
-    half2& vec_a_high = *(half2*)&a.data[2];
-    half2& vec_b_low = *(half2*)&b.data[0];
-    half2& vec_b_high = *(half2*)&b.data[2];
-    Hvec<float16, 4> vec_result;
-    half2& vec_result_low = *(half2*)&vec_result.data[0];
-    half2& vec_result_high = *(half2*)&vec_result.data[2];
-    vec_result_low = __h2div(vec_a_low, vec_b_low);
-    vec_result_high = __h2div(vec_a_high, vec_b_high);
-    return vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_div_ph(vec_a, vec_b);
-    return *(Hvec<float16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vdiv_f16(vec_a, vec_b);
-    Hvec<float16, 4> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa / fb);
-    }
-    return result;
-#endif
-}
-
-__weak float __device__ __host__ dot(Hvec<float16, 4> a, Hvec<float16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a_low = *(half2*)&a.data[0];
-    half2& vec_a_high = *(half2*)&a.data[2];
-    half2& vec_b_low = *(half2*)&b.data[0];
-    half2& vec_b_high = *(half2*)&b.data[2];
-    half2 prod_low = __hmul2(vec_a_low, vec_b_low);
-    half2 prod_high = __hmul2(vec_a_high, vec_b_high);
-    float sum = __half2float(prod_low.x) + __half2float(prod_low.y) + 
-                __half2float(prod_high.x) + __half2float(prod_high.y);
-    return sum;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h prod = _mm_mul_ph(vec_a, vec_b);
-    // Convert to float and sum
-    __m128 prod_f32 = _mm_cvtph_ps(_mm_castph_si128(prod));
-    __m128 shuf = _mm_movehdup_ps(prod_f32);
-    __m128 sums = _mm_add_ps(prod_f32, shuf);
-    shuf = _mm_movehl_ps(shuf, sums);
-    sums = _mm_add_ss(sums, shuf);
-    return _mm_cvtss_f32(sums);
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t prod = vmul_f16(vec_a, vec_b);
-    float32x4_t prod_f32 = vcvt_f32_f16(prod);
-    return vaddvq_f32(prod_f32);
-#else
-    float result = 0.0f;
-    for (int i = 0; i < 4; i++) {
-        result += (float)a.data[i] * (float)b.data[i];
-    }
-    return result;
-#endif
-}
+    static F16Vec   add(const F16Vec& a, const F16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::add(upcast(a), upcast(b))); }
+    static F16Vec   sub(const F16Vec& a, const F16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::sub(upcast(a), upcast(b))); }
+    static F16Vec   mul(const F16Vec& a, const F16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::mul(upcast(a), upcast(b))); }
+    static F16Vec   div(const F16Vec& a, const F16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::div(upcast(a), upcast(b))); }
+    static F16Vec   fma(const F16Vec& a, const F16Vec& b, const F16Vec& c) { return downcast(vectorOperationSet<intrin,float,N>::fma(upcast(a), upcast(b), upcast(c))); }
+    static float16 hsum(const F16Vec& a) { return float16(vectorOperationSet<intrin,float,N>::hsum(upcast(a))); }
+};
 
 // ============================================================================
-// FLOAT16 (HALF) OPERATIONS - SIZE 2
+// SCALAR FALLBACK FOR bfloat16  (upcast -> f32 op -> downcast)
 // ============================================================================
 
-__weak Hvec<float16, 2> __device__ __host__ operator+(Hvec<float16, 2> a, Hvec<float16, 2> b)
+template <Intrinsics intrin, int N>
+struct vectorOperationSet<intrin, bfloat16, N>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a = *(half2*)&a.data[0];
-    half2& vec_b = *(half2*)&b.data[0];
-    half2 vec_result = __hadd2(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_add_ph(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vadd_f16(vec_a, vec_b);
-    Hvec<float16, 2> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa + fb);
-    }
-    return result;
-#endif
-}
+    using BF16Vec = Hvec<bfloat16, N>;
+    using F32Vec  = Hvec<float,    N>;
 
-__weak Hvec<float16, 2> __device__ __host__ operator-(Hvec<float16, 2> a, Hvec<float16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a = *(half2*)&a.data[0];
-    half2& vec_b = *(half2*)&b.data[0];
-    half2 vec_result = __hsub2(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_sub_ph(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vsub_f16(vec_a, vec_b);
-    Hvec<float16, 2> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa - fb);
+    static F32Vec upcast(const BF16Vec& v)
+    {
+        F32Vec r;
+        for (int i = 0; i < N; i++) r.data[i] = float(v.data[i]);
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float16, 2> __device__ __host__ operator*(Hvec<float16, 2> a, Hvec<float16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a = *(half2*)&a.data[0];
-    half2& vec_b = *(half2*)&b.data[0];
-    half2 vec_result = __hmul2(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_mul_ph(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vmul_f16(vec_a, vec_b);
-    Hvec<float16, 2> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa * fb);
+    static BF16Vec downcast(const F32Vec& v)
+    {
+        BF16Vec r;
+        for (int i = 0; i < N; i++) r.data[i] = bfloat16(v.data[i]);
+        return r;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<float16, 2> __device__ __host__ operator/(Hvec<float16, 2> a, Hvec<float16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a = *(half2*)&a.data[0];
-    half2& vec_b = *(half2*)&b.data[0];
-    half2 vec_result = __h2div(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h vec_result = _mm_div_ph(vec_a, vec_b);
-    return *(Hvec<float16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t vec_result = vdiv_f16(vec_a, vec_b);
-    Hvec<float16, 2> result;
-    vst1_f16((__fp16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<float16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = (float)a.data[i];
-        float fb = (float)b.data[i];
-        result.data[i] = (float16)(fa / fb);
-    }
-    return result;
-#endif
-}
-
-__weak float __device__ __host__ dot(Hvec<float16, 2> a, Hvec<float16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    half2& vec_a = *(half2*)&a.data[0];
-    half2& vec_b = *(half2*)&b.data[0];
-    half2 prod = __hmul2(vec_a, vec_b);
-    return __half2float(prod.x) + __half2float(prod.y);
-#elif defined(__AVX512FP16__)
-    __m128h vec_a = _mm_loadu_ph(a.data);
-    __m128h vec_b = _mm_loadu_ph(b.data);
-    __m128h prod = _mm_mul_ph(vec_a, vec_b);
-    __m128 prod_f32 = _mm_cvtph_ps(_mm_castph_si128(prod));
-    __m128 shuf = _mm_shuffle_ps(prod_f32, prod_f32, _MM_SHUFFLE(2, 3, 0, 1));
-    __m128 sums = _mm_add_ps(prod_f32, shuf);
-    return _mm_cvtss_f32(sums);
-#elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    float16x4_t vec_a = vld1_f16((const __fp16*)a.data);
-    float16x4_t vec_b = vld1_f16((const __fp16*)b.data);
-    float16x4_t prod = vmul_f16(vec_a, vec_b);
-    float32x2_t prod_f32 = vcvt_f32_f16(vget_low_f16(prod));
-    return vaddv_f32(prod_f32);
-#else
-    return (float)a.data[0] * (float)b.data[0] + (float)a.data[1] * (float)b.data[1];
-#endif
-}
+    static BF16Vec   add(const BF16Vec& a, const BF16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::add(upcast(a), upcast(b))); }
+    static BF16Vec   sub(const BF16Vec& a, const BF16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::sub(upcast(a), upcast(b))); }
+    static BF16Vec   mul(const BF16Vec& a, const BF16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::mul(upcast(a), upcast(b))); }
+    static BF16Vec   div(const BF16Vec& a, const BF16Vec& b) { return downcast(vectorOperationSet<intrin,float,N>::div(upcast(a), upcast(b))); }
+    static BF16Vec   fma(const BF16Vec& a, const BF16Vec& b, const BF16Vec& c) { return downcast(vectorOperationSet<intrin,float,N>::fma(upcast(a), upcast(b), upcast(c))); }
+    static bfloat16 hsum(const BF16Vec& a) { return bfloat16(vectorOperationSet<intrin,float,N>::hsum(upcast(a))); }
+};
 
 // ============================================================================
-// BFLOAT16 OPERATIONS - SIZE 4
+// SSE2  — float32 x4
 // ============================================================================
 
-
-
-__weak Hvec<bfloat16, 4> __device__ __host__ operator+(Hvec<bfloat16, 4> a, Hvec<bfloat16, 4> b)
+#if defined(__SSE2__)
+template <>
+struct vectorOperationSet<Intrinsics::SSE2, float, 4>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a_low = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_a_high = *(__nv_bfloat162*)&a.data[2];
-    __nv_bfloat162& vec_b_low = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162& vec_b_high = *(__nv_bfloat162*)&b.data[2];
-    Hvec<bfloat16, 4> vec_result;
-    __nv_bfloat162& vec_result_low = *(__nv_bfloat162*)&vec_result.data[0];
-    __nv_bfloat162& vec_result_high = *(__nv_bfloat162*)&vec_result.data[2];
-    vec_result_low = __hadd2(vec_a_low, vec_b_low);
-    vec_result_high = __hadd2(vec_a_high, vec_b_high);
-    return vec_result;
-// #elif defined(__AVX512BF16__)
-    // __m128bh vec_a = _mm_loadu_pbh(a.data);
-    // __m128bh vec_b = _mm_loadu_pbh(b.data);
-    // __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-    // __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-    // __m256 vec_result_f32 = _mm256_add_ps(vec_a_f32, vec_b_f32);
-    // __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-    // return *(Hvec<bfloat16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vaddq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 4> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        // BF16 to float conversion (shift left by 16 bits)
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float sum = fa + fb;
-        // Float to BF16 conversion (take upper 16 bits)
-        result.data[i] = (bfloat16)(*((unsigned int*)&sum) >> 16);
+    static Hvec<float, 4> add(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        __m128 va = _mm_loadu_ps(a.data), vb = _mm_loadu_ps(b.data);
+        __m128 vr = _mm_add_ps(va, vb);
+        return *(Hvec<float, 4>*)&vr;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<bfloat16, 4> __device__ __host__ operator-(Hvec<bfloat16, 4> a, Hvec<bfloat16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a_low = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_a_high = *(__nv_bfloat162*)&a.data[2];
-    __nv_bfloat162& vec_b_low = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162& vec_b_high = *(__nv_bfloat162*)&b.data[2];
-    Hvec<bfloat16, 4> vec_result;
-    __nv_bfloat162& vec_result_low = *(__nv_bfloat162*)&vec_result.data[0];
-    __nv_bfloat162& vec_result_high = *(__nv_bfloat162*)&vec_result.data[2];
-    vec_result_low = __hsub2(vec_a_low, vec_b_low);
-    vec_result_high = __hsub2(vec_a_high, vec_b_high);
-    return vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_sub_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vsubq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 4> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float diff = fa - fb;
-        result.data[i] = (bfloat16)(*((unsigned int*)&diff) >> 16);
+    static Hvec<float, 4> sub(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        __m128 va = _mm_loadu_ps(a.data), vb = _mm_loadu_ps(b.data);
+        __m128 vr = _mm_sub_ps(va, vb);
+        return *(Hvec<float, 4>*)&vr;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<bfloat16, 4> __device__ __host__ operator*(Hvec<bfloat16, 4> a, Hvec<bfloat16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a_low = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_a_high = *(__nv_bfloat162*)&a.data[2];
-    __nv_bfloat162& vec_b_low = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162& vec_b_high = *(__nv_bfloat162*)&b.data[2];
-    Hvec<bfloat16, 4> vec_result;
-    __nv_bfloat162& vec_result_low = *(__nv_bfloat162*)&vec_result.data[0];
-    __nv_bfloat162& vec_result_high = *(__nv_bfloat162*)&vec_result.data[2];
-    vec_result_low = __hmul2(vec_a_low, vec_b_low);
-    vec_result_high = __hmul2(vec_a_high, vec_b_high);
-    return vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_mul_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vmulq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 4> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float prod = fa * fb;
-        result.data[i] = (bfloat16)(*((unsigned int*)&prod) >> 16);
+    static Hvec<float, 4> mul(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        __m128 va = _mm_loadu_ps(a.data), vb = _mm_loadu_ps(b.data);
+        __m128 vr = _mm_mul_ps(va, vb);
+        return *(Hvec<float, 4>*)&vr;
     }
-    return result;
-#endif
-}
-
-__weak Hvec<bfloat16, 4> __device__ __host__ operator/(Hvec<bfloat16, 4> a, Hvec<bfloat16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a_low = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_a_high = *(__nv_bfloat162*)&a.data[2];
-    __nv_bfloat162& vec_b_low = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162& vec_b_high = *(__nv_bfloat162*)&b.data[2];
-    Hvec<bfloat16, 4> vec_result;
-    __nv_bfloat162& vec_result_low = *(__nv_bfloat162*)&vec_result.data[0];
-    __nv_bfloat162& vec_result_high = *(__nv_bfloat162*)&vec_result.data[2];
-    vec_result_low = __h2div(vec_a_low, vec_b_low);
-    vec_result_high = __h2div(vec_a_high, vec_b_high);
-    return vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_div_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 4>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vdivq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 4> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 4> result;
-    for (int i = 0; i < 4; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float quot = fa / fb;
-        result.data[i] = quot;
+    static Hvec<float, 4> div(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        __m128 va = _mm_loadu_ps(a.data), vb = _mm_loadu_ps(b.data);
+        __m128 vr = _mm_div_ps(va, vb);
+        return *(Hvec<float, 4>*)&vr;
     }
-    return result;
-#endif
-}
-
-__weak float __device__ __host__ dot(Hvec<bfloat16, 4> a, Hvec<bfloat16, 4> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a_low = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_a_high = *(__nv_bfloat162*)&a.data[2];
-    __nv_bfloat162& vec_b_low = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162& vec_b_high = *(__nv_bfloat162*)&b.data[2];
-    __nv_bfloat162 prod_low = __hmul2(vec_a_low, vec_b_low);
-    __nv_bfloat162 prod_high = __hmul2(vec_a_high, vec_b_high);
-    float sum = __bfloat162float(prod_low.x) + __bfloat162float(prod_low.y) + 
-                __bfloat162float(prod_high.x) + __bfloat162float(prod_high.y);
-    return sum;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 prod = _mm256_mul_ps(vec_a_f32, vec_b_f32);
-//     __m128 sum_high = _mm256_extractf128_ps(prod, 1);
-//     __m128 sum_low = _mm256_castps256_ps128(prod);
-//     __m128 sum = _mm_add_ps(sum_low, sum_high);
-//     __m128 shuf = _mm_movehdup_ps(sum);
-//     __m128 sums = _mm_add_ps(sum, shuf);
-//     shuf = _mm_movehl_ps(shuf, sums);
-//     sums = _mm_add_ss(sums, shuf);
-//     return _mm_cvtss_f32(sums);
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t prod = vmulq_f32(vec_a_f32, vec_b_f32);
-    return vaddvq_f32(prod);
+    static Hvec<float, 4> fma(const Hvec<float, 4>& a, const Hvec<float, 4>& b, const Hvec<float, 4>& c)
+    {
+        __m128 va = _mm_loadu_ps(a.data), vb = _mm_loadu_ps(b.data), vc = _mm_loadu_ps(c.data);
+#if defined(__FMA__)
+        __m128 vr = _mm_fmadd_ps(va, vb, vc);
 #else
-    float result = 0.0f;
-    for (int i = 0; i < 4; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        result += fa * fb;
-    }
-    return result;
+        __m128 vr = _mm_add_ps(_mm_mul_ps(va, vb), vc);
 #endif
-}
+        return *(Hvec<float, 4>*)&vr;
+    }
+    // Classic 4-lane horizontal sum via two shuffles + two adds
+    static float hsum(const Hvec<float, 4>& a)
+    {
+        __m128 v  = _mm_loadu_ps(a.data);
+        __m128 s1 = _mm_add_ps(v,  _mm_shuffle_ps(v,  v,  _MM_SHUFFLE(2, 3, 0, 1)));
+        __m128 s2 = _mm_add_ps(s1, _mm_shuffle_ps(s1, s1, _MM_SHUFFLE(1, 0, 3, 2)));
+        return _mm_cvtss_f32(s2);
+    }
+};
+#endif // __SSE2__
 
 // ============================================================================
-// BFLOAT16 OPERATIONS - SIZE 2
+// AVX  — float32 x8
 // ============================================================================
 
-__weak Hvec<bfloat16, 2> __device__ __host__ operator+(Hvec<bfloat16, 2> a, Hvec<bfloat16, 2> b)
+#if defined(__AVX__)
+template <>
+struct vectorOperationSet<Intrinsics::AVX, float, 8>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_b = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162 vec_result = __hadd2(vec_a, vec_b);
-    return *(Hvec<bfloat16, 2>*)&vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_add_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vaddq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 2> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float sum = fa + fb;
-        result.data[i] = (bfloat16)(*((unsigned int*)&sum) >> 16);
+    static Hvec<float, 8> add(const Hvec<float, 8>& a, const Hvec<float, 8>& b)
+    {
+        __m256 va = _mm256_loadu_ps(a.data), vb = _mm256_loadu_ps(b.data);
+        __m256 vr = _mm256_add_ps(va, vb);
+        return *(Hvec<float, 8>*)&vr;
     }
-    return result;
+    static Hvec<float, 8> sub(const Hvec<float, 8>& a, const Hvec<float, 8>& b)
+    {
+        __m256 va = _mm256_loadu_ps(a.data), vb = _mm256_loadu_ps(b.data);
+        __m256 vr = _mm256_sub_ps(va, vb);
+        return *(Hvec<float, 8>*)&vr;
+    }
+    static Hvec<float, 8> mul(const Hvec<float, 8>& a, const Hvec<float, 8>& b)
+    {
+        __m256 va = _mm256_loadu_ps(a.data), vb = _mm256_loadu_ps(b.data);
+        __m256 vr = _mm256_mul_ps(va, vb);
+        return *(Hvec<float, 8>*)&vr;
+    }
+    static Hvec<float, 8> div(const Hvec<float, 8>& a, const Hvec<float, 8>& b)
+    {
+        __m256 va = _mm256_loadu_ps(a.data), vb = _mm256_loadu_ps(b.data);
+        __m256 vr = _mm256_div_ps(va, vb);
+        return *(Hvec<float, 8>*)&vr;
+    }
+    static Hvec<float, 8> fma(const Hvec<float, 8>& a, const Hvec<float, 8>& b, const Hvec<float, 8>& c)
+    {
+        __m256 va = _mm256_loadu_ps(a.data), vb = _mm256_loadu_ps(b.data), vc = _mm256_loadu_ps(c.data);
+#if defined(__FMA__)
+        __m256 vr = _mm256_fmadd_ps(va, vb, vc);
+#else
+        __m256 vr = _mm256_add_ps(_mm256_mul_ps(va, vb), vc);
 #endif
-}
+        return *(Hvec<float, 8>*)&vr;
+    }
+    // Fold 256->128 then use the SSE2 4-lane hsum
+    static float hsum(const Hvec<float, 8>& a)
+    {
+        __m256 v  = _mm256_loadu_ps(a.data);
+        __m128 lo = _mm256_castps256_ps128(v);
+        __m128 hi = _mm256_extractf128_ps(v, 1);
+        __m128 s  = _mm_add_ps(lo, hi);
+        __m128 s1 = _mm_add_ps(s,  _mm_shuffle_ps(s,  s,  _MM_SHUFFLE(2, 3, 0, 1)));
+        __m128 s2 = _mm_add_ps(s1, _mm_shuffle_ps(s1, s1, _MM_SHUFFLE(1, 0, 3, 2)));
+        return _mm_cvtss_f32(s2);
+    }
+};
 
-__weak Hvec<bfloat16, 2> __device__ __host__ operator-(Hvec<bfloat16, 2> a, Hvec<bfloat16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_b = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162 vec_result = __hsub2(vec_a, vec_b);
-    return *(Hvec<bfloat16, 2>*)&vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_sub_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vsubq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 2> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float diff = fa - fb;
-        result.data[i] = (bfloat16)(*((unsigned int*)&diff) >> 16);
-    }
-    return result;
-#endif
-}
+// AVX CPUs can still do 128-bit ops — forward to SSE2 specialisation
+template <>
+struct vectorOperationSet<Intrinsics::AVX, float, 4>
+    : vectorOperationSet<Intrinsics::SSE2, float, 4> {};
 
-__weak Hvec<bfloat16, 2> __device__ __host__ operator*(Hvec<bfloat16, 2> a, Hvec<bfloat16, 2> b)
+// ---- float16 x8: upcast pairs via F16C (__F16C__ + __AVX__) ----
+#if defined(__F16C__)
+template <>
+struct vectorOperationSet<Intrinsics::AVX, float16, 8>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_b = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162 vec_result = __hmul2(vec_a, vec_b);
-    return *(Hvec<bfloat16, 2>*)&vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_mul_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vmulq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 2> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
-#else
-    Hvec<bfloat16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float prod = fa * fb;
-        result.data[i] = (bfloat16)(*((unsigned int*)&prod) >> 16);
+    // Pack 8 float16 bit-patterns into a __m128i then widen with F16C
+    static __m256 load_to_f32(const Hvec<float16, 8>& v)
+    {
+        __m128i bits = _mm_loadu_si128(reinterpret_cast<const __m128i*>(v.data));
+        return _mm256_cvtph_ps(bits);
     }
-    return result;
-#endif
-}
+    static Hvec<float16, 8> store_from_f32(const __m256& vr)
+    {
+        __m128i half = _mm256_cvtps_ph(vr, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        Hvec<float16, 8> result;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(result.data), half);
+        return result;
+    }
 
-__weak Hvec<bfloat16, 2> __device__ __host__ operator/(Hvec<bfloat16, 2> a, Hvec<bfloat16, 2> b)
-{
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_b = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162 vec_result = __h2div(vec_a, vec_b);
-    return *(Hvec<bfloat16, 2>*)&vec_result;
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 vec_result_f32 = _mm256_div_ps(vec_a_f32, vec_b_f32);
-//     __m128bh vec_result = _mm256_cvtneps_pbh(vec_result_f32);
-//     return *(Hvec<bfloat16, 2>*)&vec_result;
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t vec_result_f32 = vdivq_f32(vec_a_f32, vec_b_f32);
-    bfloat16x4_t vec_result = vcvt_bf16_f32(vec_result_f32);
-    Hvec<bfloat16, 2> result;
-    vst1_bf16((bfloat16*)result.data, vec_result);
-    return result;
+    static Hvec<float16, 8> add(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store_from_f32(_mm256_add_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<float16, 8> sub(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store_from_f32(_mm256_sub_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<float16, 8> mul(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store_from_f32(_mm256_mul_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<float16, 8> div(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store_from_f32(_mm256_div_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<float16, 8> fma(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b, const Hvec<float16, 8>& c)
+    {
+        __m256 va = load_to_f32(a), vb = load_to_f32(b), vc = load_to_f32(c);
+#if defined(__FMA__)
+        return store_from_f32(_mm256_fmadd_ps(va, vb, vc));
 #else
-    Hvec<bfloat16, 2> result;
-    for (int i = 0; i < 2; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        float quot = fa / fb;
-        result.data[i] = quot;
-    }
-    return result;
+        return store_from_f32(_mm256_add_ps(_mm256_mul_ps(va, vb), vc));
 #endif
-}
+    }
+    static float16 hsum(const Hvec<float16, 8>& a)
+    {
+        // Reuse the f32 hsum after upcasting
+        __m256 v = load_to_f32(a);
+        Hvec<float, 8> tmp; _mm256_storeu_ps(tmp.data, v);
+        return float16(vectorOperationSet<Intrinsics::AVX, float, 8>::hsum(tmp));
+    }
+};
+#endif // __F16C__
 
-__weak float __device__ __host__ dot(Hvec<bfloat16, 2> a, Hvec<bfloat16, 2> b)
+// ---- bfloat16 x8 via AVX: upcast with zero-extend + left-shift trick ----
+template <>
+struct vectorOperationSet<Intrinsics::AVX, bfloat16, 8>
 {
-#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
-    __nv_bfloat162& vec_a = *(__nv_bfloat162*)&a.data[0];
-    __nv_bfloat162& vec_b = *(__nv_bfloat162*)&b.data[0];
-    __nv_bfloat162 prod = __hmul2(vec_a, vec_b);
-    return __bfloat162float(prod.x) + __bfloat162float(prod.y);
-// #elif defined(__AVX512BF16__)
-//     __m128bh vec_a = _mm_loadu_pbh(a.data);
-//     __m128bh vec_b = _mm_loadu_pbh(b.data);
-//     __m256 vec_a_f32 = _mm256_cvtpbh_ps(vec_a);
-//     __m256 vec_b_f32 = _mm256_cvtpbh_ps(vec_b);
-//     __m256 prod = _mm256_mul_ps(vec_a_f32, vec_b_f32);
-//     __m128 prod_low = _mm256_castps256_ps128(prod);
-//     __m128 shuf = _mm_shuffle_ps(prod_low, prod_low, _MM_SHUFFLE(2, 3, 0, 1));
-//     __m128 sums = _mm_add_ps(prod_low, shuf);
-//     return _mm_cvtss_f32(sums);
-#elif defined(__ARM_FEATURE_BF16)
-    bfloat16x4_t vec_a = vld1_bf16((const bfloat16*)a.data);
-    bfloat16x4_t vec_b = vld1_bf16((const bfloat16*)b.data);
-    float32x4_t vec_a_f32 = vcvt_f32_bf16(vec_a);
-    float32x4_t vec_b_f32 = vcvt_f32_bf16(vec_b);
-    float32x4_t prod = vmulq_f32(vec_a_f32, vec_b_f32);
-    float32x2_t prod_low = vget_low_f32(prod);
-    return vaddv_f32(prod_low);
-#else
-    float result = 0.0f;
-    for (int i = 0; i < 2; i++) {
-        float fa = float(a.data[i]);
-        float fb = float(b.data[i]);
-        result += fa * fb;
+    // bf16 bits sit in the upper halfword of f32 — zero-extend and shift
+    static __m256 load_to_f32(const Hvec<bfloat16, 8>& v)
+    {
+        __m128i bits16  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(v.data));
+        __m256i bits32  = _mm256_cvtepu16_epi32(bits16);          // u16 -> u32 zero-extend
+        __m256i shifted = _mm256_slli_epi32(bits32, 16);          // bf16 into upper half
+        return _mm256_castsi256_ps(shifted);
     }
-    return result;
+    // Truncate f32 -> bf16: take upper 16 bits of each lane.
+    // Note: this truncates (round-towards-zero). For round-to-nearest-even
+    // you'd add a rounding bias of 0x7FFF + (bit16 & 1) before shifting.
+    static Hvec<bfloat16, 8> store_from_f32(const __m256& vr)
+    {
+        __m256i bits32  = _mm256_castps_si256(vr);
+        __m256i shifted = _mm256_srli_epi32(bits32, 16);
+        // _mm256_packus_epi32 packs within 128-bit lanes; needs a final permute
+        __m128i lo      = _mm256_castsi256_si128(shifted);
+        __m128i hi      = _mm256_extracti128_si256(shifted, 1);
+        __m128i packed  = _mm_packus_epi32(lo, hi);           // 8x u16 in order
+        Hvec<bfloat16, 8> result;
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(result.data), packed);
+        return result;
+    }
+
+    static Hvec<bfloat16, 8> add(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    { return store_from_f32(_mm256_add_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 8> sub(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    { return store_from_f32(_mm256_sub_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 8> mul(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    { return store_from_f32(_mm256_mul_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 8> div(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    { return store_from_f32(_mm256_div_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 8> fma(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b, const Hvec<bfloat16, 8>& c)
+    {
+        __m256 va = load_to_f32(a), vb = load_to_f32(b), vc = load_to_f32(c);
+#if defined(__FMA__)
+        return store_from_f32(_mm256_fmadd_ps(va, vb, vc));
+#else
+        return store_from_f32(_mm256_add_ps(_mm256_mul_ps(va, vb), vc));
 #endif
-}
+    }
+    static bfloat16 hsum(const Hvec<bfloat16, 8>& a)
+    {
+        __m256 v = load_to_f32(a);
+        Hvec<float, 8> tmp; _mm256_storeu_ps(tmp.data, v);
+        return bfloat16(vectorOperationSet<Intrinsics::AVX, float, 8>::hsum(tmp));
+    }
+};
+
+#endif // __AVX__
+
+// ============================================================================
+// AVX-512  — float32 x16
+// ============================================================================
+
+#if defined(__AVX512F__)
+template <>
+struct vectorOperationSet<Intrinsics::AVX512, float, 16>
+{
+    static Hvec<float, 16> add(const Hvec<float, 16>& a, const Hvec<float, 16>& b)
+    {
+        __m512 va = _mm512_loadu_ps(a.data), vb = _mm512_loadu_ps(b.data);
+        __m512 vr = _mm512_add_ps(va, vb);
+        return *(Hvec<float, 16>*)&vr;
+    }
+    static Hvec<float, 16> sub(const Hvec<float, 16>& a, const Hvec<float, 16>& b)
+    {
+        __m512 va = _mm512_loadu_ps(a.data), vb = _mm512_loadu_ps(b.data);
+        __m512 vr = _mm512_sub_ps(va, vb);
+        return *(Hvec<float, 16>*)&vr;
+    }
+    static Hvec<float, 16> mul(const Hvec<float, 16>& a, const Hvec<float, 16>& b)
+    {
+        __m512 va = _mm512_loadu_ps(a.data), vb = _mm512_loadu_ps(b.data);
+        __m512 vr = _mm512_mul_ps(va, vb);
+        return *(Hvec<float, 16>*)&vr;
+    }
+    static Hvec<float, 16> div(const Hvec<float, 16>& a, const Hvec<float, 16>& b)
+    {
+        __m512 va = _mm512_loadu_ps(a.data), vb = _mm512_loadu_ps(b.data);
+        __m512 vr = _mm512_div_ps(va, vb);
+        return *(Hvec<float, 16>*)&vr;
+    }
+    // AVX-512F always includes FMA — no fallback needed
+    static Hvec<float, 16> fma(const Hvec<float, 16>& a, const Hvec<float, 16>& b, const Hvec<float, 16>& c)
+    {
+        __m512 va = _mm512_loadu_ps(a.data), vb = _mm512_loadu_ps(b.data), vc = _mm512_loadu_ps(c.data);
+        __m512 vr = _mm512_fmadd_ps(va, vb, vc);
+        return *(Hvec<float, 16>*)&vr;
+    }
+    static float hsum(const Hvec<float, 16>& a)
+    {
+        return _mm512_reduce_add_ps(_mm512_loadu_ps(a.data));
+    }
+};
+
+// Forward smaller widths to AVX/SSE2 specialisations on AVX-512 hosts
+template <>
+struct vectorOperationSet<Intrinsics::AVX512, float, 8>
+    : vectorOperationSet<Intrinsics::AVX, float, 8> {};
+
+template <>
+struct vectorOperationSet<Intrinsics::AVX512, float, 4>
+    : vectorOperationSet<Intrinsics::SSE2, float, 4> {};
+
+// ---- float16 x16: native with AVX-512 FP16 ----
+// Without __AVX512FP16__ the generic upcast fallback is used automatically.
+#if defined(__AVX512FP16__)
+template <>
+struct vectorOperationSet<Intrinsics::AVX512, float16, 16>
+{
+    // 16 float16 values = 256 bits = __m256h
+    static __m256h load(const Hvec<float16, 16>& v)
+    {
+        return _mm256_castsi256_ph(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(v.data)));
+    }
+    static Hvec<float16, 16> store(const __m256h& vr)
+    {
+        Hvec<float16, 16> result;
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(result.data), _mm256_castph_si256(vr));
+        return result;
+    }
+
+    static Hvec<float16, 16> add(const Hvec<float16, 16>& a, const Hvec<float16, 16>& b)
+    { return store(_mm256_add_ph(load(a), load(b))); }
+    static Hvec<float16, 16> sub(const Hvec<float16, 16>& a, const Hvec<float16, 16>& b)
+    { return store(_mm256_sub_ph(load(a), load(b))); }
+    static Hvec<float16, 16> mul(const Hvec<float16, 16>& a, const Hvec<float16, 16>& b)
+    { return store(_mm256_mul_ph(load(a), load(b))); }
+    static Hvec<float16, 16> div(const Hvec<float16, 16>& a, const Hvec<float16, 16>& b)
+    { return store(_mm256_div_ph(load(a), load(b))); }
+    static Hvec<float16, 16> fma(const Hvec<float16, 16>& a, const Hvec<float16, 16>& b, const Hvec<float16, 16>& c)
+    { return store(_mm256_fmadd_ph(load(a), load(b), load(c))); }
+    static float16 hsum(const Hvec<float16, 16>& a)
+    { return static_cast<float16>(_mm256_reduce_add_ph(load(a))); }
+};
+#endif // __AVX512FP16__
+
+// ---- bfloat16 x16: AVX-512 BF16 provides vcvtneps2bf16 for the downcast,
+//      but still no native bf16 arithmetic — must go through f32. ----
+#if defined(__AVX512BF16__)
+template <>
+struct vectorOperationSet<Intrinsics::AVX512, bfloat16, 16>
+{
+    static __m512 load_to_f32(const Hvec<bfloat16, 16>& v)
+    {
+        __m256i bits16  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(v.data));
+        __m512i bits32  = _mm512_cvtepu16_epi32(bits16);
+        __m512i shifted = _mm512_slli_epi32(bits32, 16);
+        return _mm512_castsi512_ps(shifted);
+    }
+    static Hvec<bfloat16, 16> store_from_f32(const __m512& vr)
+    {
+        // _mm512_cvtneps_pbh: 16x f32 -> 16x bf16 (round-to-nearest-even)
+        __m256i packed = (__m256i)_mm512_cvtneps_pbh(vr);
+        Hvec<bfloat16, 16> result;
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(result.data), packed);
+        return result;
+    }
+
+    static Hvec<bfloat16, 16> add(const Hvec<bfloat16, 16>& a, const Hvec<bfloat16, 16>& b)
+    { return store_from_f32(_mm512_add_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 16> sub(const Hvec<bfloat16, 16>& a, const Hvec<bfloat16, 16>& b)
+    { return store_from_f32(_mm512_sub_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 16> mul(const Hvec<bfloat16, 16>& a, const Hvec<bfloat16, 16>& b)
+    { return store_from_f32(_mm512_mul_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 16> div(const Hvec<bfloat16, 16>& a, const Hvec<bfloat16, 16>& b)
+    { return store_from_f32(_mm512_div_ps(load_to_f32(a), load_to_f32(b))); }
+    static Hvec<bfloat16, 16> fma(const Hvec<bfloat16, 16>& a, const Hvec<bfloat16, 16>& b, const Hvec<bfloat16, 16>& c)
+    { return store_from_f32(_mm512_fmadd_ps(load_to_f32(a), load_to_f32(b), load_to_f32(c))); }
+    static bfloat16 hsum(const Hvec<bfloat16, 16>& a)
+    { return bfloat16(_mm512_reduce_add_ps(load_to_f32(a))); }
+};
+#endif // __AVX512BF16__
+
+#endif // __AVX512F__
+
+// ============================================================================
+// NEON  — float32 x4  (AArch64)
+// ============================================================================
+
+#if defined(__NEON__) || defined(__ARM_NEON)
+template <>
+struct vectorOperationSet<Intrinsics::NEON, float, 4>
+{
+    static Hvec<float, 4> add(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        float32x4_t va = vld1q_f32(a.data), vb = vld1q_f32(b.data);
+        float32x4_t vr = vaddq_f32(va, vb);
+        return *(Hvec<float, 4>*)&vr;
+    }
+    static Hvec<float, 4> sub(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        float32x4_t va = vld1q_f32(a.data), vb = vld1q_f32(b.data);
+        float32x4_t vr = vsubq_f32(va, vb);
+        return *(Hvec<float, 4>*)&vr;
+    }
+    static Hvec<float, 4> mul(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        float32x4_t va = vld1q_f32(a.data), vb = vld1q_f32(b.data);
+        float32x4_t vr = vmulq_f32(va, vb);
+        return *(Hvec<float, 4>*)&vr;
+    }
+    static Hvec<float, 4> div(const Hvec<float, 4>& a, const Hvec<float, 4>& b)
+    {
+        float32x4_t va = vld1q_f32(a.data), vb = vld1q_f32(b.data);
+        float32x4_t vr = vdivq_f32(va, vb);
+        return *(Hvec<float, 4>*)&vr;
+    }
+    // vfmaq_f32(c, a, b) = c + a*b  (fused, AArch64)
+    static Hvec<float, 4> fma(const Hvec<float, 4>& a, const Hvec<float, 4>& b, const Hvec<float, 4>& c)
+    {
+        float32x4_t va = vld1q_f32(a.data), vb = vld1q_f32(b.data), vc = vld1q_f32(c.data);
+        float32x4_t vr = vfmaq_f32(vc, va, vb);
+        return *(Hvec<float, 4>*)&vr;
+    }
+    // vaddvq_f32: horizontal add across all 4 lanes (AArch64 only)
+    static float hsum(const Hvec<float, 4>& a)
+    {
+        return vaddvq_f32(vld1q_f32(a.data));
+    }
+};
+
+// ---- float16 x8: native AArch64 half-precision (__ARM_FP16_FORMAT_IEEE) ----
+// Without the feature flag the generic upcast fallback handles this.
+#if defined(__ARM_FP16_FORMAT_IEEE)
+template <>
+struct vectorOperationSet<Intrinsics::NEON, float16, 8>
+{
+    static float16x8_t load(const Hvec<float16, 8>& v)
+    { return vld1q_f16(reinterpret_cast<const __fp16*>(v.data)); }
+
+    static Hvec<float16, 8> store(float16x8_t vr)
+    {
+        Hvec<float16, 8> result;
+        vst1q_f16(reinterpret_cast<__fp16*>(result.data), vr);
+        return result;
+    }
+
+    static Hvec<float16, 8> add(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store(vaddq_f16(load(a), load(b))); }
+    static Hvec<float16, 8> sub(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store(vsubq_f16(load(a), load(b))); }
+    static Hvec<float16, 8> mul(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store(vmulq_f16(load(a), load(b))); }
+    static Hvec<float16, 8> div(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b)
+    { return store(vdivq_f16(load(a), load(b))); }
+    static Hvec<float16, 8> fma(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b, const Hvec<float16, 8>& c)
+    { return store(vfmaq_f16(load(c), load(a), load(b))); }   // c + a*b
+    static float16 hsum(const Hvec<float16, 8>& a)
+    { return static_cast<float16>(vaddvq_f16(load(a))); }
+};
+#endif // __ARM_FP16_FORMAT_IEEE
+
+// ---- bfloat16 x8: ARMv8.6+ (__ARM_FEATURE_BF16) ----
+// ARM BF16 provides cvt intrinsics but not elementwise bf16 arithmetic,
+// so we upcast to float32x4x2 (two 128-bit registers), operate, then downcast.
+#if defined(__ARM_FEATURE_BF16)
+template <>
+struct vectorOperationSet<Intrinsics::NEON, bfloat16, 8>
+{
+    static float32x4x2_t upcast(const Hvec<bfloat16, 8>& v)
+    {
+        bfloat16x8_t vb = vld1q_bf16(reinterpret_cast<const __bf16*>(v.data));
+        float32x4x2_t r;
+        r.val[0] = vcvt_f32_bf16(vget_low_bf16(vb));
+        r.val[1] = vcvt_f32_bf16(vget_high_bf16(vb));
+        return r;
+    }
+    static Hvec<bfloat16, 8> downcast(float32x4x2_t f)
+    {
+        bfloat16x8_t combined = vcombine_bf16(vcvt_bf16_f32(f.val[0]), vcvt_bf16_f32(f.val[1]));
+        Hvec<bfloat16, 8> result;
+        vst1q_bf16(reinterpret_cast<__bf16*>(result.data), combined);
+        return result;
+    }
+
+    static Hvec<bfloat16, 8> add(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    {
+        auto va = upcast(a), vb = upcast(b);
+        return downcast({ vaddq_f32(va.val[0], vb.val[0]), vaddq_f32(va.val[1], vb.val[1]) });
+    }
+    static Hvec<bfloat16, 8> sub(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    {
+        auto va = upcast(a), vb = upcast(b);
+        return downcast({ vsubq_f32(va.val[0], vb.val[0]), vsubq_f32(va.val[1], vb.val[1]) });
+    }
+    static Hvec<bfloat16, 8> mul(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    {
+        auto va = upcast(a), vb = upcast(b);
+        return downcast({ vmulq_f32(va.val[0], vb.val[0]), vmulq_f32(va.val[1], vb.val[1]) });
+    }
+    static Hvec<bfloat16, 8> div(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b)
+    {
+        auto va = upcast(a), vb = upcast(b);
+        return downcast({ vdivq_f32(va.val[0], vb.val[0]), vdivq_f32(va.val[1], vb.val[1]) });
+    }
+    static Hvec<bfloat16, 8> fma(const Hvec<bfloat16, 8>& a, const Hvec<bfloat16, 8>& b, const Hvec<bfloat16, 8>& c)
+    {
+        auto va = upcast(a), vb = upcast(b), vc = upcast(c);
+        return downcast({ vfmaq_f32(vc.val[0], va.val[0], vb.val[0]),
+                          vfmaq_f32(vc.val[1], va.val[1], vb.val[1]) });
+    }
+    static bfloat16 hsum(const Hvec<bfloat16, 8>& a)
+    {
+        auto va = upcast(a);
+        return bfloat16(vaddvq_f32(va.val[0]) + vaddvq_f32(va.val[1]));
+    }
+};
+#endif // __ARM_FEATURE_BF16
+
+#endif // __NEON__ / __ARM_NEON
+
+// ============================================================================
+// OPERATOR OVERLOADS
+// A pair of macros generates +, -, *, /, fma(), and hsum() for each type/width.
+// The __weak attribute from the original is dropped in favour of plain inline
+// to stay portable; if ODR issues arise in your link model, add
+// __attribute__((weak)) explicitly.
+// ============================================================================
+
+#define HVEC_OPS(T, N)                                                                          \
+    inline Hvec<T, N> operator+(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::add(A, B); }                 \
+    inline Hvec<T, N> operator-(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::sub(A, B); }                 \
+    inline Hvec<T, N> operator*(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::mul(A, B); }                 \
+    inline Hvec<T, N> operator/(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::div(A, B); }                 \
+    inline Hvec<T, N> fma(const Hvec<T, N>& A, const Hvec<T, N>& B, const Hvec<T, N>& C)      \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::fma(A, B, C); }              \
+    inline T hsum(const Hvec<T, N>& A)                                                          \
+    { return vectorOperationSet<get_available_intrinsics(), T, N>::hsum(A); }
+
+// float32
+HVEC_OPS(float,    4)
+HVEC_OPS(float,    8)
+HVEC_OPS(float,   16)
+
+// float16
+HVEC_OPS(float16,  4)
+HVEC_OPS(float16,  8)
+HVEC_OPS(float16, 16)
+
+// bfloat16
+HVEC_OPS(bfloat16,  4)
+HVEC_OPS(bfloat16,  8)
+HVEC_OPS(bfloat16, 16)
+
+#undef HVEC_OPS
 
 #endif // AVX_HVEC_HPP

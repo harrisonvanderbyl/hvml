@@ -48,6 +48,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
 
     ComputeDeviceBase* device = new ComputeDeviceBase();
     
+    std::cout << device_id << std::endl;
     VkPhysicalDevice physical_device = vk_physical_devices[device_id];
     
     // Get device properties
@@ -128,7 +129,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
         mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
 
         // Setup allocator
-        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](Shape<-1> size, size_t bitsize, void* existing_data) {
+        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
             VkDeviceMemory* device_memory = new VkDeviceMemory();
             
             VkMemoryAllocateInfo alloc_info = {};
