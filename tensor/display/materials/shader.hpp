@@ -11,26 +11,97 @@
 
 __weak std::map<std::string, GLuint> shader_program_cache;
 
+struct UniformSetter
+{
 
+    std::string name;
+    GLint shader_program;
+    GLint location;
+    GLint type;
+
+    UniformSetter() : name(""), shader_program(0), location(-1), type(0) {};
+
+    UniformSetter(const std::string& name, GLuint shader_program) : name(name), shader_program(shader_program)
+    { 
+        location = glGetUniformLocation(shader_program, name.c_str());
+        if (location == -1)
+        {
+            std::cerr << "Warning: Uniform '" << name << "' not found in shader program " << shader_program << std::endl;
+        }
+    };
+
+    template <typename T, int size>
+    void operator=(const Hvec<T, size>& value)
+    {
+        if (location == -1)
+        {
+            std::cerr << "Cannot set uniform '" << name << "' because it was not found in shader program " << shader_program << std::endl;
+            return;
+        }
+
+        if constexpr (std::is_same_v<T, float>){
+            glUniform1fv(location, size, value.data);
+        }
+        else if constexpr (std::is_same_v<T, int>){
+            glUniform1iv(location, size, value.data);
+        }
+        else if constexpr (std::is_same_v<T, uint32_t>){
+            glUniform1uiv(location, size, value.data);
+        }
+        else {
+            static_assert(sizeof(T) == 0, "UniformSetter does not support this type");
+        }
+    }
+
+};
+
+
+
+// template <typename T>
+// struct UniformHelper {
+//     operator=(const T& value) {
+//         static_assert(sizeof(T) == 0, "UniformHelper assignment operator not implemented for this type");
+//     }
+// };
+
+
+// template <typename T, int size>
+// struct Uniform: public Hvec<T, size>
+// {
+//     using Hvec<T, size>::Hvec; // Inherit constructors
+
+//     std::string name;
+//     GLuint shader_program;
+
+// };
 
 struct Material
 {
     virtual ~Material() {}
+
     virtual const char* getVertexShaderSource() {
         throw std::runtime_error("getVertexShaderSource not implemented for this material");
-     };
+    };
+
     virtual const char* getFragmentShaderSource() {
-        throw std::runtime_error("getVertexShaderSource not implemented for this material");
-     };
+        throw std::runtime_error("getFragmentShaderSource not implemented for this material");
+    };
+
     virtual const char* getGeometryShaderSource() {
-        throw std::runtime_error("getVertexShaderSource not implemented for this material");
-     };
+        throw std::runtime_error("getGeometryShaderSource not implemented for this material");
+    };
+
+    virtual void init_uniforms(GLuint shader_program) {
+        // default implementation does nothing
+    };
+
     GLuint shader_program = 0;
     std::string name;
     bool double_sided = false;
     bool transparent = false;
     std::map<std::string, GLuint> textures_ids;
     std::map<std::string, GLuint> texture_types;
+    std::map<std::string, UniformSetter> uniform_setters;
     virtual bool createShaderProgram()
     {
 
@@ -42,55 +113,57 @@ struct Material
         {
 
 
-            GLuint vertex_shader = GLFuncs->glCreateShader(GL_VERTEX_SHADER);
-            GLFuncs->glShaderSource(vertex_shader, 1, &vertex_shader_source, nullptr);
-            GLFuncs->glCompileShader(vertex_shader);
+            GLuint vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+            glShaderSource(vertex_shader, 1, &vertex_shader_source, nullptr);
+            glCompileShader(vertex_shader);
 
             GLint success;
-            GLFuncs->glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
+            glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &success);
             if (!success)
             {
                 char infoLog[512];
-                GLFuncs->glGetShaderInfoLog(vertex_shader, 512, nullptr, infoLog);
+                glGetShaderInfoLog(vertex_shader, 512, nullptr, infoLog);
                 std::cerr << "Vertex Shader Compilation Failed: " << infoLog << std::endl;
                 return false;
             }
 
-            GLuint fragment_shader = GLFuncs->glCreateShader(GL_FRAGMENT_SHADER);
-            GLFuncs->glShaderSource(fragment_shader, 1, &fragment_shader_source, nullptr);
-            GLFuncs->glCompileShader(fragment_shader);
+            GLuint fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+            glShaderSource(fragment_shader, 1, &fragment_shader_source, nullptr);
+            glCompileShader(fragment_shader);
 
-            GLFuncs->glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
+            glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &success);
             if (!success)
             {
                 char infoLog[512];
-                GLFuncs->glGetShaderInfoLog(fragment_shader, 512, nullptr, infoLog);
+                glGetShaderInfoLog(fragment_shader, 512, nullptr, infoLog);
                 std::cerr << "Fragment Shader Compilation Failed: " << infoLog << std::endl;
                 return false;
             }
 
-            shader_program = GLFuncs->glCreateProgram();
-            GLFuncs->glAttachShader(shader_program, vertex_shader);
-            GLFuncs->glAttachShader(shader_program, fragment_shader);
-            GLFuncs->glLinkProgram(shader_program);
+            shader_program = glCreateProgram();
+            glAttachShader(shader_program, vertex_shader);
+            glAttachShader(shader_program, fragment_shader);
+            glLinkProgram(shader_program);
 
-            GLFuncs->glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
+            glGetProgramiv(shader_program, GL_LINK_STATUS, &success);
             if (!success)
             {
                 char infoLog[512];
-                GLFuncs->glGetProgramInfoLog(shader_program, 512, nullptr, infoLog);
+                glGetProgramInfoLog(shader_program, 512, nullptr, infoLog);
                 std::cerr << "Shader Program Linking Failed: " << infoLog << std::endl;
                 return false;
             }
 
             // Clean up shaders
-            GLFuncs->glDeleteShader(vertex_shader);
-            GLFuncs->glDeleteShader(fragment_shader);
+            glDeleteShader(vertex_shader);
+            glDeleteShader(fragment_shader);
             shader_program_cache[shader_key] = shader_program;
         }else
         {
             shader_program = shader_program_cache[shader_key];
         }
+
+        // set actvive to get uniform locations
 
         return true;
     }
@@ -100,14 +173,12 @@ struct Material
         if(shader_program == 0){
             std::cerr << "Shader program not created!, creating now..." << std::endl;
             this->createShaderProgram();
+            glUseProgram(shader_program);
+            init_uniforms(shader_program);
         }
-        if (shader_program != 0)
+        else
         {
-            GLFuncs->glUseProgram(shader_program);
-        }
-        else {
-            std::cerr << "Failed to create shader program!" << std::endl;
-            throw std::runtime_error("Failed to create shader program");
+            glUseProgram(shader_program);
         }
 
         for (const auto& tex_pair : textures_ids)
@@ -118,9 +189,9 @@ struct Material
             if (texture_types.find(tex_pair.first) != texture_types.end()) {
                 textype = texture_types[tex_pair.first];
             }
-            glBindTexture(textype, tex_pair.second);
-            GLint uniform_location = GLFuncs->glGetUniformLocation(shader_program, tex_pair.first.c_str());
-            GLFuncs->glUniform1i(uniform_location, texture_unit);
+            glBindTexture(textype, texture_unit);
+            GLint uniform_location = glGetUniformLocation(shader_program, tex_pair.first.c_str());
+            glUniform1i(uniform_location, texture_unit);
         }
 
         if (double_sided)

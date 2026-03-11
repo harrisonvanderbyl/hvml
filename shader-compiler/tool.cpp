@@ -179,6 +179,7 @@ public:
         std::string fragment;
         std::string original_filename;
         std::string struct_name;
+        std::vector<std::pair<std::string, std::string>> uniforms;
     };
 
     std::vector<GLSLShader> shaders;
@@ -442,7 +443,10 @@ private:
             fs += "in " + fi.first + " " + fi.second + ";\n";
 
         for (auto &u : uniforms)
+        {
             fs += "uniform " + u.first + " " + u.second + ";\n";
+            s.uniforms.push_back(u);
+        }
 
         fs += "\nvoid main() {\n";
         fs += convertFragmentBody(fragmentBody);
@@ -651,6 +655,11 @@ private:
         output += shader.vertex;
         output += ")\";\n}\n\n";
 
+        output += "void init_uniforms(GLuint shader_program) override {\n    ";
+        for (const auto& uniform_pair : shader.uniforms) {
+            output += "uniform_setters[\"" + uniform_pair.second + "\"] = UniformSetter(\"" + uniform_pair.second + "\", shader_program);\n    ";
+        }
+        output += "};\n\n";
         output += "};\n\n";
         return output;
     }

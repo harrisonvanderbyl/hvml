@@ -32,7 +32,7 @@ struct Shape
     
    
 
-    __host__ __device__ Shape(std::vector<size_t> a)
+    Shape(std::vector<size_t> a)
     {
         for (int i = 0; i < a.size(); i++)
         {

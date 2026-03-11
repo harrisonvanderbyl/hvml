@@ -143,7 +143,6 @@ public:
 
                 render_mesh.primitive_type = primitive.type; // Default to triangles
 
-                GLFuncs->glBindVertexArray(0);
 
                 render_meshes.push_back(render_mesh);
                 std::cout << "Created render mesh with " << render_mesh.indices.shape << " indices" << std::endl;
@@ -197,21 +196,21 @@ public:
 
             camera.bind(mesh.material->shader_program);
             
-            GLint meshLightPosLoc = GLFuncs->glGetUniformLocation(mesh.material->shader_program, "lightPos");
-            GLint meshLightColorLoc = GLFuncs->glGetUniformLocation(mesh.material->shader_program, "lightColor");
-            GLint meshObjectColorLoc = GLFuncs->glGetUniformLocation(mesh.material->shader_program, "objectColor");
-            GLint meshObjectAlphaLoc = GLFuncs->glGetUniformLocation(mesh.material->shader_program, "objectAlpha");
+            GLint meshLightPosLoc = glGetUniformLocation(mesh.material->shader_program, "lightPos");
+            GLint meshLightColorLoc = glGetUniformLocation(mesh.material->shader_program, "lightColor");
+            GLint meshObjectColorLoc = glGetUniformLocation(mesh.material->shader_program, "objectColor");
+            GLint meshObjectAlphaLoc = glGetUniformLocation(mesh.material->shader_program, "objectAlpha");
 
-            GLFuncs->glUniform3fv(meshLightPosLoc, 1, lightPos);
-            GLFuncs->glUniform3fv(meshLightColorLoc, 1, lightColor);
-            GLFuncs->glUniform3fv(meshObjectColorLoc, 1, objectColor);
-            GLFuncs->glUniform1f(meshObjectAlphaLoc, objectAlpha);
+            glUniform3fv(meshLightPosLoc, 1, lightPos);
+            glUniform3fv(meshLightColorLoc, 1, lightColor);
+            glUniform3fv(meshObjectColorLoc, 1, objectColor);
+            glUniform1f(meshObjectAlphaLoc, objectAlpha);
 
             // Draw mesh
             mesh.draw();
         }
 
-        GLFuncs->glBindVertexArray(0);
+        glBindVertexArray(0);
 
         // Render cube points with default material
         

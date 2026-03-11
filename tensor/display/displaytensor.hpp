@@ -70,7 +70,7 @@ class VectorDisplay: public Tensor<bufftype,2>
                     throw std::runtime_error("Unsupported buffer type for OpenGL display");
                 }
 
-                GLFuncs->glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(unsigned long long)this->storage_pointer);
+                glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(unsigned long long)this->storage_pointer);
                 
                 auto glErr = glGetError();
                 if (glErr != GL_NO_ERROR) {
@@ -78,7 +78,7 @@ class VectorDisplay: public Tensor<bufftype,2>
                 }
                 
                 glBindTexture(GL_TEXTURE_BUFFER, 0);
-                GLFuncs->glBindBuffer(GL_TEXTURE_BUFFER, 0);
+                glBindBuffer(GL_TEXTURE_BUFFER, 0);
                 glFinish();
 
                 rect.material = new Shader<OverLayShader<true>>();
@@ -112,24 +112,24 @@ class VectorDisplay: public Tensor<bufftype,2>
         }
 
 
-        GLFuncs->glGenFramebuffers(1, &framebuffer);
+        glGenFramebuffers(1, &framebuffer);
 
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
         
         GLuint solidTexID = (GLuint)(unsigned long long)this->storage_pointer - 0x10000;
-        GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, solidTexID, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, solidTexID, 0);
         
         // Attach SHARED depth buffer
         if (depthbuffer != 0) {
-            GLFuncs->glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
-            // GLFuncs->glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthbuffer, 0);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthbuffer);
+            // glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthbuffer, 0);
         }
         
-        if (GLFuncs->glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             throw std::runtime_error("Solid framebuffer not complete!");
         }
 
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
 
@@ -143,7 +143,7 @@ class VectorDisplay: public Tensor<bufftype,2>
         // glClear(GL_COLOR_BUFFER_BIT);
         rect.bind();
         
-        GLFuncs->glUniform2i(GLFuncs->glGetUniformLocation(rect.material->shader_program, "dimensions"), int(this->shape[0]), int(this->shape[1]));
+        glUniform2i(glGetUniformLocation(rect.material->shader_program, "dimensions"), int(this->shape[0]), int(this->shape[1]));
         
 
         rect.draw();
@@ -155,11 +155,11 @@ class VectorDisplay: public Tensor<bufftype,2>
         if (framebuffer == 0){
             initialize_framebuffer();
         }
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     }
 
     void unbind_render_target() {
-        GLFuncs->glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
 
 

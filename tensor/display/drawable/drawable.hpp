@@ -32,20 +32,20 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 
     void setupVAO()
     {
-        GLFuncs->glGenVertexArrays(1, &VAO);
-        GLFuncs->glBindVertexArray(VAO);
+        glGenVertexArrays(1, &VAO);
+        glBindVertexArray(VAO);
         if (indices.data != nullptr){
-            GLFuncs->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
         }
-        GLFuncs->glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
+        glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
         long offset = 0;
         for (int i = 0; i < VertexLayout<vertex_types...>::num_attributes; i++)
         {
             std::cout << "Setting up attribute " << i << ": size=" << VertexLayout<vertex_types...>::sizes[i] << ", type=" << VertexLayout<vertex_types...>::types[i] << ", normalized=" << VertexLayout<vertex_types...>::normalized[i] << ", attribute_size=" << VertexLayout<vertex_types...>::attribute_sizes[i] << std::endl;
-            GLFuncs->glEnableVertexAttribArray(i);
+            glEnableVertexAttribArray(i);
             if (VertexLayout<vertex_types...>::types[i] == GL_INT)
             {
-                GLFuncs->glVertexAttribIPointer(
+                glVertexAttribIPointer(
                     i,
                     VertexLayout<vertex_types...>::sizes[i],
                     VertexLayout<vertex_types...>::types[i],
@@ -54,7 +54,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             }
             else
             {
-                GLFuncs->glVertexAttribPointer(
+                glVertexAttribPointer(
                     i,
                     VertexLayout<vertex_types...>::sizes[i],
                     VertexLayout<vertex_types...>::types[i],
@@ -64,8 +64,8 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             };
             offset += VertexLayout<vertex_types...>::attribute_sizes[i];
         }
-        GLFuncs->glBindBuffer(GL_ARRAY_BUFFER, 0);
-        GLFuncs->glBindVertexArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindVertexArray(0);
     }
 
     RenderStruct(Tensor<vertex_types, 1>... tensors) : Tensor<mytuple<vertex_types...>, 1>(
@@ -136,18 +136,18 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             return;
         }
 
-        GLFuncs->glBindVertexArray(VAO);
-        GLFuncs->glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
         // set bone matrices
         if (bone_matrices.data != nullptr){
-            GLint bonesLoc = GLFuncs->glGetUniformLocation(material->shader_program, "bone_matrices");
-            GLFuncs->glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data); // Assuming 100 bones for simplicity
+            GLint bonesLoc = glGetUniformLocation(material->shader_program, "bone_matrices");
+            glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data); // Assuming 100 bones for simplicity
         }
 
 
         if (indices.data != nullptr)
         {
-            GLFuncs->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
             if (count > 0){
                 glDrawElements(primitive_type, count, GL_UNSIGNED_INT, (void*)(unsigned long)offset);
                 return;
@@ -165,7 +165,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             }
             glDrawArrays(primitive_type, 0, this->shape[0]);
         }
-        GLFuncs->glBindVertexArray(0);
+        glBindVertexArray(0);
     }
 
     void bind()

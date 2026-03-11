@@ -59,8 +59,8 @@ __weak int main(){
         }
 
         if (info.isMouseGrabbed()) {
-            camera.forward = mat4::identity().rotated(-info.getMouseRel().first * 0.005f,float32x3(0.0f, 1.0f, 0.0f)) * (camera.forward );
-            camera.forward = mat4::identity().rotated(-info.getMouseRel().second * 0.005f, right) * (camera.forward );
+            camera.forward = mat4::identity().rotated(-info.getMouseRel().first  * 0.005f, float32x3(0.0f, 1.0f, 0.0f)) * (camera.forward );
+            camera.forward = mat4::identity().rotated(-info.getMouseRel().second * 0.005f, right                      ) * (camera.forward );
             camera.up = -(camera.forward).cross(right);
         }
 

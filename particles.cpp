@@ -548,19 +548,19 @@ __weak int main(){
 
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         // set depthOnly to 1.0f
-        GLuint depthOnlyLocation = GLFuncs->glGetUniformLocation(particles_renderable.material->shader_program, "depthOnly");
-        GLuint chunksizesLocation = GLFuncs->glGetUniformLocation(particles_renderable.material->shader_program, "chunksizes");
-        GLuint chunksperrotationLocation = GLFuncs->glGetUniformLocation(particles_renderable.material->shader_program, "chunksperrotation");
-        GLFuncs->glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
-        GLFuncs->glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
-        GLFuncs->glUniform1f(depthOnlyLocation, 1.0f);
+        GLuint depthOnlyLocation = glGetUniformLocation(particles_renderable.material->shader_program, "depthOnly");
+        GLuint chunksizesLocation = glGetUniformLocation(particles_renderable.material->shader_program, "chunksizes");
+        GLuint chunksperrotationLocation = glGetUniformLocation(particles_renderable.material->shader_program, "chunksperrotation");
+        glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
+        glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
+        glUniform1f(depthOnlyLocation, 1.0f);
         
         particles_renderable.draw(); // cheap adepth-only
 
         // Main pass: full shading with early-z rejection
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-        GLFuncs->glUniform1f(depthOnlyLocation, 0.0f);
+        glUniform1f(depthOnlyLocation, 0.0f);
         particles_renderable.draw();
         // particles_renderable.draw();
  
@@ -576,8 +576,8 @@ __weak int main(){
         window.activateBackBuffer();
 
         particles_renderable_liquid.bind();
-        GLFuncs->glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
-        GLFuncs->glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
+        glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
+        glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
         camera.bind(particles_renderable_liquid.material->shader_program);
         particles_renderable_liquid.draw();
 

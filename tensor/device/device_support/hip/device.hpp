@@ -2,7 +2,6 @@
 #include <hip/hip_runtime.h>
 #include <hip/driver_types.h>
 #include <hip/hip_gl_interop.h>
-#include <GL/gl.h>
 #include "shape.hpp"
 
 void HIP_ERROR_CHECK(hipError_t err){

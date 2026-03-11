@@ -336,8 +336,8 @@ struct mat4 : public Hvec<float32x4, 4>
 
     void bind(GLuint shader_program, std::string uniform_name = "model")
     {
-        GLint matLoc = GLFuncs->glGetUniformLocation(shader_program, uniform_name.c_str());
-        GLFuncs->glUniformMatrix4fv(matLoc, 1, GL_FALSE, (float*)&data);
+        GLint matLoc = glGetUniformLocation(shader_program, uniform_name.c_str());
+        glUniformMatrix4fv(matLoc, 1, GL_FALSE, (float*)&data);
     }
     
 };

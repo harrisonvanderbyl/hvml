@@ -368,12 +368,13 @@ public:
         SDL_ShowWindow(window);
 
         std::cout << "loading GL functions" << std::endl;
-        loadGLFunctions();
-
+        
         auto glctx = SDL_GL_CreateContext(window);
         if (!glctx) {
             throw std::runtime_error("Failed to create OpenGL context: " + std::string(SDL_GetError()));
         }
+        loadGLFunctions();
+
         
         glEnable(GL_DEPTH_TEST);
         SDL_GL_SetSwapInterval(0);
