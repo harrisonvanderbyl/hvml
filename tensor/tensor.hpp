@@ -320,8 +320,12 @@ public:
                     int spot = (int(inp[i].end) - int(inp[i].start) + (shape[i]))%shape[i];
                     if(inp[i].end.is_default){
                         spot = shape[i] - (inp[i].start);
+                        // newshape[j] = spot / inp[i].step; this doesnt work, eg {1::2} on a shape of 5 should give 2 not 3/2
+                        newshape[j] = spot / inp[i].step + (spot % inp[i].step != 0);
+                    }else{
+
+                        newshape[j] = (spot) / inp[i].step;
                     }
-                    newshape[j] = (spot) / inp[i].step;
                     newstrides[j] = this->strides[i] * inp[i].step;
                     // std::cout << "not implemented" << std::endl;
                 }

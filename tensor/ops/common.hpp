@@ -378,6 +378,9 @@ public:
             size_t allocate_size = OP::get_allocate_size(out_shape);
 
             auto out_param = Tensor<Out, -1>({allocate_size}, global_device_manager.get_compute_device(device,0).default_memory_type);
+            // if out has an assignment operator that can handle = 0
+            out_param.template view<uint8_t,1>({-1}) = 0; // set to zero for operations that require it, like inplace add
+            
 
             out_param.shape = out_shape;
 
@@ -550,7 +553,7 @@ struct ReductionOperation: public OperationSelector<OP, reductionDim> {
 
     template <typename T, typename TT>
     __host__ __device__ static void assignOperation(T& output, const TT& input){
-        #if defined(__CUDACC__) || defined(__HIPCC__)
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         atomicAdd(&output, input);
         #else
         output += input;
