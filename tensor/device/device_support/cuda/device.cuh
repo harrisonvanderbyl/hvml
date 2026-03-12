@@ -43,6 +43,19 @@ AllocationMap* create_cuda_mapper(int device_id){
             return host_ptr;
         };
 
+        mapper->memory_type_converters[MemoryType::kHIP_VRAM] = [device_id](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+            auto& hip_device = global_device_manager.get_device(MemoryType::kHIP_VRAM, 0);
+            // copy to new cpu memory first
+            uint8_t* host_ptr = (uint8_t*)malloc(size.total_size() * bitsize);
+            CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+            CUDA_ERROR_CHECK(cudaMemcpy(host_ptr, (uint8_t*)ptr, size.total_size() * bitsize, cudaMemcpyDeviceToHost));
+            CUDA_ERROR_CHECK(cudaDeviceSynchronize());
+            void* hip_ptr = hip_device.allocate(size, bitsize, compute_type, host_ptr); // allocate new memory on hip device
+            hip_device.synchronize_function();
+            free(host_ptr); // free temporary host memory
+            return hip_ptr;
+        };
+
        
         mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr) {
             cudaGraphicsResource* m = nullptr;
