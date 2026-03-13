@@ -176,7 +176,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             return;
         }
         material->bind();
-        model_matrix.bind(material->shader_program, "model");
+        material->uniform_setters["model"].set(model_matrix, material->shader_program, "model");
     }
 };
 
