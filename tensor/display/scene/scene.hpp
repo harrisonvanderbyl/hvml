@@ -67,7 +67,7 @@ public:
         for (const auto &texture : model.textures)
         {
 
-            render_textures.push_back(texture.to(kCUDA_VRAM, kOPENGLTEXTURE));
+            render_textures.push_back(texture.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGLTEXTURE));
             // std::cout << "Loaded texture: with ID: " << render_texture.texture << std::endl;
         }
 
@@ -125,10 +125,10 @@ public:
                 RenderStruct render_mesh(
                     model.skeletons[0],
                     primitive.indices,
-                    positions.to(kCUDA_VRAM),
-                    normals.to(kCUDA_VRAM),
-                    texcoords.to(kCUDA_VRAM),
-                    bone_ids.to(kCUDA_VRAM));
+                    positions.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
+                    normals.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
+                    texcoords.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
+                    bone_ids.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type));
 
                 // Process material
                 if (primitive.materialIndex >= 0 && primitive.materialIndex < model.materials.size())

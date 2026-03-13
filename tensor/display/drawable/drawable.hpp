@@ -77,7 +77,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 
         setupVAO();
         // copy data from tensors into this tensor
-        CopyDataHelper<vertex_types...>::run(tensors.to(kCUDA_VRAM)..., this->to_compute(kCUDA));
+        CopyDataHelper<vertex_types...>::run(tensors.to(*this->device)..., this->to_compute(this->device->default_compute_type));
     }
 
     RenderStruct(
@@ -115,7 +115,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 
         
 
-        CopyDataHelper<vertex_types...>::run(inputs.to(kCUDA_VRAM)..., this->to_compute(kCUDA));
+        CopyDataHelper<vertex_types...>::run(inputs.to(*this->device)..., this->to_compute(this->device->default_compute_type));
 
         this->primitive_type = GL_TRIANGLES;
     }
