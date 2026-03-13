@@ -18,25 +18,39 @@ struct UniformSetter
     GLint shader_program;
     GLint location;
     GLint type;
+    bool initialized = false;
 
     UniformSetter() : name(""), shader_program(0), location(-1), type(0) {};
 
-    UniformSetter(const std::string& name, GLuint shader_program) : name(name), shader_program(shader_program)
+    UniformSetter(std::string aname, GLuint ashader_program)
     { 
-        location = glGetUniformLocation(shader_program, name.c_str());
+        this->name = aname.c_str();
+        this->shader_program = ashader_program;
+        this->location = glGetUniformLocation(shader_program, name.c_str());
+    
         if (location == -1)
         {
             std::cerr << "Warning: Uniform '" << name << "' not found in shader program " << shader_program << std::endl;
+            std::cout << "Shader program: " << shader_program << std::endl;
+            // throw(std::runtime_error("Uniform not found"));
         }
+        
+        this->initialized = true;
     };
 
+    void operator=(const UniformSetter& other) {
+        name = other.name;
+        shader_program = other.shader_program;
+        location = other.location;
+        type = other.type;
+    }
+
     template <typename T, int size>
-    void operator=(const Hvec<T, size>& value)
+    void set(const Hvec<T, size>& value, GLuint shader_programa, const std::string& namea)
     {
-        if (location == -1)
+        if (location == -1 || !initialized)
         {
-            std::cerr << "Cannot set uniform '" << name << "' because it was not found in shader program " << shader_program << std::endl;
-            return;
+            location = glGetUniformLocation(shader_programa, namea.c_str());
         }
 
         if constexpr (std::is_same_v<T, float>){
@@ -48,6 +62,9 @@ struct UniformSetter
         else if constexpr (std::is_same_v<T, uint32_t>){
             glUniform1uiv(location, size, value.data);
         }
+        else if constexpr (std::is_same_v<T, float32x4> && size == 4){
+            glUniformMatrix4fv(location, 1, GL_FALSE, (float*)&value);
+        }        
         else {
             static_assert(sizeof(T) == 0, "UniformSetter does not support this type");
         }
@@ -164,6 +181,7 @@ struct Material
         }
 
         // set actvive to get uniform locations
+        this->init_uniforms(shader_program);
 
         return true;
     }

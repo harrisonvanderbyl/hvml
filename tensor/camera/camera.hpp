@@ -60,13 +60,13 @@ struct Camera {
     }
 
 
-    void bind(GLuint shader_program) {
+    void bind(Material& material){
         // Set camera uniforms
-        getViewMatrix().bind(shader_program, "view");
-        getProjectionMatrix().bind(shader_program, "projection");
-        (getViewMatrix() * getProjectionMatrix() ).bind(shader_program, "projectionview");
-        getViewMatrix().inverse().bind(shader_program, "inv_view");
-        getProjectionMatrix().inverse().bind(shader_program, "inv_projection");
+        material.uniform_setters["view"].set(getViewMatrix(), material.shader_program, "view");
+        material.uniform_setters["projection"].set(getProjectionMatrix(), material.shader_program, "projection");
+        material.uniform_setters["projectionview"].set(getViewMatrix() * getProjectionMatrix(), material.shader_program, "projectionview");
+        material.uniform_setters["inv_view"].set(getViewMatrix().inverse(), material.shader_program, "inv_view");
+        material.uniform_setters["inv_projection"].set(getProjectionMatrix().inverse(), material.shader_program, "inv_projection");
     }
         
 };

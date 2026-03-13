@@ -194,7 +194,7 @@ public:
             mesh.bind();
 
 
-            camera.bind(mesh.material->shader_program);
+            camera.bind(*mesh.material);
             
             GLint meshLightPosLoc = glGetUniformLocation(mesh.material->shader_program, "lightPos");
             GLint meshLightColorLoc = glGetUniformLocation(mesh.material->shader_program, "lightColor");
