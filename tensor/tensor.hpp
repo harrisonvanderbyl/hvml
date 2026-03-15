@@ -5,167 +5,10 @@
 #include "vector"
 #include <stdarg.h>
 #include <string>
+#include "device/device.hpp"
 #include "shape.hpp"
 #include <iostream>
 #include <string.h>
-#include "device/device.hpp"
-
-class DefaultSlice
-{
-    int Value;
-    public:
-        bool is_default = true;
-        DefaultSlice(){};
-
-        template <typename inttype = int, typename = std::enable_if_t<std::is_integral_v<inttype>>>
-        DefaultSlice(inttype v) : Value(v), is_default(false) {};
-        operator int() const {
-            return Value;
-        };
-};
-
-class Slice
-{
-    public:
-    DefaultSlice start;
-    DefaultSlice end;
-    DefaultSlice step;
-    bool is_slice;
-    bool is_empty;
-
-    
-    // Constructor: full parameters
-
-    Slice(DefaultSlice starti, DefaultSlice endi, DefaultSlice stepi = 1)
-        : start(starti), end(endi), step(stepi), is_slice(true), is_empty(false) {};
-
-    // Constructor: reduced slice
-    Slice(DefaultSlice starti)
-        : start(starti), end(-1), step(1), is_slice(false), is_empty(false) {};
-
-    // Constructor: empty slice
-    Slice()
-        : start(0), end(-1), step(1) , is_slice(true), is_empty(true) {};
-
-    // Slice(const Slice &other)
-    //     : start(other.start), end(other.end), step(other.step), is_slice(other.is_slice), is_empty(other.is_empty) {};
-};
-
-
-template <int myreducedims = -1>
-class SliceList {
-public:
-    static constexpr int reducedims = myreducedims;
-
-    Slice A;
-    Slice B;
-    Slice C;
-    Slice D;
-    Slice E;
-    Slice F;
-    Slice G;
-    // make sure amount of ints is equal to reducedims
-    template <typename a = Slice, typename b = Slice, typename c = Slice, typename d = Slice, typename e = Slice, typename f = Slice, typename g = Slice, typename = std::enable_if_t<std::is_same_v<a,int> + std::is_same_v<b,int> + std::is_same_v<c,int> + std::is_same_v<d,int> + std::is_same_v<e,int> + std::is_same_v<f,int> + std::is_same_v<g,int> == reducedims>>
-    SliceList(a aa=Slice(), b ba=Slice(), c ca=Slice(), d da=Slice(), e ea=Slice(), f fa=Slice(), g ga=Slice())
-        : A(aa), B(ba), C(ca), D(da), E(ea), F(fa), G(ga) {};
-
-
-
-    
-    const Slice& operator[](int i) const
-    {
-        if (i == 0)
-        {
-            return A;
-        }
-        else if (i == 1)
-        {
-            return B;
-        }
-        else if (i == 2)
-        {
-            return C;
-        }
-        else if (i == 3)
-        {
-            return D;
-        }
-        else if (i == 4)
-        {
-            return E;
-        }
-        else if (i == 5)
-        {
-            return F;
-        }
-        else
-        {
-            return G;
-        }
-    }
-
-    operator std::string() const
-    {
-        std::string result = "[";
-        for (int i = 0; i < 7; i++)
-        {
-            if (i > 0)
-            {
-                result += ", ";
-            }
-            result += std::to_string((*this)[i].start) + ":" + std::to_string((*this)[i].end) + ":" + std::to_string((*this)[i].step);
-        }
-        result += "]";
-        return result;
-    }
-
-    friend std::ostream& operator<<(std::ostream& os, const SliceList& sl)
-    {
-        os << static_cast<std::string>(sl);
-        return os;
-    }
-
-    SliceList operator,(const Slice& other) const
-    {
-        auto copy = *this;
-        for (int i = 0; i < 7; i++)
-        {
-            if (copy[i].is_empty)
-            {
-                copy[i] = other;
-                break;
-            }
-        }
-        return copy;
-    }
-
-    SliceList<reducedims+1> operator,(const int& other) const
-    {
-        auto copy = *this;
-        for (int i = 0; i < 7; i++)
-        {
-            if (copy[i].is_empty)
-            {
-                copy[i] = Slice(other);
-                break;
-            }
-        }
-        return SliceList<reducedims+1>(copy.A, copy.B, copy.C, copy.D, copy.E, copy.F, copy.G);
-    }
-
-};
-
-__weak SliceList<0> operator,(const Slice& a, const Slice& b){
-    return SliceList<0>{a,b};
-};
-
-__weak SliceList<1> operator,(const Slice& a, const int& b){
-    return SliceList<1>{a,b};
-};
-
-__weak SliceList<1> operator,(const int& a, const Slice& b){
-    return SliceList<1>{a,b};
-};
 
 
 template <typename R = float, int rank = -1>
@@ -175,7 +18,7 @@ public:
     Shape<rank> shape;
     Shape<rank> strides;
     R *data = NULL;
-    R *storage_pointer = NULL;
+    BaseMemoryAllocation *storage_pointer = NULL;
     unsigned long bitsize;
 
     size_t total_size = 0;
@@ -210,13 +53,25 @@ public:
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        storage_pointer = (R*)device->allocate(__a, bitsize, compute_type, nullptr, GetAllocationMetadataIfExists<R>::value);
+        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_compute_type:compute_type));
         
-        data = (R*)device->get_massaged_pointer(storage_pointer, device->default_compute_type);
+        data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
+    }
+
+    Tensor(AllocationMetadata metadata){
+        this->bitsize = sizeof(R);
+        this->device = MemoryLocation(metadata.storage_device).allocation_map;
+        this->shape = metadata.shape;
+        this->strides = this->shape.clone();
+        calculate_metadata();
+        storage_pointer = device->allocate(metadata);
+        
+        data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type));
+    
     }
     
     
-    Tensor(Shape<rank> __a, R *datain, MemoryLocation memory_device, R *storage_pointer = nullptr)
+    Tensor(Shape<rank> __a, R *datain, MemoryLocation memory_device, BaseMemoryAllocation *storage_pointer = nullptr)
     {
         this->device = memory_device.allocation_map;
         this->bitsize = sizeof(R);
@@ -225,7 +80,14 @@ public:
         calculate_metadata();
         this->data = datain;
         if (storage_pointer == nullptr){
-            this->storage_pointer = datain;
+            this->storage_pointer = new BaseMemoryAllocation(
+                AllocationMetadata::create<R>(
+                    __a,
+                    memory_device.memory_type,
+                    this->device->default_compute_type
+                ),
+                datain
+            );
         }else{
             this->storage_pointer = storage_pointer;
         }
@@ -395,32 +257,6 @@ public:
        return operator[](SliceList<1>({i}));
     }
 
-    // auto operator[](int i)
-    // {
-    //     return operator[](SliceList({i}));
-    // }
-
-    // template <typename T = R>
-    // typename std::conditional<(rank == 1), T&, Tensor<T, std::max(rank - 1,-1)>>::type
-    // operator[](int i)
-    // {
-
-    //     int v = (i+shape[0]) % shape[0];
-        
-    //     void *ptr = (void *)((uint8_t *)data + i * strides[0] * bitsize);
-        
-    //     if constexpr (rank == 1)
-    //     {
-    //         return *((T *)ptr);
-    //     }
-    //     else
-    //     {
-    //         auto s = shape.slice();
-    //         auto a = Tensor<T, std::max(rank - 1,-1)>(s, ptr, device_type);
-    //         return a;
-    //     }
-        
-    // }
 
     inline Tensor transpose()
     {
@@ -539,7 +375,7 @@ public:
             throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
         }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, *device, (T*)storage_pointer);
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, *device, storage_pointer);
         return b;   
     }
 
@@ -576,7 +412,7 @@ public:
         }
 
 
-        return Tensor<T, Z>{newshape, (T*)data, *device, (T*)storage_pointer};   
+        return Tensor<T, Z>{newshape, (T*)data, *device, storage_pointer};   
     }
 
     inline R& flatget(size_t i)
@@ -699,7 +535,7 @@ public:
 
     Tensor<R,rank> to(MemoryLocation device_type, ComputeType compute_type = ComputeType::kUnknown) const{
         
-        if(this->device->this_device_type == device_type.memory_type && this->device->device_id == device_type.device_id){
+        if(this->device->this_device_type == device_type.memory_type && this->device->device_id == device_type.device_id && (this->device->default_compute_type == compute_type || compute_type == kUnknown)){
             return *this;
         }
         
@@ -709,27 +545,31 @@ public:
 
         auto from = (void*)this->data;
 
-        void* result;
+        BaseMemoryAllocation* result;
 
         if(indexer != nullptr || strides != shape.calc_strides()){
             
             Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type, temp.storage_pointer);
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type,compute_type));
         }
         else{
-            result = device->convert_memory_type(from, device_type.memory_type, shape, sizeof(R), compute_type, storage_pointer);
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type,compute_type));
         }
 
         return {
             shape,
             (R*)device_type.allocation_map->get_massaged_pointer(
                 result,
-                device_type.allocation_map->default_compute_type
+                AllocationMetadata::create<R>(
+                    shape,
+                    device_type.memory_type,
+                    device_type.allocation_map->default_compute_type
+                )
             ),
             device_type,
-            (R*)result
+            result
         };
     };
 
@@ -739,13 +579,13 @@ public:
             std::cerr << "Compute type " << compute_type << " not supported on device type " << this->device->this_device_type << std::endl;
             throw std::runtime_error("Compute type not supported on device type");
         }
-        auto from = (void*)this->data;
-        auto result = this->device->get_massaged_pointer(from, compute_type);
+
+        auto result = this->device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type));
         return {
             shape,
             (R*)result,
             *device,
-            (R*)storage_pointer
+            storage_pointer
         };
     };
 
@@ -753,7 +593,7 @@ public:
     ~Tensor()
     {
         if(data != NULL){
-            device->deallocate((void*)storage_pointer);
+            device->deallocate(storage_pointer);
         }
     }
     // template <int output>//, typename std::enable_if<(rank == -1)>::type* = nullptr>
@@ -786,7 +626,7 @@ class Tensor<void, rank> {
     Shape<rank> shape;
     Shape<rank> strides;
     void *data = NULL;
-    void* storage_pointer = NULL;
+    BaseMemoryAllocation* storage_pointer = NULL;
     AllocationMap* device = &global_device_manager.get_device(MemoryType::kDDR,0);
     unsigned long bitsize;
     DataType dtype;
@@ -846,7 +686,7 @@ class Tensor<void, rank> {
             std::cerr << "Data type mismatch, tensor data type is " << dtype << " but requested type is " << get_dtype<T>() << std::endl;
             throw std::runtime_error("Data type mismatch");
         }
-        return {shape, (T*)data, *device, (T*)storage_pointer};
+        return {shape, (T*)data, *device, storage_pointer};
     }
 
     // destructor

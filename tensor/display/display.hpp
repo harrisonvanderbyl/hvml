@@ -317,14 +317,14 @@ public:
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
     VectorDisplay<float16x4> solidParticlesTexture;
     VectorDisplay<float16x4> finalRenderTexture;
-    VectorDisplay<DepthBufferFloat> depthbuffer;
+    VectorDisplay<float> depthbuffer;
     
     Clock clock;
 
     
     void setupRenderTextures(Shape<2> shape) {
         // === FRAMEBUFFER 1: Solid particles ===
-        depthbuffer = VectorDisplay<DepthBufferFloat>(shape, kOPENGLTEXTURE);
+        depthbuffer = VectorDisplay<float>(AllocationMetadata::create<float>(shape, device->default_memory_type, kOPENGLTEXTURE, GL_DEPTH_COMPONENT32F));
 
         solidParticlesTexture = VectorDisplay<float16x4>(shape, kOPENGLTEXTURE);
         solidParticlesTexture.attach_depth_buffer(depthbuffer);

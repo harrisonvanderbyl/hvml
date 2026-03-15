@@ -23,19 +23,19 @@ class KernelBufferAllocator {
 
     template <int i = sizeof...(returnTypes)>
     void Allocate(){
-        if constexpr (i > 0){
-            if(pointers[i-1] == nullptr){
-                size_t size = sizes[i-1];
-                // make sure is unallocated
-                if(pointers[i-1] == nullptr){
-                    auto& device = global_device_manager.get_compute_device(dtype, 0);
-                    MemoryType memtype = device.default_memory_type;
-                    pointers[i-1] = global_device_manager.get_device(memtype,0).allocate({size} , sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
+        // if constexpr (i > 0){
+        //     if(pointers[i-1] == nullptr){
+        //         size_t size = sizes[i-1];
+        //         // make sure is unallocated
+        //         if(pointers[i-1] == nullptr){
+        //             auto& device = global_device_manager.get_compute_device(dtype, 0);
+        //             MemoryType memtype = device.default_memory_type;
+        //             pointers[i-1] = global_device_manager.get_device(memtype,0).allocate({size} , sizeof(typename std::tuple_element<i-1, std::tuple<returnTypes...>>::type));
 
-                }
-            }
-            Allocate<i-1>();
-        }
+        //         }
+        //     }
+        //     Allocate<i-1>();
+        // }
     }
 
     // can also preallocate by doing getPointer<x>() = ...

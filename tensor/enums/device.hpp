@@ -14,7 +14,7 @@ enum ComputeType
     kHIP,
     kVULKAN,
     kOPENGL,
-    kOPENGLTEXTURE, // seperate compute device due to requiring different allocation methods
+    kOPENGLTEXTURE,
     kUnknown,
     ComputeTypeCount
 };
@@ -26,6 +26,15 @@ enum MemoryType
     kHIP_VRAM,
     kDISK,
     kUnknown_MEM
+};
+
+enum AllocationFlags
+{
+    kR,//(1<<1),
+    kW,//(1<<2),
+    kRW,//(1<<1) | (1<<2),
+    kSURFACE,//(1<<3),
+    kTEXTURE//(1<<4),
 };
 
 enum AssignmentType {

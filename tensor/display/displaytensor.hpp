@@ -46,11 +46,13 @@ class VectorDisplay: public Tensor<bufftype,2>
     {
     }
 
+    VectorDisplay(AllocationMetadata m):Tensor<bufftype,2>(m){};
+
 
     void initialize_textures() {
         // This function can be used to initialize OpenGL textures if needed
         rect = *get_overlay_rect();
-            if(this->device->allocation_compute_types[this->storage_pointer] == ComputeType::kOPENGL){
+            if(this->storage_pointer->metadata.compute_device == ComputeType::kOPENGL){
                 // Create buffer texture that references the buffer
                 GLuint bufferTexture = 0;  // Buffer texture handle
                 glGenTextures(1, &bufferTexture);
@@ -70,7 +72,7 @@ class VectorDisplay: public Tensor<bufftype,2>
                     throw std::runtime_error("Unsupported buffer type for OpenGL display");
                 }
 
-                glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(unsigned long long)this->storage_pointer);
+                glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(size_t)this->storage_pointer->data);
                 
                 auto glErr = glGetError();
                 if (glErr != GL_NO_ERROR) {
@@ -78,7 +80,6 @@ class VectorDisplay: public Tensor<bufftype,2>
                 }
                 
                 glBindTexture(GL_TEXTURE_BUFFER, 0);
-                glBindBuffer(GL_TEXTURE_BUFFER, 0);
                 glFinish();
 
                 rect.material = new Shader<OverLayShader<true>>();
@@ -87,10 +88,10 @@ class VectorDisplay: public Tensor<bufftype,2>
                 rect.material->transparent = true;
 
 
-            }else if (this->device->allocation_compute_types[this->storage_pointer] == ComputeType::kOPENGLTEXTURE){
+            }else if (this->storage_pointer->metadata.compute_device == ComputeType::kOPENGLTEXTURE){
 
                 rect.material = new Shader<OverLayShader<false>>();    
-                rect.material->textures_ids["bufferTex"] = (GLuint)((unsigned long long)this->storage_pointer - 0x10000);
+                rect.material->textures_ids["bufferTex"] = (GLuint)((size_t)this->storage_pointer->data);
                 rect.material->texture_types["bufferTex"] = GL_TEXTURE_2D;
                 rect.material->transparent = true;
             } else {
@@ -99,11 +100,11 @@ class VectorDisplay: public Tensor<bufftype,2>
             setup = true;
         }
 
-    void attach_depth_buffer(Tensor<DepthBufferFloat, 2> depthbuffer){
-        if (depthbuffer.storage_pointer == 0){
+    void attach_depth_buffer(Tensor<float, 2> depthbuffer){
+        if (depthbuffer.storage_pointer->data == 0){
             throw std::runtime_error("Invalid depth buffer provided");
         }
-        this->depthbuffer = (GLuint)(unsigned long long)depthbuffer.storage_pointer - 0x20000;
+        this->depthbuffer = (GLuint)(size_t)depthbuffer.storage_pointer->data;
     }
 
     void initialize_framebuffer() {
@@ -116,7 +117,7 @@ class VectorDisplay: public Tensor<bufftype,2>
 
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
         
-        GLuint solidTexID = (GLuint)(unsigned long long)this->storage_pointer - 0x10000;
+        GLuint solidTexID = (GLuint)(size_t)this->storage_pointer->data;
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, solidTexID, 0);
         
         // Attach SHARED depth buffer

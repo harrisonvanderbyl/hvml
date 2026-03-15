@@ -57,10 +57,10 @@ AllocationMap* create_cuda_mapper(int device_id){
         };
 
        
-        mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr) {
+        mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr, size_t size) {
             cudaGraphicsResource* m = nullptr;
             cudaGraphicsResource_t* resource = &m;
-            auto err = cudaGraphicsGLRegisterBuffer(resource, (GLuint)(unsigned long long)ptr, cudaGraphicsRegisterFlagsNone);
+            auto err = cudaGraphicsGLRegisterBuffer(resource, (GLuint)(size_t)ptr, cudaGraphicsRegisterFlagsNone);
             if (err != cudaSuccess) {
                 if(err == 999){
                     std::cout << "CUDA–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
@@ -85,25 +85,14 @@ AllocationMap* create_cuda_mapper(int device_id){
             return temp;
         };
 
-        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCUDA}] = [](void* ptra) {
+        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCUDA}] = [](void* ptra, size_t size) {
             cudaGraphicsResource* m = nullptr;
             cudaGraphicsResource_t* resource = &m;
             // read and writable 2d array
-            GLuint ptr = (GLuint)(unsigned long long)ptra;
+            GLuint ptr = (GLuint)(size_t)ptra;
             GLuint texture_type = GL_TEXTURE_2D;
             GLuint flags = cudaGraphicsRegisterFlagsSurfaceLoadStore;
-            if(ptr < 0x20000){
-                // is texture
-                ptr = ptr - 0x10000;
-            } else {
-                // is renderbuffer
-                return (void*)0;
-
-                // ptr = ptr - 0x20000;
-                // texture_type = GL_RENDERBUFFER;
-                // flags = cudaGraphicsRegisterFlagsReadOnly;
-                // std::cout << "Registering renderbuffer with CUDA-GL interop, ptr: " << std::hex << ptr << std::dec << std::endl;
-            }
+            
             auto err = cudaGraphicsGLRegisterImage(resource, ptr, texture_type, flags);
             if (err != cudaSuccess) {
                 if (err == 999) {

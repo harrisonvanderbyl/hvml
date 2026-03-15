@@ -55,6 +55,8 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
     VkPhysicalDeviceProperties device_properties;
     vkGetPhysicalDeviceProperties(physical_device, &device_properties);
     
+    std::cout << "Initializing vulkan device" << "\n";
+    std::cout << "Memory device " << device_properties.deviceName << "\n";
     
     // Determine memory type based on vendor
     MemoryType mem = MemoryType::kUnknown_MEM;
@@ -67,7 +69,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
                strstr(device_properties.deviceName, "Intel") != nullptr) {
         mem = MemoryType::kDDR;
     } else {
-        mem = MemoryType::kUnknown_MEM;
+        mem = MemoryType::kDDR;
     }
 
     device->compute_units = device_properties.limits.maxComputeWorkGroupCount[0];
@@ -129,12 +131,12 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
         mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
 
         // Setup allocator
-        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+        mem_device.compute_device_allocators[ComputeType::kVULKAN] = [device_id, physical_device]( AllocationMetadata metadata, void* existing_data) {
             VkDeviceMemory* device_memory = new VkDeviceMemory();
             
             VkMemoryAllocateInfo alloc_info = {};
             alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            alloc_info.allocationSize = size.total_size() * bitsize;
+            alloc_info.allocationSize = metadata.byte_size;
             
             // Find device-local memory type
             alloc_info.memoryTypeIndex = find_memory_type(
@@ -144,7 +146,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
             );
             
             VK_CHECK(vkAllocateMemory(vk_devices[device_id], &alloc_info, nullptr, device_memory));
-            return device_memory;
+            return new BaseMemoryAllocation(metadata, device_memory);
         };
         
         mem_device.compute_device_deallocators[ComputeType::kVULKAN] = [device_id](void* ptr) {
@@ -154,6 +156,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id){
         };
 
         std::cout << "Created Vulkan device " << device_id  << std::endl;
+        
     }catch(...){
         std::cerr << "Failed to register Vulkan device " << device_id << " with memory manager" << std::endl;
     }
@@ -211,6 +214,8 @@ int count_vulkan_devices(){
     }
     
     vulkan_initialized = true;
+
+    std::cout << "Found " << device_count << " Vulkan devices" << std::endl;
     
     return device_count;
 }

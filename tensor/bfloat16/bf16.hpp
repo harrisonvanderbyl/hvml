@@ -102,4 +102,18 @@ struct __attribute__((packed)) int24
         bytes[2] = value & 0xFF;
     }
 };
+
+// needs to behave like a float except it is a struct as well
+struct float32{
+    float data;
+
+    operator float() const {
+        return data;
+    }
+
+    float32& operator=(float val) {
+        data = val;
+        return *this;
+    }
+};
 #endif

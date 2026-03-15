@@ -3,6 +3,7 @@
 #include <functional>
 #include "enums/device.hpp"
 #include <fstream>
+#include "shape.hpp"
 // #include "tensor/enums/device_support/x86/device.hpp"
 #ifndef DEVICE_HPP
 #define DEVICE_HPP
@@ -12,10 +13,10 @@ struct ComputeDevicePointerType{
     using type = T*;
 };
 
-template <typename T>
-struct ComputeDevicePointerType<kOPENGLTEXTURE, T>{
-    using type = uint;
-};
+// template <typename T>
+// struct ComputeDevicePointerType<kOPENGLTEXTURE, T>{
+//     using type = uint;
+// };
 
 template <typename T>
 struct ComputeDevicePointerType<kOPENGL, T>{
@@ -23,96 +24,111 @@ struct ComputeDevicePointerType<kOPENGL, T>{
 };
 
 
-template <typename T>
-struct MemoryAllocationObject{
-    MemoryType memory_type; // this is the memory type that this allocation object represents (e.g. DDR, CUDA_VRAM, etc.)
-    ComputeType compute_type; // this is the compute type that this allocation object is currently allocated for (e.g. CPU, CUDA, etc.)
-    
-    
-    ComputeDevicePointerType<kCPU, T>::type cpu_ptr;
-    ComputeDevicePointerType<kCUDA, T>::type cuda_ptr;
-    ComputeDevicePointerType<kHIP, T>::type hip_ptr;
-    ComputeDevicePointerType<kVULKAN, T>::type vulkan_ptr;
-    ComputeDevicePointerType<kOPENGL, T>::type opengl_ptr;
-    ComputeDevicePointerType<kOPENGLTEXTURE, T>::type opengltexture_ptr;
 
-    template <ComputeType compute_type>
-    typename ComputeDevicePointerType<compute_type, T>::type get_pointer(){
-        if constexpr (compute_type == kCPU){
-            return cpu_ptr;
-        }else if constexpr (compute_type == kCUDA){
-            return cuda_ptr;
-        }else if constexpr (compute_type == kHIP){
-            return hip_ptr;
-        }else if constexpr (compute_type == kVULKAN){
-            return vulkan_ptr;
-        }else if constexpr (compute_type == kOPENGL){
-            return opengl_ptr;
-        }else if constexpr (compute_type == kOPENGLTEXTURE){
-            return opengltexture_ptr;
-        }else{
-            static_assert(compute_type == kCPU || compute_type == kCUDA || compute_type == kHIP || compute_type == kVULKAN || compute_type == kOPENGL || compute_type == kOPENGLTEXTURE, "Invalid compute type");
-        }
-    }
+template <ComputeType CT, typename T>
+struct ComputePointer{
+    ComputeDevicePointerType<CT, T> storage_tensor;
 };
 
 // used for memory allocation information that is only relevant to compute type
+
 struct AllocationMetadata{
-    int rwstatus; // used when needing to specify the read/write ability of the allocation (e.g. for opengl textures)
-    int format; // used when needing to specify the format of the allocation (e.g. for opengl textures)
-};
+    MemoryType storage_device;
+    AllocationFlags rwstatus;
+    ComputeType compute_device;
+    size_t byte_size; // size in bytes of allocated data
+    size_t type_size=0; // size in bytes of single entry
+    int format=0; // used for type specific stuff
+    Shape<-1> shape={}; // used for texture allocations
+    int device_id=0;
 
-// needs to behave like a float except it is a struct as well
-struct float32{
-    float data;
+    template<typename T>
+    static AllocationMetadata create(
+        const Shape<-1>& shapein,
+        MemoryType mt=kDDR,
+        ComputeType ct=kCPU,
+        int informat = 0,
+        AllocationFlags rwstatusin = AllocationFlags::kRW,
+        int deviceid=0
+    ){
+        AllocationMetadata tocreate;
+        tocreate.storage_device = mt;
+        tocreate.compute_device = ct;
+        tocreate.rwstatus = rwstatusin;
+        tocreate.type_size = sizeof(T);
+        tocreate.shape = shapein;
+        tocreate.byte_size = shapein.total_size()*tocreate.type_size;
+        tocreate.format = informat;
+        tocreate.device_id = deviceid;
 
-    operator float() const {
-        return data;
+        return tocreate;
     }
 
-    float32& operator=(float val) {
-        data = val;
-        return *this;
+    friend std::ostream &operator<<(std::ostream &os, AllocationMetadata& inp)
+    {
+        os << "AllocMeta(";
+        os << "storage:" << inp.storage_device << ",";
+        os << "compute:" << inp.compute_device << ",";
+        os << "shape:" << inp.shape << ",";
+        os<<")";
+        return os;
+    };
+        
+
+    auto hash(){
+        return std::tuple<int,int,int>(storage_device,compute_device,rwstatus);
     }
 };
 
-template <typename T, AllocationMetadata meta>
-struct TypeWithAllocationMetadata: public T{
-    static constexpr AllocationMetadata allocation_metadata = meta;
-    using T::T; // Inherit constructors
+struct MemoryWithMetadata{
+    AllocationMetadata metadata;
+    void* data;
+
+    MemoryWithMetadata(AllocationMetadata meta,
+    void* da):metadata(meta),data(da){};
 };
 
-template <typename T>
-struct GetAllocationMetadataIfExists{
-    // if T is a specialization of TypeWithAllocationMetadata, then return its allocation metadata, otherwise return a default value
-    static constexpr AllocationMetadata value = {0,0}; // default value
-};
+struct BaseMemoryAllocation: public MemoryWithMetadata{ // this always on cpu;
+    using MemoryWithMetadata::MemoryWithMetadata;
+    
+    std::map<std::tuple<int,int,int>, void*> cached_massaged_pointers = std::map<std::tuple<int,int,int>, void*>();
+    size_t allocation_counts = 1;
 
-template <typename T, AllocationMetadata meta>
-struct GetAllocationMetadataIfExists<TypeWithAllocationMetadata<T, meta>>{
-    static constexpr AllocationMetadata value = meta;
+   
+
+    void alloc(){
+        allocation_counts++;
+        // std::cout << this << ": " << allocation_counts - 1 << ">" << allocation_counts << "\n";
+    }
+
+    bool dealloc(){
+        if(allocation_counts==0){
+            throw("trying to double deallocate");
+        }
+        allocation_counts--;
+
+        // std::cout << this << ": " << allocation_counts + 1 << ">" << allocation_counts << "\n";
+    
+
+        return allocation_counts==0;
+    }
+
+    BaseMemoryAllocation& operator=(const BaseMemoryAllocation&) = delete;
+}; // always a pointer to this, this be a singleton
+
+struct MassagedMemory: public MemoryWithMetadata{
+    BaseMemoryAllocation* base_memory;
 };
 
 
 struct AllocationMap{
-    std::map<void*, int> allocation_counts;
     std::string device_name;
 
-    void register_allocation(void* ptr) {
-        allocation_counts[ptr]++;
+    void register_allocation(BaseMemoryAllocation* ptr) {
+        ptr->alloc();
     }
 
-    bool unregister_allocation(void* ptr) {
-
-        if (allocation_counts.find(ptr) != allocation_counts.end()) {
-            allocation_counts[ptr]--;
-            if (allocation_counts[ptr] <= 0) {
-                allocation_counts.erase(ptr);
-                return true;
-            }
-        }
-        return false;
-    }
+    
 
     // delete copy constructors to avoid accidental copies
     AllocationMap& operator=(const AllocationMap&) = delete;
@@ -121,7 +137,6 @@ struct AllocationMap{
     
 
     public:
-    std::map<void*, ComputeType> allocation_compute_types;
     MemoryType this_device_type = MemoryType::kUnknown_MEM;
 
     operator MemoryType() const {
@@ -132,11 +147,10 @@ struct AllocationMap{
     std::map<ComputeType, bool> supports_compute_device;
     
     // map to compute device malloc lambdas
-    std::map<ComputeType, std::function<void*(Shape<-1>, size_t, void*, AllocationMetadata)>> compute_device_allocators;
+    std::map<ComputeType, std::function<BaseMemoryAllocation*(AllocationMetadata, void*)>> compute_device_allocators;
     std::map<ComputeType, std::function<void(void*)>> compute_device_deallocators;
-    std::map<MemoryType, std::function<void*(Shape<-1>, size_t, ComputeType, void*, void*, AllocationMetadata)>> memory_type_converters;
-    std::map<std::tuple<ComputeType, ComputeType>, std::function<void*(void*)>> compute_type_converters;
-    std::map<std::tuple<ComputeType, ComputeType, void*>, void*> compute_type_conversion_cache;
+    std::map<MemoryType, std::function<BaseMemoryAllocation*(void*, AllocationMetadata)>> memory_type_converters;
+    std::map<std::tuple<ComputeType,ComputeType>, std::function<void*(void*, BaseMemoryAllocation*, AllocationMetadata)>> compute_type_converters;
     
     std::function<void()> synchronize_function = []() {};
     
@@ -144,62 +158,68 @@ struct AllocationMap{
 
     int device_id = 0;
 
-    void* allocate(Shape<-1> shape, size_t bitsize, ComputeType compute_type = ComputeType::kUnknown, void* existing_data = nullptr, AllocationMetadata metadata = {}) {
+    BaseMemoryAllocation* allocate(AllocationMetadata meta, void* existing_data = nullptr) {
+        ComputeType compute_type = meta.compute_device;
         auto allocation_compute_type = compute_type == ComputeType::kUnknown ? default_compute_type : compute_type;
-        void* pointer = nullptr;
+
         if (compute_device_allocators.find(allocation_compute_type) != compute_device_allocators.end()){
-            pointer = compute_device_allocators[allocation_compute_type](shape, bitsize, existing_data, metadata);
-            register_allocation(pointer);
-            this->allocation_compute_types[pointer] = allocation_compute_type;
-            assert(this->allocation_compute_types[pointer] == allocation_compute_type);
-            return pointer;
+            return compute_device_allocators[allocation_compute_type](meta, existing_data);
+            
         }else{
             std::cerr << "No allocator found for default compute type " << allocation_compute_type << std::endl;
             throw std::runtime_error("No allocator found for default compute type");
         }
     }
 
-    void deallocate(void* ptr){
-        auto ptr_compute_type = this->allocation_compute_types[ptr];
-        if (compute_device_deallocators.find(ptr_compute_type) != compute_device_deallocators.end()){
-            if (unregister_allocation(ptr)) {
-                compute_device_deallocators[ptr_compute_type](ptr);
+    void deallocate(BaseMemoryAllocation* ptr){
+        auto ptr_compute_type = ptr->metadata.compute_device;
+       if (ptr->dealloc()) {
+
+        // std::cout << "attempting to free pointer: " << ptr << ":"<<ptr->allocation_counts<<"\n";
+        
+         if (compute_device_deallocators.find(ptr_compute_type) != compute_device_deallocators.end()){
+            
+                compute_device_deallocators[ptr_compute_type](ptr->data);
+                
+                // std::cout << "Freeing pointer: " << ptr << "\n";
+                free(ptr);
+            
+            }else{
+                std::cerr << "No deallocator found for default compute type " << ptr_compute_type << "{" << int(ptr_compute_type) << "} on device " << this_device_type << std::endl;
+                throw std::runtime_error("No deallocator found for default compute type");
             }
-        }else{
-            std::cerr << "No deallocator found for default compute type " << ptr_compute_type << std::endl;
-            throw std::runtime_error("No deallocator found for default compute type");
         }
     }
 
-    void* get_massaged_pointer(void* ptr, ComputeType target_type){
-        if (target_type == this->allocation_compute_types[ptr]){
-            if(compute_type_converters.find(std::make_tuple(target_type, target_type)) != compute_type_converters.end()){
-                return compute_type_converters[std::make_tuple(target_type, target_type)](ptr);
-            }
-            return ptr;
-        }else {
-            auto key = std::make_tuple(this->allocation_compute_types[ptr], target_type);
-            auto cache_key = std::make_tuple(this->allocation_compute_types[ptr], target_type, ptr);
-            if (compute_type_conversion_cache.find(cache_key) != compute_type_conversion_cache.end()){
-                return compute_type_conversion_cache[cache_key];
-            }
+    void* get_massaged_pointer(BaseMemoryAllocation* ptr, AllocationMetadata meta){
 
+        if(ptr->cached_massaged_pointers.find(meta.hash()) != ptr->cached_massaged_pointers.end()){
+            return ptr->cached_massaged_pointers[meta.hash()];
+        }
+
+        ComputeType target_type = meta.compute_device;
+
+        if (target_type == ptr->metadata.compute_device){
+            return ptr->data;
+        }else {
+            auto key = std::make_tuple(ptr->metadata.compute_device,target_type);
+        
             if (compute_type_converters.find(key) != compute_type_converters.end()){
-                void* result = compute_type_converters[key](ptr);
-                compute_type_conversion_cache[cache_key] = result;
-                this->allocation_compute_types[result] = target_type;
+                void* result = compute_type_converters[key](ptr->data, ptr,  meta);
+                ptr->cached_massaged_pointers[meta.hash()] = result;
                 return result;
             }else{
-                std::cerr << "No compute type converter found for conversion from " << this->allocation_compute_types[ptr] << " to " << target_type << std::endl;
-                std::cerr << "Ptr: " << ptr << " on device " << this << std::endl;
+                std::cerr << "No compute type converter found for conversion from " << ptr->metadata.compute_device << " to " << target_type << std::endl;
+                std::cerr << "Ptr: " << ptr << " on device " << this_device_type << ": equal:" <<  (ptr->metadata.compute_device == target_type) << std::endl;
                 throw std::runtime_error("No compute type converter found for requested conversion");
             }
         }
     }
 
-    void* convert_memory_type(void* ptr, MemoryType target_type, Shape<-1> size, size_t bitsize, ComputeType targetct = ComputeType::kUnknown, void* storage_ptr = nullptr, AllocationMetadata metadata={}) {
+    BaseMemoryAllocation* convert_memory_type(void* ptr, AllocationMetadata meta) {
+        MemoryType target_type = meta.storage_device;
         if (memory_type_converters.find(target_type) != memory_type_converters.end()){
-            return memory_type_converters[target_type](size, bitsize, targetct, ptr, storage_ptr, metadata);
+            return memory_type_converters[target_type](ptr, meta);
         }else{
             std::cerr << "No memory type converter found for target type " << target_type << std::endl;
             throw std::runtime_error("No memory type converter found for target type");
@@ -252,7 +272,7 @@ ComputeDeviceBase* create_cuda_compute_device(int device_id);
 
 int count_hip_devices();
 AllocationMap* create_hip_mapper(int device_id);
-AllocationMap* create_disk_mapper(int device_id);
+// AllocationMap* create_disk_mapper(int device_id);
 ComputeDeviceBase* create_hip_compute_device(int device_id);
 
 #if !defined(__HIPCC__)
@@ -288,15 +308,35 @@ __weak AllocationMap* create_cpu_mapper(int device_id){
     AllocationMap* mapper = new AllocationMap();
     mapper->default_compute_type = ComputeType::kCPU;
     mapper->supports_compute_device[ComputeType::kCPU] = true;
-    mapper->compute_device_allocators[ComputeType::kCPU] = [](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
-        return malloc(size.total_size() * bitsize);
+    
+    mapper->compute_device_allocators[ComputeType::kCPU] = [](AllocationMetadata meta, void* existing_data){
+        
+        void* data = malloc(meta.byte_size);
+        return new BaseMemoryAllocation(meta, data);
     };
+
     mapper->compute_device_deallocators[ComputeType::kCPU] = [](void* ptr) {
         free(ptr);
     };
-    mapper->memory_type_converters[MemoryType::kDDR] = [](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-        return ptr; // No conversion needed
+    
+    mapper->memory_type_converters[MemoryType::kDDR] = [mapper](void* ptr, AllocationMetadata meta)
+    {
+        std::cout << "Converting/creating alloc for " << meta << "\n";
+        return mapper->compute_device_allocators[meta.compute_device](meta,ptr);
+        // if(compute_type==ComputeType::kOPENGLTEXTURE){
+        //     return  mapper->compute_device_allocators[ComputeType::kOPENGLTEXTURE](size,bitsize,storage_ptr, metadata); // No conversion needed
+        // }
     };
+
+
+    // mapper->compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCPU,ComputeType::kCPU})] = [mapper](void* data, BaseMemoryAllocation* storage, AllocationMetadata metadata){
+    //     std::cout << storage->metadata.compute_device << "->" << metadata.compute_device << "\n";
+    //     return data;
+    // };
+
+    
+
+    
 
 
     mapper->this_device_type = MemoryType::kDDR;
@@ -371,7 +411,7 @@ struct DeviceManager{
             compute_devices[ComputeType::kCPU][i] = device;
         }
 
-        memory_devices[MemoryType::kDISK][0] = create_disk_mapper(0);
+        // memory_devices[MemoryType::kDISK][0] = create_disk_mapper(0);
 
         for (int i = 0; i < device_counts[MemoryType::kCUDA_VRAM]; i++){
             AllocationMap* mapper = create_cuda_mapper(i);
@@ -434,80 +474,80 @@ __weak DeviceManager global_device_manager;
 
 
 
-__weak AllocationMap* create_disk_mapper(int device_id){
-    // No special properties for disk memory, but we can implement swapping to disk later
-    AllocationMap* mapper = new AllocationMap();
-    mapper->default_compute_type = ComputeType::kCPU; // default to CPU compute for disk memory
-    mapper->supports_compute_device[ComputeType::kCPU] = true;
-    mapper->compute_device_allocators[ComputeType::kCPU] = [mapper](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
-        // create file on disk and return file pointer as void*
-        std::string filename = mapper->device_name.empty() ? "tensor_swap_file.bin" : mapper->device_name;
-        bool file_exists = std::ifstream(filename).good();
-        FILE* file = fopen(filename.c_str(), file_exists ? "r+b" : "w+b"); // open for reading and writing, create if it doesnt exist
-        if (file == nullptr) {
-            std::cerr << "Failed to create swap file on disk" << std::endl;
-            // print error message from errno
-            std::cerr << "Error: " << strerror(errno) << std::endl;
-            return (void*)nullptr;
-        }
-        // write existing data to file if provided
-        if (existing_data != nullptr) {
-            fwrite(existing_data, bitsize, size.total_size(), file);
-        } else {
-            // otherwise, just allocate space by seeking to the end of the desired size if the file didnt already exist (if it did, we assume it already has the desired size from a previous run)
-            if (!file_exists) {
-                fseek(file, size.total_size() * bitsize - 1, SEEK_SET);
-                fputc(0, file);// write a single byte to create the file with the desired size
-                // reset file pointer to beginning
-                fseek(file, 0, SEEK_SET);
-            }
-        }
-        return (void*)file;
-    };
+// __weak AllocationMap* create_disk_mapper(int device_id){
+//     // No special properties for disk memory, but we can implement swapping to disk later
+//     AllocationMap* mapper = new AllocationMap();
+//     mapper->default_compute_type = ComputeType::kCPU; // default to CPU compute for disk memory
+//     mapper->supports_compute_device[ComputeType::kCPU] = true;
+//     mapper->compute_device_allocators[ComputeType::kCPU] = [mapper](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+//         // create file on disk and return file pointer as void*
+//         std::string filename = mapper->device_name.empty() ? "tensor_swap_file.bin" : mapper->device_name;
+//         bool file_exists = std::ifstream(filename).good();
+//         FILE* file = fopen(filename.c_str(), file_exists ? "r+b" : "w+b"); // open for reading and writing, create if it doesnt exist
+//         if (file == nullptr) {
+//             std::cerr << "Failed to create swap file on disk" << std::endl;
+//             // print error message from errno
+//             std::cerr << "Error: " << strerror(errno) << std::endl;
+//             return (void*)nullptr;
+//         }
+//         // write existing data to file if provided
+//         if (existing_data != nullptr) {
+//             fwrite(existing_data, bitsize, size.total_size(), file);
+//         } else {
+//             // otherwise, just allocate space by seeking to the end of the desired size if the file didnt already exist (if it did, we assume it already has the desired size from a previous run)
+//             if (!file_exists) {
+//                 fseek(file, size.total_size() * bitsize - 1, SEEK_SET);
+//                 fputc(0, file);// write a single byte to create the file with the desired size
+//                 // reset file pointer to beginning
+//                 fseek(file, 0, SEEK_SET);
+//             }
+//         }
+//         return (void*)file;
+//     };
 
-    mapper->compute_device_deallocators[ComputeType::kCPU] = [](void* ptr) {
-        FILE* file = (FILE*)ptr;
-        if (file != nullptr) {
-            fclose(file);
-        }
-    };
+//     mapper->compute_device_deallocators[ComputeType::kCPU] = [](void* ptr) {
+//         FILE* file = (FILE*)ptr;
+//         if (file != nullptr) {
+//             fclose(file);
+//         }
+//     };
 
-    mapper->memory_type_converters[MemoryType::kDISK] = [](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-        return ptr; // No conversion needed for now, but we can implement swapping to disk later
-    };
+//     mapper->memory_type_converters[MemoryType::kDISK] = [](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+//         return ptr; // No conversion needed for now, but we can implement swapping to disk later
+//     };
 
-    mapper->memory_type_converters[MemoryType::kDDR] = [](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-        // read data from file back into memory
-        auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-        void* host_ptr = host_device.allocate(size, bitsize, compute_type); // dont pass existing data to host allocator, it doesnt know how to handle that
-        FILE* file = (FILE*)storage_ptr;
-        size_t readfrom = (size_t)ptr; // this is actually the offset for this data in the file, which the CPU allocator can use to seek to the correct position in the file for reading/writing
-        fseek(file, readfrom, SEEK_SET);
-        if (file != nullptr) {
-            fread(host_ptr, bitsize, size.total_size(), file);
-        }
-        // reset file pointer to beginning for future reads/writes
-        fseek(file, 0, SEEK_SET);    
-        return host_ptr;
-    };
+//     mapper->memory_type_converters[MemoryType::kDDR] = [](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+//         // read data from file back into memory
+//         auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
+//         void* host_ptr = host_device.allocate(size, bitsize, compute_type); // dont pass existing data to host allocator, it doesnt know how to handle that
+//         FILE* file = (FILE*)storage_ptr;
+//         size_t readfrom = (size_t)ptr; // this is actually the offset for this data in the file, which the CPU allocator can use to seek to the correct position in the file for reading/writing
+//         fseek(file, readfrom, SEEK_SET);
+//         if (file != nullptr) {
+//             fread(host_ptr, bitsize, size.total_size(), file);
+//         }
+//         // reset file pointer to beginning for future reads/writes
+//         fseek(file, 0, SEEK_SET);    
+//         return host_ptr;
+//     };
 
-    mapper->compute_type_converters[std::make_tuple(ComputeType::kCPU, ComputeType::kCPU)] = [mapper](void* ptr) {
-        // this actually holds a zero, this can then be used as the file seeker position.
-        return (void*)0;
-    };
+//     mapper->compute_type_converters[ComputeType::kCPU] = [mapper](void* ptr, size_t size) {
+//         // this actually holds a zero, this can then be used as the file seeker position.
+//         return (void*)0;
+//     };
     
 
-    AllocationMap& kddr = global_device_manager.get_device(MemoryType::kDDR, 0);
-    // converter from kddr to disk as well
-    kddr.memory_type_converters[MemoryType::kDISK] = [mapper](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-        // write data from memory back to file
-        return mapper->allocate(size, bitsize, compute_type, ptr, metadata);
-    };
+//     AllocationMap& kddr = global_device_manager.get_device(MemoryType::kDDR, 0);
+//     // converter from kddr to disk as well
+//     kddr.memory_type_converters[MemoryType::kDISK] = [mapper](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+//         // write data from memory back to file
+//         return mapper->allocate(size, bitsize, compute_type, ptr, metadata);
+//     };
 
-    mapper->this_device_type = MemoryType::kDISK;
+//     mapper->this_device_type = MemoryType::kDISK;
 
-    return mapper;
-}
+//     return mapper;
+// }
 
 struct MemoryLocation {
     int device_id;
@@ -535,6 +575,7 @@ struct MemoryLocation {
         return *allocation_map;
     }
 };
+
 
 
 

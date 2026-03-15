@@ -269,7 +269,7 @@ __weak int main(){
     
     std::cout << "sizeof(size_t): " << sizeof(size_t) << std::endl;
     std::cout << "sizeof(unsigned long): " << sizeof(unsigned long) << std::endl;
-    std::cout << "sizeof(unsigned long long): " << sizeof(unsigned long long) << std::endl;
+    std::cout << "sizeof(size_t): " << sizeof(size_t) << std::endl;
     std::cout << "sizeof(void*): " << sizeof(void*) << std::endl;
     int testint = 42;
     unsigned long testptr = *(unsigned long*)&testint;
@@ -374,9 +374,9 @@ __weak int main(){
     // // particles[{{}}] = Particle(-10.0f, -10.0f, -10.0f); // Initialize all particles off-screen
     particles[{{}}] = patchcuda;
     particles_renderable.material = new Shader<ParticleShader>();
-    particles_renderable.material->textures_ids["texture1"] = (unsigned long long)rockdevice.storage_pointer - 0x10000;
+    particles_renderable.material->textures_ids["texture1"] = (size_t)rockdevice.storage_pointer->data;
     particles_renderable_liquid.material = particles_renderable.material;
-    particles_renderable_liquid.material->textures_ids["screentexture"] = (unsigned long long)window.solidParticlesTexture.storage_pointer - 0x10000;
+    particles_renderable_liquid.material->textures_ids["screentexture"] = (size_t)window.solidParticlesTexture.storage_pointer->data;
 
     window.setMouseGrab(true);
 

@@ -27,8 +27,6 @@
 #include <chrono>
 #include "bfloat16/bf16.hpp"
 
-typedef TypeWithAllocationMetadata<int24, AllocationMetadata{ 0, GL_DEPTH_COMPONENT24}> DepthBufferInt; // used for depth buffer allocations, with metadata indicating the format to use for the depth buffer
-typedef TypeWithAllocationMetadata<float32, AllocationMetadata{ 0, GL_DEPTH_COMPONENT32F}> DepthBufferFloat; // used for depth buffer allocations, with metadata indicating the format to use for the depth buffer
 
 
 
@@ -101,7 +99,7 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
         } else if (strstr(vendor_str, "Intel") != nullptr) {
             mem = MemoryType::kDDR;
         } else {
-            mem = MemoryType::kUnknown_MEM;
+            mem = MemoryType::kDDR;
         }
     }
     
@@ -110,17 +108,50 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
 
     auto& mem_device = global_device_manager.get_device(mem, 0);
     mem_device.supports_compute_device[ComputeType::kOPENGL] = true;
-    mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
-        GLuint buffer;
-        glGenBuffers(1, &buffer);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
-        glBufferData(GL_SHADER_STORAGE_BUFFER, size.total_size() * bitsize, existing_data, GL_DYNAMIC_DRAW);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-        return reinterpret_cast<void*>(static_cast<uintptr_t>(buffer));
+    if(mem == kDDR){
+         mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](AllocationMetadata metadata, void* existing_data) {
+            
+          
+            GLuint buffer;
+            glGenBuffers(1, &buffer);
+            glBindBuffer(GL_ARRAY_BUFFER, buffer);
+            glBufferStorageEXT(GL_ARRAY_BUFFER, metadata.byte_size, existing_data, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+            return new BaseMemoryAllocation(metadata, reinterpret_cast<void*>(static_cast<uintptr_t>(buffer)));
+        
+        };
+
+        mem_device.compute_type_converters[{ComputeType::kOPENGL, ComputeType::kCPU}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata){
+            glBindBuffer(GL_ARRAY_BUFFER, (GLuint)(size_t)ptr);
+            std::cout << ptr << " map_opengl\n" ;
+            void* ptra = glMapBufferRange(GL_ARRAY_BUFFER, 0, metadata.byte_size, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT); 
+            glBindBuffer(GL_ARRAY_BUFFER,0);
+            return ptra;
+        };
+
+        
+
+        
+    }
+    else{
+        mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](AllocationMetadata meta, void* existing_data){
+            GLuint buffer;
+            glGenBuffers(1, &buffer);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+            glBufferData(GL_SHADER_STORAGE_BUFFER, meta.byte_size, existing_data, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            return new BaseMemoryAllocation(meta, reinterpret_cast<void*>(static_cast<uintptr_t>(buffer)));
+        };
     };
-    mem_device.compute_device_allocators[ComputeType::kOPENGLTEXTURE] = [](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+
+    mem_device.compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCPU}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata){
+            return (void*)0;
+    };
+
+    mem_device.compute_device_allocators[ComputeType::kOPENGLTEXTURE] = [](AllocationMetadata metadata, void* existing_data){
         GLuint texture;
-        // size.C == 3 for RGB, size.C == 4 for RGBA
+        // metadata.shape.C == 3 for RGB, size.C == 4 for RGBA
         std::cout << "Metadata for OpenGL texture allocation: " << metadata.format << std::endl;
 
         if(metadata.format != 0){
@@ -128,12 +159,12 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
 
                 glGenRenderbuffers(1, &texture);
                 glBindRenderbuffer(GL_RENDERBUFFER, texture);
-                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, size.A, size.B);
+                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, metadata.shape.A, metadata.shape.B);
                 glBindRenderbuffer(GL_RENDERBUFFER, 0);
             } else if (metadata.format == GL_DEPTH_COMPONENT32F){
                 glGenRenderbuffers(1, &texture);
                 glBindRenderbuffer(GL_RENDERBUFFER, texture);
-                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, size.A, size.B);
+                glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, metadata.shape.A, metadata.shape.B);
                 glBindRenderbuffer(GL_RENDERBUFFER, 0);
             }
             else{
@@ -141,7 +172,6 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
                 throw std::runtime_error("Unsupported metadata format for OpenGL texture");
             }
             
-            texture += 0x20000;
 
             GL_CHECK();
         } else
@@ -149,16 +179,16 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
 
             glGenTextures(1, &texture);
             glBindTexture(GL_TEXTURE_2D, texture);
-            if (bitsize == 3) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGB, GL_UNSIGNED_BYTE, existing_data);
-            } else if (bitsize == 4) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size.A, size.B, 0, GL_RGBA, GL_UNSIGNED_BYTE, existing_data);
-            } else if (bitsize == 6) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGB, GL_FLOAT, existing_data);
-            } else if (bitsize == 8) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, size.A, size.B, 0, GL_RGBA, GL_FLOAT, existing_data);
+            if (metadata.type_size == 3) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, metadata.shape.A, metadata.shape.B, 0, GL_RGB, GL_UNSIGNED_BYTE, existing_data);
+            } else if (metadata.type_size == 4) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, metadata.shape.A, metadata.shape.B, 0, GL_RGBA, GL_UNSIGNED_BYTE, existing_data);
+            } else if (metadata.type_size == 6) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shape.A, metadata.shape.B, 0, GL_RGB, GL_FLOAT, existing_data);
+            } else if (metadata.type_size == 8) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, metadata.shape.A, metadata.shape.B, 0, GL_RGBA, GL_FLOAT, existing_data);
             } else {
-                std::cerr << "Unsupported bitsize for OpenGL texture: " << bitsize << std::endl;
+                std::cerr << "Unsupported metadata.type_size for OpenGL texture: " << metadata.type_size << std::endl;
                 throw std::runtime_error("Unsupported bitsize for OpenGL texture");
             }
 
@@ -168,13 +198,13 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
             glBindTexture(GL_TEXTURE_2D, 0);
-            texture += 0x10000;
+
         }
         
 
         // prevent collisions, += 10k
-
-        return reinterpret_cast<void*>(static_cast<uintptr_t>(texture));
+        return new BaseMemoryAllocation(metadata, reinterpret_cast<void*>(static_cast<uintptr_t>(texture)));
+        
     };
 
     mem_device.compute_device_deallocators[ComputeType::kOPENGL] = [](void* ptr) {

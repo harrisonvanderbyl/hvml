@@ -574,7 +574,18 @@ struct vectorOperationSet<Intrinsics::NEON, float16, 8>
     static Hvec<float16, 8> fma(const Hvec<float16, 8>& a, const Hvec<float16, 8>& b, const Hvec<float16, 8>& c)
     { return store(vfmaq_f16(load(c), load(a), load(b))); }   // c + a*b
     static float16 hsum(const Hvec<float16, 8>& a)
-    { return static_cast<float16>(vaddvq_f16(load(a))); }
+    {
+        float16x8_t v = load(a);
+
+        float32x4_t lo = vcvt_f32_f16(vget_low_f16(v));
+        float32x4_t hi = vcvt_f32_f16(vget_high_f16(v));
+
+        float32x4_t sum = vaddq_f32(lo, hi);
+
+        float s = vaddvq_f32(sum);
+
+        return float16(s);
+    }
 };
 #endif // __ARM_FP16_FORMAT_IEEE
 

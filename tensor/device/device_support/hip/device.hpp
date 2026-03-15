@@ -52,7 +52,7 @@ AllocationMap* create_hip_mapper(int device_id){
             return nullptr;
         };
 
-        mapper->compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kOPENGL,ComputeType::kHIP})] = [](void* ptr) {
+        mapper->compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kOPENGL,ComputeType::kHIP})] = [](void* ptr, size_t size) {
             std::cout << "Registering OpenGL buffer with HIP for interop, buffer ID: " << ptr << std::endl;
             hipGraphicsResource_t m = nullptr;
             auto err = hipGraphicsGLRegisterBuffer(&m, (GLuint)(long long)ptr, hipGraphicsRegisterFlagsNone);
@@ -80,11 +80,11 @@ AllocationMap* create_hip_mapper(int device_id){
             return temp;
         };
 
-        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kHIP}] = [](void* ptr) {
+        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kHIP}] = [](void* ptr, size_t size) {
             hipGraphicsResource* m = nullptr;
             hipGraphicsResource_t* resource = &m;
             // read and writable 2d array
-            auto err = hipGraphicsGLRegisterImage(resource, (((GLuint)(unsigned long long)ptr) - 0x10000), GL_TEXTURE_2D, hipGraphicsRegisterFlagsSurfaceLoadStore);
+            auto err = hipGraphicsGLRegisterImage(resource, (((GLuint)(size_t)ptr)), GL_TEXTURE_2D, hipGraphicsRegisterFlagsSurfaceLoadStore);
             if (err != hipSuccess) {
                 if (err == 999) {
                     std::cout << "HIP–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;

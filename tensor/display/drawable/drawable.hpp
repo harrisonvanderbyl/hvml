@@ -35,9 +35,9 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         glGenVertexArrays(1, &VAO);
         glBindVertexArray(VAO);
         if (indices.data != nullptr){
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (size_t)indices.storage_pointer->data);
         }
-        glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
+        glBindBuffer(GL_ARRAY_BUFFER, (size_t)this->storage_pointer->data);
         long offset = 0;
         for (int i = 0; i < VertexLayout<vertex_types...>::num_attributes; i++)
         {
@@ -137,7 +137,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         }
 
         glBindVertexArray(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, (unsigned long long)this->storage_pointer);
+        glBindBuffer(GL_ARRAY_BUFFER, (size_t)this->storage_pointer->data);
         // set bone matrices
         if (bone_matrices.data != nullptr){
             GLint bonesLoc = glGetUniformLocation(material->shader_program, "bone_matrices");
@@ -147,7 +147,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 
         if (indices.data != nullptr)
         {
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (unsigned long long)indices.storage_pointer);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (size_t)indices.storage_pointer->data);
             if (count > 0){
                 glDrawElements(primitive_type, count, GL_UNSIGNED_INT, (void*)(unsigned long)offset);
                 return;

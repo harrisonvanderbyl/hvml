@@ -376,6 +376,7 @@ public:
         for (const auto &texture : model.textures)
         {
             os << "  Texture:" << ", Shape: " << texture.shape << std::endl;
+            os << " TextureID: " << texture.storage_pointer->data << std::endl;
         }
         os << "Skeletons: " << model.skeletons.size() << std::endl;
         for (const auto &skeleton : model.skeletons)
