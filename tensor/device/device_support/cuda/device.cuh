@@ -39,7 +39,7 @@ AllocationMap* create_cuda_mapper(int device_id){
             auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
             auto host_ptr = host_device.allocate(meta); // dont pass existing data to host allocator, it doesnt know how to handle that
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMemcpy((char*)host_ptr, (char*)ptr, meta.byte_size, cudaMemcpyDeviceToHost));
+            CUDA_ERROR_CHECK(cudaMemcpy((char*)host_ptr->data, (char*)ptr, meta.byte_size, cudaMemcpyDeviceToHost));
             
             return host_ptr;
         };
