@@ -70,6 +70,8 @@ struct AllocationMetadata{
         os << "storage:" << inp.storage_device << ",";
         os << "compute:" << inp.compute_device << ",";
         os << "shape:" << inp.shape << ",";
+        os << "format:" << inp.format << ",";
+        os << "device_id:" << inp.device_id << ",";
         os<<")";
         return os;
     };
