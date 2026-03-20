@@ -24,9 +24,12 @@ using json = nlohmann::json;
     /**
      *
      */
-    class safetensors {
+    class safetensors: public Tensor<char, 1>
+    {
 
     public:
+
+        
 
         std::unordered_map<std::string, const metadata_t> metas;
 
@@ -46,7 +49,7 @@ using json = nlohmann::json;
          */
         
          template <typename T = void, int rank = -1>
-         Tensor<T, rank> operator[](const char *name) const {
+         Tensor<T, rank> get(const char *name) const {
                 if(!contains(name)){
                     std::cout << "Key not found:" << name << "\n";
                     exit(0);
@@ -66,27 +69,27 @@ using json = nlohmann::json;
                 switch (meta.dtype)
                 {
                     case DataType::kFLOAT_32:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kFLOAT_64:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kINT_32:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kINT_64:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kINT_8:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kUINT_8:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kUINT_16:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kUINT_32:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kUINT_64:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kFLOAT_16:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     case DataType::kBFLOAT_16:
-                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDDR);
+                        return Tensor<T, rank>(meta.shape, (T*)data_begin, MemoryType::kDISK, this->storage_pointer);
                     default:
                         std::cerr << "Unsupported data type" << std::endl;
                         exit(0);
@@ -96,8 +99,8 @@ using json = nlohmann::json;
             }
 
         template <typename T = void, int rank = -1>
-         Tensor<T, rank> operator[](std::string name) const{
-                return operator[](name.c_str());
+         Tensor<T, rank> get(std::string name) const{
+                return get<T, rank>(name.c_str());
          }
 
          /**
@@ -134,31 +137,33 @@ using json = nlohmann::json;
 
         safetensors(){};
 
-        safetensors(std::basic_istream<char> &in) {
-                uint64_t header_size = 0;
+        void init() {
 
                 // todo: handle exception
-                in.read(reinterpret_cast<char *>(&header_size), sizeof header_size);
+                uint64_t header_size = this->view<uint64_t, 1>({-1})[0];
 
-                std::vector<char> meta_block(header_size);
-                in.read(meta_block.data(), static_cast<std::streamsize>(header_size));
+                // std::vector<char> meta_block(header_size);
+                // in.read(meta_block.data(), static_cast<std::streamsize>(header_size));
+                std::cout << "Header size: " << header_size << std::endl;
+                std::vector<char> meta_block((*this)[Slice{8, header_size+8}].data, (*this)[Slice{8, header_size+8}].data + header_size);
                 const auto metadatas = json::parse(meta_block);
 
                 // How many bytes remaining to pre-allocate the storage tensor
-                in.seekg(0, std::ios::end);
-                std::streamsize f_size = in.tellg();
-                in.seekg(8 + header_size, std::ios::beg);
-                const auto tensors_size = f_size - 8 - header_size;
+                // in.seekg(0, std::ios::end);
+                // std::streamsize f_size = in.tellg();
+                // in.seekg(8 + header_size, std::ios::beg);
+                // const auto tensors_size = f_size - 8 - header_size;
 
                 metas = std::unordered_map<std::string, const metadata_t>(metadatas.size());
                 // allocate in a way that prevents it from being freed
                 // storage = new char[tensors_size];
-                posix_memalign((void**)&storage, 128, tensors_size);
+                // posix_memalign((void**)&storage, 128, tensors_size);
                 
                
 
                 // Read the remaining content
-                in.read((char*)storage, static_cast<std::streamsize>(tensors_size));
+                // in.read((char*)storage, static_cast<std::streamsize>(tensors_size));
+                storage = this->data + 8 + header_size; // point to the start of the tensor data in the file
 
                 // Populate the meta lookup table
                 if (metadatas.is_object()) {
@@ -176,14 +181,14 @@ using json = nlohmann::json;
             }
 
 
-            safetensors(const char* filename) {
-                std::ifstream bin(filename, std::ios::binary);
-                *this = safetensors(bin);
+            safetensors(const char* filename): Tensor<char, 1>({1}, filename) {
+                std::cout << "Loading safetensors file: " << filename << "\n" << *this << "\n";
+                init();
             }
 
-            safetensors(const std::string& filename) {
-                std::ifstream bin(filename, std::ios::binary);
-                *this = safetensors(bin);
+            safetensors(const std::string& filename): Tensor<char, 1>({1}, filename) {
+                std::cout << "Loading safetensors file: " << filename << "\n" << *this << "\n";
+                init();
             }
 
             template <typename T = void, int size = -1>

@@ -52,6 +52,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ComputeType, {
                                                 {kVULKAN, "Vulkan"},
                                                 {kOPENGL, "OpenGL"},
                                                 {kOPENGLTEXTURE, "OpenGLTexture"},
+                                                {kFILE, "File"},
                                                 {kUnknown, "Unknown"}
                                          })
 

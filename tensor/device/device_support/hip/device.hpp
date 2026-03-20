@@ -17,6 +17,7 @@ AllocationMap* create_hip_mapper(int device_id){
         hipDeviceProp_t prop;
         HIP_ERROR_CHECK(hipGetDeviceProperties(&prop, device_id));
         mapper->default_compute_type = ComputeType::kHIP;
+        mapper->default_allocator_type = ComputeType::kHIP;
         
         mapper->supports_compute_device[ComputeType::kHIP] = true;
         mapper->compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
@@ -120,6 +121,11 @@ AllocationMap* create_hip_mapper(int device_id){
             return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the HIP allocator, which will copy it to the device
         };
 
+        auto& mem_device_disk = global_device_manager.get_device(MemoryType::kDISK, 0);
+        mem_device_disk.memory_type_converters[MemoryType::kHIP_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
+            return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the HIP allocator, which will copy it to the device
+        };
+
         mapper->this_device_type = MemoryType::kHIP_VRAM;
     return mapper;
 }
@@ -157,6 +163,14 @@ ComputeDeviceBase* create_hip_compute_device(int device_id){
         mem_device.compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
             HIP_ERROR_CHECK(hipSetDevice(device_id));
             HIP_ERROR_CHECK(hipFree(ptr));
+        };
+
+        mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCPU, ComputeType::kHIP})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+            return ptr; // No conversion needed, since HIP can directly access host memory if the device supports it
+        };
+
+        mem_device.compute_mapping_deallocators[ComputeType::kHIP] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+            // No deallocation needed, since HIP can directly access host memory if the device supports it. The original host allocation will be deallocated by the CPU allocator's deallocator.
         };
     }
     

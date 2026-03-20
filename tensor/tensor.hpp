@@ -52,9 +52,10 @@ public:
         // printf("ndim: %d\n", __a.ndim());
         this->shape = __a;
         this->strides = __a.clone();
-        calculate_metadata();
         storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_allocator_type:compute_type));
-        
+        this->shape = storage_pointer->metadata.shape;
+        this->strides = storage_pointer->metadata.shape.calc_strides();
+        calculate_metadata();
         data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
     }
 
@@ -65,7 +66,9 @@ public:
         this->strides = this->shape.clone();
         calculate_metadata();
         storage_pointer = device->allocate(metadata);
-        
+        this->shape = storage_pointer->metadata.shape;
+        this->strides = storage_pointer->metadata.shape.calc_strides();
+        calculate_metadata();
         data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type));
     
     }
@@ -464,14 +467,14 @@ public:
         if(!tensorin.device->supports_compute_device[kCPU])
         {
             tensorin.device->synchronize_function();
-            auto tensor = tensorin.to(MemoryType::kDDR);
+            auto tensor = tensorin.to(MemoryType::kDDR, ComputeType::kCPU);
             tensorin.device->synchronize_function();
             return os << tensor;
         }
 
 
         
-        auto tensor = tensorin.to_compute(kCPU);
+        auto tensor = tensorin;
         
 
 

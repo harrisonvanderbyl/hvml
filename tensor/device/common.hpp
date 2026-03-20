@@ -220,7 +220,7 @@ struct AllocationMap{
                 ptr->cached_massaged_pointers[meta.hash()] = result;
                 return result;
             }else{
-                std::cerr << "No compute type converter found for conversion from " << ptr->metadata.compute_device << " to " << target_type << std::endl;
+                std::cerr << "No compute type converter found for conversion from " << ptr->metadata.compute_device << "{"<< int(ptr->metadata.compute_device) << "} to " << target_type << "{"<< int(target_type) << "}" << std::endl;
                 std::cerr << "Ptr: " << ptr << " on device " << this_device_type << ": equal:" <<  (ptr->metadata.compute_device == target_type) << std::endl;
                 throw std::runtime_error("No compute type converter found for requested conversion");
             }
@@ -518,6 +518,9 @@ __weak AllocationMap* create_disk_mapper(int device_id){
                 if (current_size < static_cast<long>(meta.byte_size)) {
                     fseek(file, meta.byte_size - 1, SEEK_SET);
                     fputc(0, file);
+                }else{
+                    meta.byte_size = current_size; // update byte size to actual file size if file already exists and is larger than requested allocation
+                    meta.shape = Shape<-1>{meta.byte_size / meta.type_size}; // update shape accordingly
                 }
                 fseek(file, 0, SEEK_SET);
             }

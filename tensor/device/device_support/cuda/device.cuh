@@ -16,6 +16,7 @@ AllocationMap* create_cuda_mapper(int device_id){
         cudaDeviceProp prop;
         CUDA_ERROR_CHECK(cudaGetDeviceProperties(&prop, device_id));
         mapper->default_compute_type = ComputeType::kCUDA;
+        mapper->default_allocator_type = ComputeType::kCUDA;
         
         mapper->supports_compute_device[ComputeType::kCUDA] = true;
         mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](AllocationMetadata metadata, void* existing_data) {
@@ -134,6 +135,11 @@ AllocationMap* create_cuda_mapper(int device_id){
 
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
         mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
+            return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the CUDA allocator, which will copy it to the device
+        };
+
+        auto& mem_device_disk = global_device_manager.get_device(MemoryType::kDISK, 0);
+        mem_device_disk.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
             return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the CUDA allocator, which will copy it to the device
         };
 
