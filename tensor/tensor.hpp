@@ -547,15 +547,17 @@ public:
 
         BaseMemoryAllocation* result;
 
+        AllocationMap& target_device = global_device_manager.get_device(device_type.memory_type, device_type.device_id);
+
         if(indexer != nullptr || strides != shape.calc_strides()){
             
             Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type,compute_type));
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_compute_type : compute_type));
         }
         else{
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type,compute_type));
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_compute_type : compute_type));
         }
 
         return {

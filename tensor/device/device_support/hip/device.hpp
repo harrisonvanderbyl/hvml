@@ -19,40 +19,40 @@ AllocationMap* create_hip_mapper(int device_id){
         mapper->default_compute_type = ComputeType::kHIP;
         
         mapper->supports_compute_device[ComputeType::kHIP] = true;
-        mapper->compute_device_allocators[ComputeType::kHIP] = [device_id](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+        mapper->compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
             void* ptr;
             HIP_ERROR_CHECK(hipSetDevice(device_id));
-            HIP_ERROR_CHECK(hipMalloc(&ptr, size.total_size() * bitsize));
+            HIP_ERROR_CHECK(hipMalloc(&ptr, meta.byte_size));
             if (existing_data != nullptr){
-                HIP_ERROR_CHECK(hipMemcpy(ptr, existing_data, size.total_size() * bitsize, hipMemcpyHostToDevice));
+                HIP_ERROR_CHECK(hipMemcpy(ptr, existing_data, meta.byte_size, hipMemcpyHostToDevice));
             }
             
-            return ptr;
+            return new BaseMemoryAllocation(meta, ptr);
         };
         mapper->compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
             HIP_ERROR_CHECK(hipSetDevice(device_id));
             HIP_ERROR_CHECK(hipFree(ptr));
         };
 
-        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, AllocationMetadata meta) {
             auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-            void* host_ptr = host_device.allocate(size, bitsize, targetct, nullptr, metadata); // dont pass existing data here, as it doesnt know what to do with it
+            auto host_ptr = host_device.allocate(meta); // dont pass existing data here, as it doesnt know what to do with it
             HIP_ERROR_CHECK(hipSetDevice(device_id));
-            HIP_ERROR_CHECK(hipMemcpy((char*)host_ptr, (char*)ptr, size.total_size()*bitsize, hipMemcpyDeviceToHost));
+            HIP_ERROR_CHECK(hipMemcpy((char*)host_ptr->data, (char*)ptr, meta.byte_size, hipMemcpyDeviceToHost));
             
             return host_ptr;
         };
 
-        mapper->memory_type_converters[MemoryType::kHIP_VRAM] = [device_id](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-            return ptr; // No conversion needed
-        };
+        // mapper->memory_type_converters[MemoryType::kHIP_VRAM] = [device_id](void* ptr, AllocationMetadata meta) {
+        //     return ptr; // No conversion needed
+        // };
 
-        mapper->memory_type_converters[MemoryType::kCUDA_VRAM] = [device_id](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+        mapper->memory_type_converters[MemoryType::kCUDA_VRAM] = [device_id](void* ptr, AllocationMetadata meta) {
             std::cerr << "Conversion from HIP_VRAM to CUDA_VRAM not implemented" << std::endl;
             return nullptr;
         };
 
-        mapper->compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kOPENGL,ComputeType::kHIP})] = [](void* ptr, size_t size) {
+        mapper->compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kOPENGL,ComputeType::kHIP})] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
             std::cout << "Registering OpenGL buffer with HIP for interop, buffer ID: " << ptr << std::endl;
             hipGraphicsResource_t m = nullptr;
             auto err = hipGraphicsGLRegisterBuffer(&m, (GLuint)(long long)ptr, hipGraphicsRegisterFlagsNone);
@@ -80,34 +80,34 @@ AllocationMap* create_hip_mapper(int device_id){
             return temp;
         };
 
-        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kHIP}] = [](void* ptr, size_t size) {
-            hipGraphicsResource* m = nullptr;
-            hipGraphicsResource_t* resource = &m;
-            // read and writable 2d array
-            auto err = hipGraphicsGLRegisterImage(resource, (((GLuint)(size_t)ptr)), GL_TEXTURE_2D, hipGraphicsRegisterFlagsSurfaceLoadStore);
-            if (err != hipSuccess) {
-                if (err == 999) {
-                    std::cout << "HIP–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
-                }
-                std::cout << "HIP–GL interop registration failed with error code: " << err << std::endl;
-                std::string errorMsg = "Failed to register HIP-GL texture interop: " + 
-                    std::string(hipGetErrorString(err));
-                throw std::runtime_error(errorMsg);   
-            }
+        // mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kHIP}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+        //     hipGraphicsResource* m = nullptr;
+        //     hipGraphicsResource_t* resource = &m;
+        //     // read and writable 2d array
+        //     auto err = hipGraphicsGLRegisterImage(resource, (((GLuint)(size_t)ptr)), GL_TEXTURE_2D, hipGraphicsRegisterFlagsSurfaceLoadStore);
+        //     if (err != hipSuccess) {
+        //         if (err == 999) {
+        //             std::cout << "HIP–GL interop registration failed with error code: " << err << " (USING wrong gpu for openGL)" << std::endl;
+        //         }
+        //         std::cout << "HIP–GL interop registration failed with error code: " << err << std::endl;
+        //         std::string errorMsg = "Failed to register HIP-GL texture interop: " + 
+        //             std::string(hipGetErrorString(err));
+        //         throw std::runtime_error(errorMsg);   
+        //     }
             
-            auto errMap = hipGraphicsMapResources(1, resource);
-            if (errMap != hipSuccess) {
-                throw std::runtime_error("Failed to map HIP-GL texture resources: " + std::string(hipGetErrorString(errMap)));
-            }
+        //     auto errMap = hipGraphicsMapResources(1, resource);
+        //     if (errMap != hipSuccess) {
+        //         throw std::runtime_error("Failed to map HIP-GL texture resources: " + std::string(hipGetErrorString(errMap)));
+        //     }
             
-            hipArray_t* array = new hipArray_t[1];
-            auto hipError = hipGraphicsSubResourceGetMappedArray(array, resource[0], 0, 0);
-            if (hipError != hipSuccess) {
-                throw std::runtime_error("Failed to get mapped array from HIP-GL texture resource: " + std::string(hipGetErrorString(hipError)));
-            }
+        //     hipArray_t* array = new hipArray_t[1];
+        //     auto hipError = hipGraphicsSubResourceGetMappedArray(array, resource[0], 0, 0);
+        //     if (hipError != hipSuccess) {
+        //         throw std::runtime_error("Failed to get mapped array from HIP-GL texture resource: " + std::string(hipGetErrorString(hipError)));
+        //     }
             
-            return array;
-        };
+        //     return array;
+        // };
 
         mapper->synchronize_function = [device_id]() {
             HIP_ERROR_CHECK(hipSetDevice(device_id));
@@ -116,8 +116,8 @@ AllocationMap* create_hip_mapper(int device_id){
         
 
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-        mem_device.memory_type_converters[MemoryType::kHIP_VRAM] = [mapper](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-            return mapper->allocate(size, bitsize, targetct, ptr);
+        mem_device.memory_type_converters[MemoryType::kHIP_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
+            return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the HIP allocator, which will copy it to the device
         };
 
         mapper->this_device_type = MemoryType::kHIP_VRAM;
@@ -144,15 +144,15 @@ ComputeDeviceBase* create_hip_compute_device(int device_id){
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
         mem_device.supports_compute_device[ComputeType::kHIP] = true;
         mem_device.default_compute_type = ComputeType::kHIP;
-        mem_device.compute_device_allocators[ComputeType::kHIP] = [device_id](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+        mem_device.compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
             void* ptr;
             HIP_ERROR_CHECK(hipSetDevice(device_id));
-            HIP_ERROR_CHECK(hipMallocManaged(&ptr, size.total_size() * bitsize, hipMemAttachGlobal));
+            HIP_ERROR_CHECK(hipMallocManaged(&ptr, meta.byte_size, hipMemAttachGlobal));
             if (existing_data != nullptr){
-                HIP_ERROR_CHECK(hipMemcpy((char*)ptr, (char*)existing_data, size.total_size() * bitsize, hipMemcpyHostToDevice));
+                HIP_ERROR_CHECK(hipMemcpy((char*)ptr, (char*)existing_data, meta.byte_size, hipMemcpyHostToDevice));
             }
             
-            return ptr;
+            return new BaseMemoryAllocation(meta, ptr);
         };
         mem_device.compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
             HIP_ERROR_CHECK(hipSetDevice(device_id));

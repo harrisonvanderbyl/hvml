@@ -18,15 +18,15 @@ AllocationMap* create_cuda_mapper(int device_id){
         mapper->default_compute_type = ComputeType::kCUDA;
         
         mapper->supports_compute_device[ComputeType::kCUDA] = true;
-        mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](Shape<-1> size, size_t bitsize, void* existing_data, AllocationMetadata metadata) {
+        mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](AllocationMetadata metadata, void* existing_data) {
             void* ptr;
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMalloc(&ptr, size.total_size() * bitsize));
+            CUDA_ERROR_CHECK(cudaMalloc(&ptr, metadata.byte_size));
             if (existing_data != nullptr){
-                CUDA_ERROR_CHECK(cudaMemcpy(ptr, existing_data, size.total_size() * bitsize, cudaMemcpyHostToDevice));
+                CUDA_ERROR_CHECK(cudaMemcpy(ptr, existing_data, metadata.byte_size, cudaMemcpyHostToDevice));
             }
             
-            return ptr;
+            return new BaseMemoryAllocation(metadata, ptr);
         };
         mapper->compute_device_deallocators[ComputeType::kCUDA] = [device_id](void* ptr) {
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
@@ -34,30 +34,32 @@ AllocationMap* create_cuda_mapper(int device_id){
             
         };
 
-        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
+        mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, AllocationMetadata meta)
+        {
             auto& host_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-            void* host_ptr = host_device.allocate(size, bitsize, compute_type); // dont pass existing data to host allocator, it doesnt know how to handle that
+            auto host_ptr = host_device.allocate(meta); // dont pass existing data to host allocator, it doesnt know how to handle that
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMemcpy((char*)host_ptr, (char*)ptr, size.total_size()*bitsize, cudaMemcpyDeviceToHost));
+            CUDA_ERROR_CHECK(cudaMemcpy((char*)host_ptr->data, (char*)ptr, meta.byte_size, cudaMemcpyDeviceToHost));
             
             return host_ptr;
         };
 
-        mapper->memory_type_converters[MemoryType::kHIP_VRAM] = [device_id](Shape<-1> size, size_t bitsize, ComputeType compute_type, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-            auto& hip_device = global_device_manager.get_device(MemoryType::kHIP_VRAM, 0);
-            // copy to new cpu memory first
-            uint8_t* host_ptr = (uint8_t*)malloc(size.total_size() * bitsize);
-            CUDA_ERROR_CHECK(cudaSetDevice(device_id));
-            CUDA_ERROR_CHECK(cudaMemcpy(host_ptr, (uint8_t*)ptr, size.total_size() * bitsize, cudaMemcpyDeviceToHost));
-            CUDA_ERROR_CHECK(cudaDeviceSynchronize());
-            void* hip_ptr = hip_device.allocate(size, bitsize, compute_type, host_ptr); // allocate new memory on hip device
-            hip_device.synchronize_function();
-            free(host_ptr); // free temporary host memory
-            return hip_ptr;
-        };
+        // mapper->memory_type_converters[MemoryType::kHIP_VRAM] = [device_id](void* ptr, AllocationMetadata meta)
+        // {
+        //     auto& hip_device = global_device_manager.get_device(MemoryType::kHIP_VRAM, 0);
+        //     // copy to new cpu memory first
+        //     uint8_t* host_ptr = (uint8_t*)malloc(meta.byte_size);
+        //     CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+        //     CUDA_ERROR_CHECK(cudaMemcpy(host_ptr, (uint8_t*)ptr, meta.byte_size, cudaMemcpyDeviceToHost));
+        //     CUDA_ERROR_CHECK(cudaDeviceSynchronize());
+        //     void* hip_ptr = hip_device.allocate(meta, host_ptr); // allocate new memory on hip device
+        //     hip_device.synchronize_function();
+        //     free(host_ptr); // free temporary host memory
+        //     return hip_ptr;
+        // };
 
        
-        mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr, size_t size) {
+        mapper->compute_type_converters[{ComputeType::kOPENGL,ComputeType::kCUDA}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
             cudaGraphicsResource* m = nullptr;
             cudaGraphicsResource_t* resource = &m;
             auto err = cudaGraphicsGLRegisterBuffer(resource, (GLuint)(size_t)ptr, cudaGraphicsRegisterFlagsNone);
@@ -85,13 +87,17 @@ AllocationMap* create_cuda_mapper(int device_id){
             return temp;
         };
 
-        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCUDA}] = [](void* ptra, size_t size) {
+        mapper->compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCUDA}] = [](void* ptra, BaseMemoryAllocation* original, AllocationMetadata metadata) {
             cudaGraphicsResource* m = nullptr;
             cudaGraphicsResource_t* resource = &m;
             // read and writable 2d array
-            GLuint ptr = (GLuint)(size_t)ptra;
+            GLuint ptr = (GLuint)(size_t)original->data;
             GLuint texture_type = GL_TEXTURE_2D;
             GLuint flags = cudaGraphicsRegisterFlagsSurfaceLoadStore;
+            if(original->metadata.format != 0){
+                return (void*)nullptr; // unsupported format
+            }
+
             
             auto err = cudaGraphicsGLRegisterImage(resource, ptr, texture_type, flags);
             if (err != cudaSuccess) {
@@ -101,6 +107,9 @@ AllocationMap* create_cuda_mapper(int device_id){
                 std::cout << "CUDA–GL interop registration failed with error code: " << err << std::endl;
                 std::string errorMsg = "Failed to register CUDA-GL texture interop: " + 
                     std::string(cudaGetErrorString(err));
+                std::cout << "Data pointer: " << original->data << std::endl;
+                std::cout << metadata << std::endl;
+                std::cout << original->metadata << std::endl;
                 throw std::runtime_error(errorMsg);   
             }
             
@@ -124,8 +133,8 @@ AllocationMap* create_cuda_mapper(int device_id){
         };
 
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-        mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](Shape<-1> size, size_t bitsize, ComputeType targetct, void* ptr, void* storage_ptr, AllocationMetadata metadata) {
-            return mapper->allocate(size, bitsize, targetct, ptr, metadata);
+        mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
+            return mapper->allocate(meta, ptr); // pass the host pointer as existing data to the CUDA allocator, which will copy it to the device
         };
 
         mapper->this_device_type = MemoryType::kCUDA_VRAM;

@@ -56,6 +56,12 @@ struct float16
         uint32_t x = ((fvalue & 0x8000) << 16) | (((fvalue & 0x7c00) + 0x1C000) << 13) | ((fvalue & 0x03FF) << 13);
         return *((float *)&x);
     }
+
+    // for cout
+    friend std::ostream& operator<<(std::ostream& os, const float16& value) {
+        os << float(value);
+        return os;
+    }
 };
 
 struct bfloat16;
@@ -86,6 +92,10 @@ struct __attribute__((packed)) bfloat16
     bfloat16 __host__ __device__ operator*(const T& valuein) const { return bfloat16(float(*this) * float(valuein)); }
     template <typename T>
     bfloat16 __host__ __device__ operator/(const T& valuein) const { return bfloat16(float(*this) / float(valuein)); }
+
+
+    // for cout
+    
 };
 
 // int24 for depth buffer and other stuff
