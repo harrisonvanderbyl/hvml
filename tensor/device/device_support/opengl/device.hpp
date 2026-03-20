@@ -130,7 +130,12 @@ ComputeDeviceBase* create_opengl_compute_device(int device_id){
             return ptra;
         };
 
-        
+        mem_device.compute_mapping_deallocators[ComputeType::kCPU] = [](void* ptr, BaseMemoryAllocation* original){
+
+            glBindBuffer(GL_ARRAY_BUFFER, (GLuint)(size_t)original->data);
+            glUnmapBuffer(GL_ARRAY_BUFFER);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+        };
 
         
     }

@@ -53,7 +53,7 @@ public:
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_compute_type:compute_type));
+        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_allocator_type:compute_type));
         
         data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
     }
@@ -108,16 +108,13 @@ public:
     template <typename M>
     inline Tensor<R, rank> operator=(M a)
     {
-        
         tensor_copy(*this, a);
         return *this;
-        
     }
 
     template <typename M, int V>
     inline Tensor<R, rank> operator=(Tensor<M,V>& other)
     {
-        
         tensor_copy(*this, other);
         return *this;
     }
@@ -458,19 +455,31 @@ public:
     }
 
     // print tensor
-    friend std::ostream &operator<<(std::ostream &os, Tensor<R, rank> tensorin)
+    friend std::ostream &operator<<(std::ostream &os, const Tensor<R, rank>& tensorin)
     {
         
         // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
         // tensorc = tensorin;
-        tensorin.device->synchronize_function();
-        Tensor<R, rank> tensor = tensorin.to(MemoryType::kDDR);
-        tensorin.device->synchronize_function();
+       
+        if(!tensorin.device->supports_compute_device[kCPU])
+        {
+            tensorin.device->synchronize_function();
+            auto tensor = tensorin.to(MemoryType::kDDR);
+            tensorin.device->synchronize_function();
+            return os << tensor;
+        }
+
+
+        
+        auto tensor = tensorin.to_compute(kCPU);
+        
+
+
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
         os << "shape=" << tensorin.shape << ", ";
         os << "strides=" << tensorin.strides << ", ";
-        os << "device_type=" << tensorin.device->this_device_type << ", ";
+        os << "device_type=" << tensorin.device->this_device_type << "{"<<int(tensorin.device->this_device_type)<<"}, ";
         os << "device_id=" << tensorin.device->device_id << "";
         if(tensorin.indexer != nullptr){
             os << ", indexed";
@@ -554,10 +563,10 @@ public:
             Tensor temp = {shape, *this->device};
             temp = *this;
             from = (void*)temp.data;
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_compute_type : compute_type));
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
         }
         else{
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_compute_type : compute_type));
+            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
         }
 
         return {
@@ -583,7 +592,7 @@ public:
         }
 
         auto result = this->device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type));
-        return {
+        return Tensor<R,rank>{
             shape,
             (R*)result,
             *device,

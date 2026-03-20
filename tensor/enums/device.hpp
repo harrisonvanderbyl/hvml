@@ -15,6 +15,7 @@ enum ComputeType
     kVULKAN,
     kOPENGL,
     kOPENGLTEXTURE,
+    kFILE,
     kUnknown,
     ComputeTypeCount
 };
