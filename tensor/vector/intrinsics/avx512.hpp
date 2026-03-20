@@ -73,7 +73,7 @@ struct vectorOperationSet
         for (int i = 0; i < N; i++) r.data[i] = a.data[i] - b.data[i];
         return r;
     }
-    static Hvec<T, N> mul(const Hvec<T, N>& a, const Hvec<T, N>& b)
+    __host__ __device__ static Hvec<T, N> mul(const Hvec<T, N>& a, const Hvec<T, N>& b)
     {
         Hvec<T, N> r;
         for (int i = 0; i < N; i++) r.data[i] = a.data[i] * b.data[i];
@@ -657,17 +657,17 @@ struct vectorOperationSet<Intrinsics::NEON, bfloat16, 8>
 // ============================================================================
 
 #define HVEC_OPS(T, N)                                                                          \
-    inline Hvec<T, N> operator+(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    __host__ __device__ inline Hvec<T, N> operator+(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::add(A, B); }                 \
-    inline Hvec<T, N> operator-(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    __host__ __device__ inline Hvec<T, N> operator-(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::sub(A, B); }                 \
-    inline Hvec<T, N> operator*(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    __host__ __device__ inline Hvec<T, N> operator*(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::mul(A, B); }                 \
-    inline Hvec<T, N> operator/(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
+    __host__ __device__ inline Hvec<T, N> operator/(const Hvec<T, N>& A, const Hvec<T, N>& B)                      \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::div(A, B); }                 \
-    inline Hvec<T, N> fma(const Hvec<T, N>& A, const Hvec<T, N>& B, const Hvec<T, N>& C)      \
+    __host__ __device__ inline Hvec<T, N> fma(const Hvec<T, N>& A, const Hvec<T, N>& B, const Hvec<T, N>& C)      \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::fma(A, B, C); }              \
-    inline T hsum(const Hvec<T, N>& A)                                                          \
+    __host__ __device__ inline T hsum(const Hvec<T, N>& A)                                                          \
     { return vectorOperationSet<get_available_intrinsics(), T, N>::hsum(A); }
 
 // float32

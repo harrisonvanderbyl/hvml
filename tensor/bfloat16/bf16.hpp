@@ -64,6 +64,11 @@ struct float16
     }
 };
 
+__attribute__((weak)) __host__ __device__ float16 abs(const float16& value) {
+    return float16(float(value) < 0 ? -float(value) : float(value));
+}
+
+
 struct bfloat16;
 static float bfloat16_to_float32(bfloat16 value);
 static bfloat16 float32_to_bfloat16(float value);
