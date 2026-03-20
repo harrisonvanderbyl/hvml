@@ -113,7 +113,7 @@ public:
     }
 
     template <typename M, int V>
-    inline Tensor<R, rank> operator=(const Tensor<M,V>& other)
+    inline Tensor<R, rank> operator=(Tensor<M,V>& other)
     {
         tensor_copy(*this, other);
         return *this;
