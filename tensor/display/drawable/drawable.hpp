@@ -141,7 +141,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
         // set bone matrices
         if (bone_matrices.data != nullptr){
             GLint bonesLoc = glGetUniformLocation(material->shader_program, "bone_matrices");
-            glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data); // Assuming 100 bones for simplicity
+            glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data.data); // Assuming 100 bones for simplicity
         }
 
 

@@ -128,10 +128,25 @@ AllocationMap* create_cuda_mapper(int device_id){
             return (void*)array;
         };
 
+        mapper->compute_mapping_deallocators[ComputeType::kCUDA] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+            // For CUDA-OpenGL interop, we need to unmap and unregister the resource instead of freeing memory directly
+            std::cout << "Deallocating CUDA mapped, original compute device: " << original->metadata.compute_device << std::endl;
+            if (original->metadata.compute_device == ComputeType::kOPENGL) {
+                
+            } else if (original->metadata.compute_device == ComputeType::kOPENGLTEXTURE) {
+               
+            } else {
+                std::cerr << "No CUDA mapping deallocator found for original compute device " << original->metadata.compute_device << "{" << int(original->metadata.compute_device) << "} on device " << ComputeType::kCUDA << std::endl;
+                throw std::runtime_error("No CUDA mapping deallocator found for original compute device");
+            }
+        };
+
         mapper->synchronize_function = [device_id]() {
             CUDA_ERROR_CHECK(cudaSetDevice(device_id));
             CUDA_ERROR_CHECK(cudaDeviceSynchronize());
         };
+
+        
 
         auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
         mem_device.memory_type_converters[MemoryType::kCUDA_VRAM] = [mapper](void* ptr, AllocationMetadata meta) {
@@ -163,25 +178,71 @@ ComputeDeviceBase* create_cuda_compute_device(int device_id){
         device->shared_memory_size = prop.sharedMemPerBlock;
         
 
-        // if(prop.canMapHostMemory){
-        //     supports_memory_location[MemoryType::kDDR] = true;
-        //     default_memory_type = MemoryType::kDDR;
+        if(prop.canMapHostMemory){
+                std::cout << "Device " << device_id << " supports mapping host memory, enabling zero-copy access" << std::endl;
+                device->supports_memory_location[MemoryType::kDDR] = true;
+                // device->default_memory_type = MemoryType::kDDR;
 
-        //     auto& mem_device = get_device(MemoryType::kDDR, 0);
-        //     mem_device.supports_compute_device[ComputeType::kCUDA] = true;
-        //     mem_device.default_compute_type = ComputeType::kCUDA;
-        //     mem_device.compute_device_allocators[ComputeType::kCUDA] = [device](size_t size) {
-        //         void* ptr;
-        //         CUDA_ERROR_CHECK(cudaSetDevice(device));
-        //         CUDA_ERROR_CHECK(cudaMallocManaged(&ptr, size));
-                
-        //         return ptr;
-        //     };
-        //     mem_device.compute_device_deallocators[ComputeType::kCUDA] = [device](void* ptr) {
-        //         CUDA_ERROR_CHECK(cudaSetDevice(device));
-        //         CUDA_ERROR_CHECK(cudaFree(ptr));
-        //     };
-        // }
+                auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
+                mem_device.supports_compute_device[ComputeType::kCUDA] = true;
+                // mem_device.default_compute_type = ComputeType::kCUDA;
+                // mem_device.default_allocator_type = ComputeType::kCUDA;
+                mem_device.compute_device_allocators[ComputeType::kCUDA] = [device_id](AllocationMetadata meta, void* existing_data) {
+                    void* ptr;
+                    CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+                    CUDA_ERROR_CHECK(cudaMallocManaged(&ptr, meta.byte_size, cudaMemAttachGlobal));
+                    if (existing_data != nullptr){
+                        CUDA_ERROR_CHECK(cudaMemcpy((char*)ptr, (char*)existing_data, meta.byte_size, cudaMemcpyHostToDevice));
+                    }
+                    
+                    return new BaseMemoryAllocation(meta, ptr);
+                };
+
+                mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCPU, ComputeType::kCUDA})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+                    
+                    if (original->metadata.compute_device == ComputeType::kCUDA) {
+                        return ptr; // No conversion needed, already in CUDA memory
+                    }
+
+                    if (original->metadata.compute_device == ComputeType::kCPU) {
+                        // map the existing host pointer into CUDA address space using cudaMallocManaged with cudaMemAttachGlobal, which allows it to be accessed from both CPU and CUDA without explicit copying
+                        cudaHostRegister(ptr, metadata.byte_size, cudaHostRegisterMapped);
+                        void* device_ptr;
+                        CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+                        CUDA_ERROR_CHECK(cudaHostGetDevicePointer(&device_ptr, ptr, 0));
+                        return device_ptr;
+                    }
+
+                    throw std::runtime_error("Unsupported compute device for conversion to CUDA");
+                };
+
+                mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCUDA, ComputeType::kCPU})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+                    if (original->metadata.compute_device == ComputeType::kCPU) {
+                        return ptr; // No conversion needed, already in CPU memory
+                    }
+
+                    if (original->metadata.compute_device == ComputeType::kCUDA) {
+                        // Since the memory is allocated with cudaMallocManaged and cudaMemAttachGlobal, it can be accessed directly from the CPU without explicit copying. Just return the original pointer.
+                        return ptr;
+                    }
+
+                    throw std::runtime_error("Unsupported compute device for conversion to CPU");
+                };
+
+                mem_device.compute_mapping_deallocators[ComputeType::kCUDA] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+                    // No deallocation needed, since HIP can directly access host memory if the device supports it. The original host allocation will be deallocated by the CPU allocator's deallocator.
+                };
+
+                mem_device.compute_mapping_deallocators[ComputeType::kCPU] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+                    // No deallocation needed, since the memory is shared and can be accessed from both CPU and CUDA. The original allocation will be deallocated by its respective allocator's deallocator.
+                };
+
+                mem_device.compute_device_deallocators[ComputeType::kCUDA] = [device_id](void* ptr) {
+                    CUDA_ERROR_CHECK(cudaSetDevice(device_id));
+                    CUDA_ERROR_CHECK(cudaFree(ptr));
+                };
+        }
+
     return device;
     }
 

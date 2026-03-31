@@ -80,21 +80,22 @@ struct AllocationMetadata{
     };
         
 
-    auto hash(){
+    auto hash() const{
         return std::tuple<int,ComputeType,int>(storage_device,compute_device,rwstatus);
     }
 };
 
+template <typename T = void>
 struct MemoryWithMetadata{
     AllocationMetadata metadata;
-    void* data;
+    T* data;
 
     MemoryWithMetadata(AllocationMetadata meta,
-    void* da):metadata(meta),data(da){};
+    T* da):metadata(meta),data(da){};
 };
 
-struct BaseMemoryAllocation: public MemoryWithMetadata{ // this always on cpu;
-    using MemoryWithMetadata::MemoryWithMetadata;
+struct BaseMemoryAllocation: public MemoryWithMetadata<void>{ // this always on cpu;
+    using MemoryWithMetadata<void>::MemoryWithMetadata;
     
     std::map<std::tuple<int,ComputeType,int>, void*> cached_massaged_pointers = std::map<std::tuple<int,ComputeType,int>, void*>();
     size_t allocation_counts = 1;
@@ -121,8 +122,52 @@ struct BaseMemoryAllocation: public MemoryWithMetadata{ // this always on cpu;
     BaseMemoryAllocation& operator=(const BaseMemoryAllocation&) = delete;
 }; // always a pointer to this, this be a singleton
 
-struct MassagedMemory: public MemoryWithMetadata{
+template <typename T>
+struct MassagedMemory: public MemoryWithMetadata<T>{
     BaseMemoryAllocation* base_memory;
+
+    MassagedMemory(): MemoryWithMetadata<T>(AllocationMetadata(), nullptr), base_memory(nullptr) {};
+
+    operator T*(){
+        return this->data;
+    };
+
+    operator const T*(){
+        return this->data;
+    };
+
+    operator void*(){
+        return (void*)this->data;
+     };
+
+     operator const void*(){
+        return (const void*)this->data;
+     };
+
+     MassagedMemory(AllocationMetadata meta, T* da, BaseMemoryAllocation* base):MemoryWithMetadata<T>(meta, da), base_memory(base){};
+
+    MassagedMemory operator += (size_t offset){
+        this->data += offset;
+        return *this;
+     }
+
+     MassagedMemory operator+(size_t offset){
+        return MassagedMemory<T>(this->metadata, this->data + offset, this->base_memory);
+     }
+
+     MassagedMemory operator-(size_t offset){
+        return MassagedMemory<T>(this->metadata, this->data - offset, this->base_memory);
+     }
+
+     bool operator==(const MassagedMemory& other) const {
+        return this->data == other.data;
+     }
+
+     bool operator == ( const T* other) const {
+        return this->data == other;
+     }
+
+
 };
 
 
@@ -185,7 +230,12 @@ struct AllocationMap{
         // std::cout << "attempting to free pointer: " << ptr << ":"<<ptr->allocation_counts<<"\n";
         for (auto key: ptr->cached_massaged_pointers){
             std::cout << "deallocing cached pointer \n";
-            compute_mapping_deallocators[std::get<1>(key.first)](key.second, ptr);
+            if (compute_mapping_deallocators.find(std::get<1>(key.first)) != compute_mapping_deallocators.end()){
+                compute_mapping_deallocators[std::get<1>(key.first)](key.second, ptr);
+            }else{
+                std::cerr << "No compute mapping deallocator found for compute type " << std::get<1>(key.first) << "{" << int(std::get<1>(key.first)) << "} on device " << this_device_type << std::endl;
+                throw std::runtime_error("No compute mapping deallocator found for compute type");
+            }
         };
         
         if (compute_device_deallocators.find(ptr_compute_type) != compute_device_deallocators.end()){
@@ -202,23 +252,24 @@ struct AllocationMap{
         }
     }
 
-    void* get_massaged_pointer(BaseMemoryAllocation* ptr, AllocationMetadata meta){
+    template <typename T>
+    MassagedMemory<T> get_massaged_pointer(BaseMemoryAllocation* ptr, AllocationMetadata meta){
 
         if(ptr->cached_massaged_pointers.find(meta.hash()) != ptr->cached_massaged_pointers.end()){
-            return ptr->cached_massaged_pointers[meta.hash()];
+            return MassagedMemory<T>(meta, (T*)ptr->cached_massaged_pointers[meta.hash()], ptr);
         }
 
         ComputeType target_type = meta.compute_device;
 
         if (target_type == ptr->metadata.compute_device){
-            return ptr->data;
+            return MassagedMemory<T>(meta, (T*)ptr->data, ptr);
         }else {
             auto key = std::make_tuple(ptr->metadata.compute_device,target_type);
         
             if (compute_type_converters.find(key) != compute_type_converters.end()){
                 void* result = compute_type_converters[key](ptr->data, ptr,  meta);
                 ptr->cached_massaged_pointers[meta.hash()] = result;
-                return result;
+                return MassagedMemory<T>(meta, (T*)result, ptr);
             }else{
                 std::cerr << "No compute type converter found for conversion from " << ptr->metadata.compute_device << "{"<< int(ptr->metadata.compute_device) << "} to " << target_type << "{"<< int(target_type) << "}" << std::endl;
                 std::cerr << "Ptr: " << ptr << " on device " << this_device_type << ": equal:" <<  (ptr->metadata.compute_device == target_type) << std::endl;

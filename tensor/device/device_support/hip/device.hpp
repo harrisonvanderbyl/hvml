@@ -144,34 +144,68 @@ ComputeDeviceBase* create_hip_compute_device(int device_id){
     device->shared_memory_size = prop.sharedMemPerBlock;
 
     if(prop.canMapHostMemory){
-        device->supports_memory_location[MemoryType::kDDR] = true;
-        device->default_memory_type = MemoryType::kDDR;
+                        std::cout << "Device " << device_id << " supports mapping host memory, enabling zero-copy access" << std::endl;
+                device->supports_memory_location[MemoryType::kDDR] = true;
+                // device->default_memory_type = MemoryType::kDDR;
 
-        auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
-        mem_device.supports_compute_device[ComputeType::kHIP] = true;
-        mem_device.default_compute_type = ComputeType::kHIP;
-        mem_device.compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
-            void* ptr;
-            HIP_ERROR_CHECK(hipSetDevice(device_id));
-            HIP_ERROR_CHECK(hipMallocManaged(&ptr, meta.byte_size, hipMemAttachGlobal));
-            if (existing_data != nullptr){
-                HIP_ERROR_CHECK(hipMemcpy((char*)ptr, (char*)existing_data, meta.byte_size, hipMemcpyHostToDevice));
-            }
-            
-            return new BaseMemoryAllocation(meta, ptr);
-        };
-        mem_device.compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
-            HIP_ERROR_CHECK(hipSetDevice(device_id));
-            HIP_ERROR_CHECK(hipFree(ptr));
-        };
+                auto& mem_device = global_device_manager.get_device(MemoryType::kDDR, 0);
+                mem_device.supports_compute_device[ComputeType::kHIP] = true;
+                // mem_device.default_compute_type = ComputeType::kHIP;
+                // mem_device.default_allocator_type = ComputeType::kHIP;
+                mem_device.compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
+                    void* ptr;
+                    HIP_ERROR_CHECK(hipSetDevice(device_id));
+                    HIP_ERROR_CHECK(hipMallocManaged(&ptr, meta.byte_size, hipMemAttachGlobal));
+                    if (existing_data != nullptr){
+                        HIP_ERROR_CHECK(hipMemcpy((char*)ptr, (char*)existing_data, meta.byte_size, hipMemcpyHostToDevice));
+                    }
+                    
+                    return new BaseMemoryAllocation(meta, ptr);
+                };
 
-        mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCPU, ComputeType::kHIP})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
-            return ptr; // No conversion needed, since HIP can directly access host memory if the device supports it
-        };
+                mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kCPU, ComputeType::kHIP})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+                    
+                    if (original->metadata.compute_device == ComputeType::kHIP) {
+                        return ptr; // No conversion needed, already in hip memory
+                    }
 
-        mem_device.compute_mapping_deallocators[ComputeType::kHIP] = [device_id](void* ptr, BaseMemoryAllocation* original) {
-            // No deallocation needed, since HIP can directly access host memory if the device supports it. The original host allocation will be deallocated by the CPU allocator's deallocator.
-        };
+                    if (original->metadata.compute_device == ComputeType::kCPU) {
+                        // map the existing host pointer into hip address space using hipMallocManaged with hipMemAttachGlobal, which allows it to be accessed from both CPU and hip without explicit copying
+                        HIP_ERROR_CHECK(hipHostRegister(ptr, metadata.byte_size, hipHostRegisterMapped));
+                        void* device_ptr;
+                        HIP_ERROR_CHECK(hipSetDevice(device_id));
+                        HIP_ERROR_CHECK(hipHostGetDevicePointer(&device_ptr, ptr, 0));
+                        return device_ptr;
+                    }
+
+                    throw std::runtime_error("Unsupported compute device for conversion to hip");
+                };
+
+                mem_device.compute_type_converters[std::tuple<ComputeType,ComputeType>({ComputeType::kHIP, ComputeType::kCPU})] = [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+                    if (original->metadata.compute_device == ComputeType::kCPU) {
+                        return ptr; // No conversion needed, already in CPU memory
+                    }
+
+                    if (original->metadata.compute_device == ComputeType::kHIP) {
+                        // Since the memory is allocated with hipMallocManaged and hipMemAttachGlobal, it can be accessed directly from the CPU without explicit copying. Just return the original pointer.
+                        return ptr;
+                    }
+
+                    throw std::runtime_error("Unsupported compute device for conversion to CPU");
+                };
+
+                mem_device.compute_mapping_deallocators[ComputeType::kHIP] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+                    // No deallocation needed, since HIP can directly access host memory if the device supports it. The original host allocation will be deallocated by the CPU allocator's deallocator.
+                };
+
+                mem_device.compute_mapping_deallocators[ComputeType::kCPU] = [device_id](void* ptr, BaseMemoryAllocation* original) {
+                    // No deallocation needed, since the memory is shared and can be accessed from both CPU and hip. The original allocation will be deallocated by its respective allocator's deallocator.
+                };
+
+                mem_device.compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
+                    HIP_ERROR_CHECK(hipSetDevice(device_id));
+                    HIP_ERROR_CHECK(hipFree(ptr));
+                };
     }
     
     return device;

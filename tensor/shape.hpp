@@ -179,7 +179,7 @@ struct Shape
         return total;
     }
 
-    template <int newrank = length>
+    template <int newrank>
     bool operator==(const Shape<newrank> &other) const
     {
         for (int i = 0; i < ndim(); i++)
@@ -192,7 +192,7 @@ struct Shape
         return true;
     }
 
-    template <int newrank = length>
+    template <int newrank>
     bool operator!=(const Shape<newrank> &other) const
     {
         return !(*this == other);

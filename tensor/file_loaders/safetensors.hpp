@@ -145,7 +145,7 @@ using json = nlohmann::json;
                 // std::vector<char> meta_block(header_size);
                 // in.read(meta_block.data(), static_cast<std::streamsize>(header_size));
                 std::cout << "Header size: " << header_size << std::endl;
-                std::vector<char> meta_block((*this)[Slice{8, header_size+8}].data, (*this)[Slice{8, header_size+8}].data + header_size);
+                std::vector<char> meta_block((*this)[Slice{8, header_size+8}].data.data, (*this)[Slice{8, header_size+8}].data.data + header_size);
                 const auto metadatas = json::parse(meta_block);
 
                 // How many bytes remaining to pre-allocate the storage tensor

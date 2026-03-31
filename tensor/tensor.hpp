@@ -17,7 +17,7 @@ class Tensor
 public:
     Shape<rank> shape;
     Shape<rank> strides;
-    R *data = NULL;
+    MassagedMemory<R> data;
     BaseMemoryAllocation *storage_pointer = NULL;
     unsigned long bitsize;
 
@@ -56,7 +56,7 @@ public:
         this->shape = storage_pointer->metadata.shape;
         this->strides = storage_pointer->metadata.shape.calc_strides();
         calculate_metadata();
-        data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
+        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
     }
 
     Tensor(AllocationMetadata metadata){
@@ -69,7 +69,7 @@ public:
         this->shape = storage_pointer->metadata.shape;
         this->strides = storage_pointer->metadata.shape.calc_strides();
         calculate_metadata();
-        data = (R*)device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type));
+        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type));
     
     }
     
@@ -81,7 +81,6 @@ public:
         this->shape = __a;
         this->strides = __a.clone();
         calculate_metadata();
-        this->data = datain;
         if (storage_pointer == nullptr){
             this->storage_pointer = new BaseMemoryAllocation(
                 AllocationMetadata::create<R>(
@@ -94,6 +93,22 @@ public:
         }else{
             this->storage_pointer = storage_pointer;
         }
+        this->data = MassagedMemory<R>(AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type), datain, this->storage_pointer);
+
+        this->device->register_allocation(this->storage_pointer);
+    }
+
+    Tensor(Shape<rank> __a, MassagedMemory<R> datain, MemoryLocation memory_device, BaseMemoryAllocation *storage_pointer)
+    {
+        this->device = memory_device.allocation_map;
+        this->bitsize = sizeof(R);
+        this->shape = __a;
+        this->strides = __a.clone();
+        calculate_metadata();
+        
+        this->storage_pointer = storage_pointer;
+     
+        this->data = datain;
 
         this->device->register_allocation(this->storage_pointer);
     }
@@ -145,7 +160,7 @@ public:
         // ){
         //     i.end = shape[0] - (i.end + (reducedims!=0));
         // }
-        R* startingpointer = data;//(R*)device->get_massaged_pointer((R *)data, device->default_compute_type);
+        MassagedMemory<R> startingpointer = data;//(R*)device->get_massaged_pointer((R *)data, device->default_compute_type);
         int ndim = shape.ndim();
         int ii = 1;
         for (; ii <= ndim ; ii++)
@@ -157,7 +172,8 @@ public:
         
         if constexpr (newrank == 0)
         {
-            return *((R *)startingpointer);
+            // should only return cpu editable scalar if possible
+            return *(startingpointer.data);
         }
         else{
         auto newshape = Shape<newrank>();
@@ -320,36 +336,29 @@ public:
 
         Tensor<R, v> b{a, data, *device, storage_pointer};
 
-        if (shape == a)
-        {
-            b.strides = strides;
-            return b;
-        }
-
-        for (size_t i = 1; i < a.ndim()+1; i++)
-        {
-            if(shape.ndim() > i && a[-i%a.ndim()] != shape[-i%shape.ndim()] && shape[-i%shape.ndim()] != 1){
-                std::cerr << "Incompatible shapes for broadcast" << std::endl;
-                std::cerr << i << "\n";
-                std::cerr << "Shape: " << shape << " Broadcast shape: " << a << std::endl;
-                std::cerr << "Shape: " << shape[-i%shape.ndim()] << " Broadcast shape: " << a[-i%a.ndim()] << std::endl;
-                throw std::runtime_error("Incompatible shapes for broadcast");
-            }
-            if (shape.ndim() < i || shape[-i] == 1)
-            {
-                b.strides[-i] = 0;
-                if(i < shape.ndim()){
-                    for (size_t j = i+1; j < a.ndim()+1; j++)
-                    {
-                        b.strides[-j] = b.strides[-j]/ shape[-j];
-                    }
-                }
-            }
-        }
         b.indexer = indexer;
 
+        b._broadcast(a);
         return b;
     }
+
+    void _broadcast(const Shape<rank>& a)
+    {
+        for (size_t i = 1; i < a.ndim() + 1; i++)
+        {
+            if (shape.ndim() < i || shape[-i] == 1)
+            {
+                strides[-i] = 0;
+            }
+            else if (a[-i] != shape[-i])
+            {
+                std::cerr << "Incompatible shapes for broadcast" << std::endl;
+                std::cerr << "Shape: " << shape << " Broadcast shape: " << a << std::endl;
+                throw std::runtime_error("Incompatible shapes for broadcast");
+            }
+        }
+        shape = a;
+    };
 
     template <int v = rank>
     Tensor<R, 1> tensor_index(const Tensor<unsigned long, v>& index_tensor) const
@@ -375,7 +384,7 @@ public:
             throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
         }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = Tensor<T, rank>(newshape, (T*)data, *device, storage_pointer);
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, MassagedMemory<T>(data.metadata, (T*)(void*)data.data, storage_pointer), *device, storage_pointer);
         return b;   
     }
 
@@ -412,7 +421,9 @@ public:
         }
 
 
-        return Tensor<T, Z>{newshape, (T*)data, *device, storage_pointer};   
+        return Tensor<T, Z>{newshape, 
+            MassagedMemory<T>(data.metadata, (T*)(void*)data.data, storage_pointer)
+            , *device, storage_pointer};   
     }
 
     inline R& flatget(size_t i)
@@ -441,7 +452,7 @@ public:
                 i = i / cshape;
                 ptr += index;       
             }
-            return *(data + *ptr);
+            return *(data.data + *ptr);
         }
         
     }
@@ -552,38 +563,33 @@ public:
         }
         
 
-        // Tensor a = {shape, device_type};
-        
-
-        auto from = (void*)this->data;
-
         BaseMemoryAllocation* result;
 
         AllocationMap& target_device = global_device_manager.get_device(device_type.memory_type, device_type.device_id);
 
         if(indexer != nullptr || strides != shape.calc_strides()){
-            
-            Tensor temp = {shape, *this->device};
-            temp = *this;
-            from = (void*)temp.data;
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
+            std::cout << "Shape: " << shape << " Strides: " << strides << " Calculated strides: " << shape.calc_strides() << std::endl;
+            Tensor output = {shape, device_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type};
+            output = this->to_compute(compute_type);
+            return output;
         }
         else{
-            result = device->convert_memory_type(from, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
-        }
+            result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
+        
 
-        return {
-            shape,
-            (R*)device_type.allocation_map->get_massaged_pointer(
-                result,
-                AllocationMetadata::create<R>(
-                    shape,
-                    device_type.memory_type,
-                    device_type.allocation_map->default_compute_type
-                )
-            ),
-            device_type,
-            result
+            return {
+                shape,
+                device_type.allocation_map->get_massaged_pointer<R>(
+                    result,
+                    AllocationMetadata::create<R>(
+                        shape,
+                        device_type.memory_type,
+                        device_type.allocation_map->default_compute_type
+                    )
+                ),
+                device_type,
+                result
+            };
         };
     };
 
@@ -594,10 +600,19 @@ public:
             throw std::runtime_error("Compute type not supported on device type");
         }
 
-        auto result = this->device->get_massaged_pointer(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type));
+        size_t offset = 0;
+        if (
+            this->storage_pointer->metadata.compute_device == this->data.metadata.compute_device 
+        ){
+            offset = this->data.data - (R*)this->storage_pointer->data;
+        }else{
+            offset = this->data.data - (R*)this->storage_pointer->cached_massaged_pointers[this->data.metadata.hash()];
+        }
+
+        auto result = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type));
         return Tensor<R,rank>{
             shape,
-            (R*)result,
+            result + offset,
             *device,
             storage_pointer
         };
@@ -628,7 +643,9 @@ public:
         this->total_size = other.total_size;
         this->total_bytes = other.total_bytes;
         this->storage_pointer = other.storage_pointer;
-        device->register_allocation(this->storage_pointer);
+        if(this->storage_pointer != nullptr){
+            this->device->register_allocation(this->storage_pointer);
+        }
     }
 };
 
@@ -658,7 +675,7 @@ class Tensor<void, rank> {
         this->shape = other.shape;
         this->strides = other.strides;
         this->bitsize = other.bitsize;
-        this->data = other.data;
+        this->data = other.data.data;
         this->dtype = get_dtype<T>();
         this->storage_pointer = other.storage_pointer;
         device->register_allocation(this->storage_pointer);

@@ -21,6 +21,11 @@ static sampler2D load_texture(std::string filename, MemoryLocation loc = kDDR, C
     int w, h, channels;
     uint8_t* data = (uint8_t*)(void*)stbi_load(filename.c_str(), &w, &h, &channels, 0);
 
+    Tensor<uint8_t,3> imagergba (
+        Shape<3>{(long)w, (long)h, 4},
+        MemoryType::kDDR
+    );
+
     Tensor<uint8_t,3> imagergb (
         Shape<3>{(long)w, (long)h, (long)channels},
         data,
@@ -28,18 +33,15 @@ static sampler2D load_texture(std::string filename, MemoryLocation loc = kDDR, C
     );
 
     if(channels == 4){
-        return *(sampler2D*)&imagergb;
+       imagergba = imagergb;
+    }else{
+        imagergba[{{},{},{0,3}}] = imagergb;
+        imagergba[{{},{},{3}}] = 255;
     }
 
-    Tensor<uint8_t,3> imagergba (
-        Shape<3>{(long)w, (long)h, 4},
-        MemoryType::kDDR
-    );
     
-    imagergba[{{},{},{0,3}}] = imagergb;
-    imagergba[{{},{},{3}}] = 255;
-
-    return *(sampler2D*)&imagergba;
+    
+    return imagergba.view<uint84, 2>({w,h});
 };
 
 
