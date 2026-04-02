@@ -28,7 +28,7 @@ __weak RenderStruct<float32x2,float32x2>* get_overlay_rect(){
 template <typename bufftype>
 class VectorDisplay: public Tensor<bufftype,2>
 {
-
+    using Tensor<bufftype,2>::Tensor; // inherit constructors
     public:
     RenderStruct<float32x2,float32x2> rect;
     bool setup = false;
@@ -37,14 +37,11 @@ class VectorDisplay: public Tensor<bufftype,2>
 
     VectorDisplay() : Tensor<bufftype,2>() {}
 
-    VectorDisplay(const Tensor<bufftype,2>& buffer): 
-    Tensor<bufftype,2>(buffer)        
-    {
-    }
-
+  
     VectorDisplay(Shape<2> shape, ComputeType compute_type = kOPENGL) : Tensor<bufftype,2>(shape, global_device_manager.get_compute_device(kOPENGL).default_memory_type, compute_type)
     {
     }
+    
 
     VectorDisplay(AllocationMetadata m):Tensor<bufftype,2>(m){};
 

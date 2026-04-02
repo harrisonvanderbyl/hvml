@@ -299,10 +299,9 @@ public:
     }
 };
 
-
-struct OpenGLDisplay
+struct BasicDisplay
 {
-public:
+    public:
     void* display = nullptr;
     SDL_Window* window;
     void* root_window = nullptr;
@@ -315,32 +314,16 @@ public:
     CurrentScreenInputInfo current_screen_input_info;
     ComputeDeviceBase* device = nullptr;
     std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
-    VectorDisplay<float16x4> solidParticlesTexture;
-    VectorDisplay<float16x4> finalRenderTexture;
-    VectorDisplay<float> depthbuffer;
+
     
     Clock clock;
-
-    
-    void setupRenderTextures(Shape<2> shape) {
-        // === FRAMEBUFFER 1: Solid particles ===
-        depthbuffer = VectorDisplay<float>(AllocationMetadata::create<float>(shape, device->default_memory_type, kOPENGLTEXTURE, GL_DEPTH_COMPONENT32F));
-
-        solidParticlesTexture = VectorDisplay<float16x4>(shape, kOPENGLTEXTURE);
-        solidParticlesTexture.attach_depth_buffer(depthbuffer);
-        
-        // === FRAMEBUFFER 2: Final render ===
-        finalRenderTexture = VectorDisplay<float16x4>(shape, kOPENGLTEXTURE);
-        finalRenderTexture.depthbuffer = solidParticlesTexture.depthbuffer; // Share depth buffer with solid particles
-  
-    }
 
    
 
     
 
     
-    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
+    BasicDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
         : properties(properties),
           width(shape[0]),
           height(shape[1])
@@ -381,10 +364,32 @@ public:
 
         device = create_opengl_compute_device(0);
 
-        setupRenderTextures(shape);
-
     }
     
+};
+
+
+struct OpenGLDisplay : public BasicDisplay
+{
+    public:
+    VectorDisplay<float16x4> solidParticlesTexture;
+    VectorDisplay<float16x4> finalRenderTexture;
+    VectorDisplay<float> depthbuffer;
+
+    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
+        : BasicDisplay(shape, properties),
+            solidParticlesTexture(shape, kOPENGLTEXTURE),
+            finalRenderTexture(shape, kOPENGLTEXTURE),
+            depthbuffer(AllocationMetadata::create<float>(shape, device->default_memory_type, kOPENGLTEXTURE, GL_DEPTH_COMPONENT32F))
+    {
+
+        solidParticlesTexture.attach_depth_buffer(depthbuffer);
+        // === FRAMEBUFFER 2: Final render ===
+        finalRenderTexture.attach_depth_buffer(depthbuffer); // Share depth buffer 
+    }
+
+
+
 private:
 
 

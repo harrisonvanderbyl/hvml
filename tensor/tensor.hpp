@@ -468,42 +468,41 @@ public:
         return a;
     }
 
-    // print tensor
-    friend std::ostream &operator<<(std::ostream &os, const Tensor<R, rank>& tensorin)
+    std::ostream& print(std::ostream& os, Tensor<R, rank>* original_tensor = nullptr)
     {
-        
         // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
         // tensorc = tensorin;
        
-        if(!tensorin.device->supports_compute_device[kCPU])
+        if(!device->supports_compute_device[kCPU])
         {
-            tensorin.device->synchronize_function();
-            auto tensor = tensorin.to(MemoryType::kDDR, ComputeType::kCPU);
-            tensorin.device->synchronize_function();
-            return os << tensor;
+            device->synchronize_function();
+            auto tensor = to(MemoryType::kDDR, ComputeType::kCPU);
+            device->synchronize_function();
+            return tensor.print(os, this);
         }
 
-
+        if (original_tensor == nullptr){
+            original_tensor = this;
+        }
         
-        auto tensor = tensorin;
         
 
 
         os << "(";
         os << "dtype="<< get_type_string<R>() << ", ";
-        os << "shape=" << tensorin.shape << ", ";
-        os << "strides=" << tensorin.strides << ", ";
-        os << "device_type=" << tensorin.device->this_device_type << "{"<<int(tensorin.device->this_device_type)<<"}, ";
-        os << "device_id=" << tensorin.device->device_id << "";
-        if(tensorin.indexer != nullptr){
+        os << "shape=" << original_tensor->shape << ", ";
+        os << "strides=" << original_tensor->strides << ", ";
+        os << "device_type=" << original_tensor->device->this_device_type << "{"<<int(original_tensor->device->this_device_type)<<"}, ";
+        os << "device_id=" << original_tensor->device->device_id << "";
+        if(original_tensor->indexer != nullptr){
             os << ", indexed";
         }
         os << ")" << "[";
-        if(tensor.total_size <= 4){
-            for (int i = 0; i < tensor.total_size; i++)
+        if(total_size <= 4){
+            for (int i = 0; i < total_size; i++)
             {
-                os << tensor.flatget(i);
-                if (i != tensor.total_size - 1)
+                os << flatget(i);
+                if (i != total_size - 1)
                 {
                     os << ", ";
                 }
@@ -513,7 +512,7 @@ public:
         {
             for (int i = 0; i < 2; i++)
             {
-                os << tensor.flatget(i);
+                os << flatget(i);
                 if (i != 2)
                 {
                     os << ", ";
@@ -522,10 +521,10 @@ public:
             
             os << "..., ";
 
-            for (int i = tensor.total_size - 2; i < tensor.total_size; i++)
+            for (int i = total_size - 2; i < total_size; i++)
             {
-                os << tensor.flatget(i);
-                if (i != tensor.total_size - 1)
+                os << flatget(i);
+                if (i != total_size - 1)
                 {
                     os << ", ";
                 }
@@ -536,6 +535,14 @@ public:
         
         
         return os;
+    }
+
+    // print tensor
+    friend std::ostream &operator<<(std::ostream &os, Tensor<R, rank> tensorin)
+    {
+        
+        return tensorin.print(os);
+        
     }
 
     // operator = for Tensor void

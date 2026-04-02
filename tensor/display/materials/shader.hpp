@@ -364,6 +364,15 @@ struct mytuple
     {
         // default constructor
     }
+
+    friend std::ostream &operator<<(std::ostream &os, const mytuple &t)
+    {
+        os << "mytuple(";
+        size_t offset = 0;
+        ((os << (offset == 0 ? "" : ", ") << *reinterpret_cast<const Ts *>(t.data + offset), offset += sizeof(Ts)), ...);
+        os << ")";
+        return os;
+    }
 };
 
 

@@ -134,7 +134,9 @@ AllocationMap* create_cuda_mapper(int device_id){
             if (original->metadata.compute_device == ComputeType::kOPENGL) {
                 
             } else if (original->metadata.compute_device == ComputeType::kOPENGLTEXTURE) {
-               
+               std::cout << "Unregistering CUDA-GL texture resource for original compute device " << original->metadata.compute_device << std::endl;
+               std::cout << "Original data pointer: " << original->data << std::endl;
+               std::cout << "Original metadata: " << original->metadata << std::endl;
             } else {
                 std::cerr << "No CUDA mapping deallocator found for original compute device " << original->metadata.compute_device << "{" << int(original->metadata.compute_device) << "} on device " << ComputeType::kCUDA << std::endl;
                 throw std::runtime_error("No CUDA mapping deallocator found for original compute device");

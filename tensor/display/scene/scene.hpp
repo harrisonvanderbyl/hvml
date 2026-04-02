@@ -68,7 +68,7 @@ public:
         {
 
             render_textures.push_back(texture.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGLTEXTURE));
-            // std::cout << "Loaded texture: with ID: " << render_texture.texture << std::endl;
+            
         }
 
         for (const auto &material : model.materials)
@@ -215,6 +215,16 @@ public:
 
         // Render cube points with default material
         
+    }
+
+    friend std::ostream &operator<<(std::ostream &os, const Scene &scene)
+    {
+        os << "Scene with " << scene.render_meshes.size() << " meshes, " << scene.render_textures.size() << " textures, and " << scene.render_materials.size() << " materials.";
+        os << "\nMeshes:\n";
+        for (const auto &mesh : scene.render_meshes)        {
+            os << mesh << "\n";
+        }
+        return os;
     }
 };
 
