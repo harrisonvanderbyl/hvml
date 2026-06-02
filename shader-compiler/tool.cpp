@@ -16,6 +16,7 @@
 #include <iomanip>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 using namespace clang;
 using namespace clang::tooling;
@@ -463,11 +464,16 @@ private:
 /// ---------------- AST Consumer
 class ShaderASTConsumer : public ASTConsumer {
 public:
-    explicit ShaderASTConsumer(ASTContext &ctx, Sema &sema,
+    explicit ShaderASTConsumer(CompilerInstance &CI,
                                std::string outputPath, std::string inputPath = "")
-        : Visitor(ctx, sema), Ctx(ctx), OutputPath(outputPath), InputPath(inputPath) {}
+        : CI(CI), OutputPath(std::move(outputPath)), InputPath(std::move(inputPath)) {}
 
     void HandleTranslationUnit(ASTContext &ctx) override {
+        // Sema is only guaranteed to exist once parsing has started, so we grab
+        // it here rather than in CreateASTConsumer.
+        Sema &S = CI.getSema();
+        Visitor = std::make_unique<ShaderVisitor>(ctx, S);
+
         // ----------------------------------------------------------------
         // Step 1: Collect all ClassTemplateDecls annotated with "shader"
         // ----------------------------------------------------------------
@@ -497,7 +503,7 @@ public:
         // ----------------------------------------------------------------
         for (auto &usage : usageCollector.getUsages()) {
             forceInstantiateTemplateWithArgs(
-                usage.CTD, usage.Args, Visitor.getSema(), ctx);
+                usage.CTD, usage.Args, S, ctx);
         }
 
         // ----------------------------------------------------------------
@@ -507,7 +513,7 @@ public:
         for (auto *ctd : shaderTemplates) {
             for (auto *spec : ctd->specializations()) {
                 if (!spec->isCompleteDefinition()) {
-                    Visitor.getSema().InstantiateClassTemplateSpecializationMembers(
+                    S.InstantiateClassTemplateSpecializationMembers(
                         spec->getLocation(), spec,
                         TSK_ExplicitInstantiationDefinition);
                 }
@@ -518,7 +524,7 @@ public:
         // Step 5: Normal traversal — VisitClassTemplateSpecializationDecl
         //         will now find all the specializations we just created
         // ----------------------------------------------------------------
-        Visitor.TraverseDecl(ctx.getTranslationUnitDecl());
+        Visitor->TraverseDecl(ctx.getTranslationUnitDecl());
 
         // ----------------------------------------------------------------
         // Step 6: Emit output
@@ -526,7 +532,7 @@ public:
         std::string headerOutput;
         headerOutput += "#include \"display/materials/materials.hpp\"\n";
 
-        for (auto &s : Visitor.shaders) {
+        for (auto &s : Visitor->shaders) {
             llvm::outs() << "==== Vertex Shader (" << s.struct_name << ") ====\n" << s.vertex << "\n";
             llvm::outs() << "==== Fragment Shader (" << s.struct_name << ") ====\n" << s.fragment << "\n";
             headerOutput += compileAndGenerateHeader(s);
@@ -545,8 +551,8 @@ public:
     }
 
 private:
-    ShaderVisitor Visitor;
-    ASTContext &Ctx;
+    CompilerInstance &CI;
+    std::unique_ptr<ShaderVisitor> Visitor;
     std::string OutputPath;
     std::string InputPath;
 
@@ -671,8 +677,9 @@ std::string inputFileName;
 class ShaderFrontendAction : public ASTFrontendAction {
 public:
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef) override {
-        return std::make_unique<ShaderASTConsumer>(
-            CI.getASTContext(), CI.getSema(), OutputPath, inputFileName);
+        // NOTE: do NOT call CI.getSema() here — Sema isn't constructed until
+        // ParseAST runs. The consumer grabs it lazily in HandleTranslationUnit.
+        return std::make_unique<ShaderASTConsumer>(CI, OutputPath, inputFileName);
     }
 };
 

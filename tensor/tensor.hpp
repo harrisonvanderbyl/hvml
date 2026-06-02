@@ -628,7 +628,7 @@ public:
     // destructor
     ~Tensor()
     {
-        if(data != NULL){
+        if(data.data != NULL){
             device->deallocate(storage_pointer);
         }
     }
