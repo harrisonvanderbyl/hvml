@@ -165,8 +165,8 @@ public:
         int ii = 1;
         for (; ii <= ndim ; ii++)
         {
-            int shapeofset = shape[-ii];
-            int start = (inp[ndim-ii].start + shapeofset) % shapeofset;
+            long shapeofset = shape[-ii];
+            long start = (static_cast<long>(inp[ndim-ii].start) + shapeofset) % shapeofset;
             startingpointer += start * strides[-ii];
         }
         
@@ -195,7 +195,7 @@ public:
                 }
                 else
                 {
-                    int spot = (int(inp[i].end) - int(inp[i].start) + (shape[i]))%shape[i];
+                    long spot = (static_cast<long>(inp[i].end) - static_cast<long>(inp[i].start) + shape[i]) % shape[i];
                     if(inp[i].end.is_default){
                         spot = shape[i] - (inp[i].start);
                         // newshape[j] = spot / inp[i].step; this doesnt work, eg {1::2} on a shape of 5 should give 2 not 3/2
@@ -392,17 +392,32 @@ public:
     inline Tensor<T, Z> view(Shape<Z> newshape)
     {
         bool has_neg = false;
+        size_t known_elements = 1;
         for(int i = 0; i < newshape.ndim(); i++){
             if(newshape[i] == -1){
                 if (has_neg){
                     std::cerr << "Only one dimension can be -1" << std::endl;
                     throw std::runtime_error("Only one dimension can be -1");
                 }
-                
-                int total = -newshape.total_size();
-                int missing = (total_size*bitsize) / (total * sizeof(T));
-                newshape[i] = missing;
                 has_neg = true;
+                continue;
+            }
+            known_elements *= static_cast<size_t>(newshape[i]);
+        }
+
+        if (has_neg) {
+            const size_t element_bytes = sizeof(T);
+            const size_t new_total_elements = total_bytes / element_bytes;
+            if (known_elements == 0 || (new_total_elements % known_elements) != 0) {
+                std::cerr << "Cannot infer -1 dimension for view" << std::endl;
+                throw std::runtime_error("Cannot infer -1 dimension for view");
+            }
+            const long missing = static_cast<long>(new_total_elements / known_elements);
+            for (int i = 0; i < newshape.ndim(); i++) {
+                if (newshape[i] == -1) {
+                    newshape[i] = missing;
+                    break;
+                }
             }
         }
 

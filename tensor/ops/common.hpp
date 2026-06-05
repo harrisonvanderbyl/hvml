@@ -61,8 +61,8 @@ struct Parameter {
             }
         }
 
-        int rem = index_flat;
-        int offset = 0;
+        long rem = index_flat;
+        long offset = 0;
         for (long adim = ndim - 1; adim >= 0; adim--) {
             long coord = rem % shape[adim];
             rem /= shape[adim];
@@ -76,9 +76,9 @@ struct Parameter {
     };
 
     __host__ __device__ unsigned long get_total_size() {
-        int total = 1;
+        unsigned long total = 1;
         for (long i = 0; i < ndim; i++) {
-            total *= shape[i];
+            total *= static_cast<unsigned long>(shape[i]);
         }
         return total;
     }
