@@ -242,10 +242,10 @@ struct AssignmentHelper<AssignmentType::InplaceAdd,ComputeType::kHIP> {
 
 template <ComputeType device, typename OP,
           typename... Args>
-class BinaryKernel: public Kernel<device, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>, Parameter<Args>...> 
+class BinaryKernel: public Kernel<device, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>, Parameter<Args>...> 
 {
     // Specializations will be defined below
-    void inline call( unsigned long total_size,
+    void inline call(int device_id, unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
     )
@@ -259,6 +259,7 @@ class BinaryKernel: public Kernel<device, unsigned long, Parameter<typename Outp
 
 template <typename OP, typename... Args>
 __weak void call_cuda(
+    int device_id,
     unsigned long total_size,
     Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
     Parameter<Args>... params
@@ -267,6 +268,7 @@ __weak void call_cuda(
 
 template <typename OP, typename... Args>
 __weak void call_hip(
+    int device_id,
     unsigned long total_size,
     Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
     Parameter<Args>... params
@@ -274,17 +276,19 @@ __weak void call_hip(
 
 template <typename OP, typename... Args>
 struct BinaryKernel<ComputeType::kCUDA, OP, Args...>
-    : public Kernel<ComputeType::kCUDA, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
+    : public Kernel<ComputeType::kCUDA, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
 {
 public:
 
     void inline call(
+        int device_id,
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
     ) override 
     {
         call_cuda<OP, Args...>(
+            device_id,
             total_size,
             output,
             params...
@@ -294,17 +298,19 @@ public:
 
 template <typename OP, typename... Args>
 struct BinaryKernel<ComputeType::kHIP, OP, Args...>
-    : public Kernel<ComputeType::kHIP, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
+    : public Kernel<ComputeType::kHIP, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
 {
 public:
 
     void inline call(
+        int device_id,
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
     ) override 
     {
         call_hip<OP, Args...>(
+            device_id,
             total_size,
             output,
             params...
@@ -315,11 +321,12 @@ public:
 
 template <typename OP, typename... Args>
 struct BinaryKernel<ComputeType::kCPU, OP, Args...>
-    : public Kernel<ComputeType::kCPU, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
+    : public Kernel<ComputeType::kCPU, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
 {
 public:
 
     void inline call(
+        int,
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
         Parameter<Args>... params
@@ -350,13 +357,89 @@ public:
 // ================================================================
 // Operation Application Helper
 // ================================================================
+template <typename T>
+struct IsTensorArgument : std::false_type {};
+
+template <typename T, int dim>
+struct IsTensorArgument<Tensor<T, dim>> : std::true_type {};
+
+template <typename T>
+inline constexpr bool IsTensorArgumentV = IsTensorArgument<std::decay_t<T>>::value;
+
+template <typename T>
+const AllocationMap* get_tensor_device_or_null(const T&) {
+    return nullptr;
+}
+
+template <typename T, int dim>
+const AllocationMap* get_tensor_device_or_null(const Tensor<T, dim>& tensor) {
+    return tensor.device;
+}
+
+struct KernelExecutionTarget {
+    const AllocationMap* storage_device;
+    ComputeType compute_type;
+    int compute_device_id;
+};
+
+template <typename T, int dim>
+ComputeType get_tensor_compute_type(const Tensor<T, dim>& tensor) {
+    if (tensor.data.metadata.compute_device != ComputeType::kUnknown) {
+        return tensor.data.metadata.compute_device;
+    }
+    return tensor.device->default_compute_type;
+}
+
+template <typename T, int dim>
+int get_tensor_compute_device_id(const Tensor<T, dim>& tensor, ComputeType compute_type) {
+    if (compute_type == ComputeType::kCPU || compute_type == ComputeType::kFILE || compute_type == ComputeType::kUnknown) {
+        return 0;
+    }
+    if (tensor.data.metadata.compute_device == compute_type) {
+        return tensor.data.metadata.device_id;
+    }
+    return tensor.device->device_id;
+}
+
+template <typename First, typename... Rest>
+KernelExecutionTarget resolve_kernel_device(const First& first, const Rest&... rest) {
+    static_assert(IsTensorArgumentV<First>, "Kernel operations require a tensor as the first argument");
+
+    KernelExecutionTarget resolved_target{
+        first.device,
+        get_tensor_compute_type(first),
+        get_tensor_compute_device_id(first, get_tensor_compute_type(first))
+    };
+
+    auto validate_device = [&](const auto& arg) {
+        using ArgType = std::decay_t<decltype(arg)>;
+        if constexpr (IsTensorArgumentV<ArgType>) {
+            const AllocationMap* arg_device = get_tensor_device_or_null(arg);
+            const ComputeType arg_compute_type = get_tensor_compute_type(arg);
+            const int arg_compute_device_id = get_tensor_compute_device_id(arg, arg_compute_type);
+
+            if (arg_compute_type != resolved_target.compute_type ||
+                arg_compute_device_id != resolved_target.compute_device_id) {
+                std::cerr << "Resolved device: " << *resolved_target.storage_device << std::endl;
+                std::cerr << "Argument device: " << *arg_device << std::endl;
+                std::cerr << "Resolved compute: " << resolved_target.compute_type << " device_id=" << resolved_target.compute_device_id << std::endl;
+                std::cerr << "Argument compute: " << arg_compute_type << " device_id=" << arg_compute_device_id << std::endl;
+                throw std::runtime_error("All tensor arguments must share the same compute device for kernel execution");
+            }
+        }
+    };
+
+    (validate_device(rest), ...);
+    return resolved_target;
+}
+
 template <typename OP, ComputeType device = ComputeType::kCPU>
 class ApplyKernelOperationHelper {
 public:
 
     template < typename... types>
     static auto
-    apply(const Parameter<types>&... params)
+    apply(const KernelExecutionTarget& target_device, const Parameter<types>&... params)
     {
         // constexpr int out_dims = std::max(AD, BD);
         Shape<-1> out_shape = OP::get_output_shape(
@@ -377,7 +460,7 @@ public:
 
             size_t allocate_size = OP::get_allocate_size(out_shape);
 
-            auto out_param = Tensor<Out, -1>({allocate_size}, global_device_manager.get_compute_device(device,0).default_memory_type, device);
+            auto out_param = Tensor<Out, -1>({allocate_size}, MemoryLocation(target_device.storage_device->this_device_type, target_device.storage_device->device_id), device);
             // if out has an assignment operator that can handle = 0
             out_param.template view<uint8_t,1>({-1}) = 0; // set to zero for operations that require it, like inplace add
             
@@ -386,6 +469,7 @@ public:
 
             out_param.strides = OP::broadcast_output_strides(out_shape);
             kernel(
+                target_device.compute_device_id,
                 total,
                 out_param,
                 OP::broadcast_param(params,out_shape)...
@@ -398,6 +482,7 @@ public:
         
         else {
             kernel(
+                target_device.compute_device_id,
                 total,
                 Parameter<void>(),
                 OP::broadcast_param(params,out_shape)...
@@ -419,15 +504,15 @@ struct OperationSelector {
     inline static auto run(const Tensor<A, AD>& a, const B&... b)           
     {                                   
         // OPERATION is the current class calling this operator(), including its decendents, so if a decendent calls this function, it will use its own apply function                                               
-        auto& mem_device = *a.device;
-        ComputeType compute_type = mem_device.default_compute_type;
+        const auto target_device = resolve_kernel_device(a, b...);
+        ComputeType compute_type = target_device.compute_type;
         switch (compute_type) {
             case ComputeType::kCPU:
-                return ApplyKernelOperationHelper<OP, ComputeType::kCPU>::apply(Parameter(a), Parameter(b)...);
+                return ApplyKernelOperationHelper<OP, ComputeType::kCPU>::apply(target_device, Parameter(a), Parameter(b)...);
             case ComputeType::kCUDA:
-                return ApplyKernelOperationHelper<OP, ComputeType::kCUDA>::apply(Parameter(a), Parameter(b)...);
+                return ApplyKernelOperationHelper<OP, ComputeType::kCUDA>::apply(target_device, Parameter(a), Parameter(b)...);
             case ComputeType::kHIP:
-                return ApplyKernelOperationHelper<OP, ComputeType::kHIP>::apply(Parameter(a), Parameter(b)...);
+                return ApplyKernelOperationHelper<OP, ComputeType::kHIP>::apply(target_device, Parameter(a), Parameter(b)...);
             default:
                 throw std::runtime_error("Unsupported compute type");
         }                                                                          

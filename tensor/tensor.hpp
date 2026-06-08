@@ -52,16 +52,16 @@ public:
         // printf("ndim: %d\n", __a.ndim());
         this->shape = __a;
         this->strides = __a.clone();
-        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_allocator_type:compute_type));
+        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_allocator_type:compute_type, 0, AllocationFlags::kRW, memory_device.device_id));
         this->shape = storage_pointer->metadata.shape;
         this->strides = storage_pointer->metadata.shape.calc_strides();
         calculate_metadata();
-        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type));
+        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type, 0, AllocationFlags::kRW, memory_device.device_id));
     }
 
     Tensor(AllocationMetadata metadata){
         this->bitsize = sizeof(R);
-        this->device = MemoryLocation(metadata.storage_device).allocation_map;
+        this->device = MemoryLocation(metadata.storage_device, metadata.device_id).allocation_map;
         this->shape = metadata.shape;
         this->strides = this->shape.clone();
         calculate_metadata();
@@ -69,7 +69,7 @@ public:
         this->shape = storage_pointer->metadata.shape;
         this->strides = storage_pointer->metadata.shape.calc_strides();
         calculate_metadata();
-        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type));
+        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(metadata.shape, metadata.storage_device, device->default_compute_type, 0, AllocationFlags::kRW, metadata.device_id));
     
     }
     
@@ -86,14 +86,17 @@ public:
                 AllocationMetadata::create<R>(
                     __a,
                     memory_device.memory_type,
-                    this->device->default_compute_type
+                    this->device->default_compute_type,
+                    0,
+                    AllocationFlags::kRW,
+                    memory_device.device_id
                 ),
                 datain
             );
         }else{
             this->storage_pointer = storage_pointer;
         }
-        this->data = MassagedMemory<R>(AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type), datain, this->storage_pointer);
+        this->data = MassagedMemory<R>(AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type, 0, AllocationFlags::kRW, memory_device.device_id), datain, this->storage_pointer);
 
         this->device->register_allocation(this->storage_pointer);
     }
@@ -596,7 +599,7 @@ public:
             return output;
         }
         else{
-            result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type));
+            result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
         
 
             return {
@@ -606,7 +609,10 @@ public:
                     AllocationMetadata::create<R>(
                         shape,
                         device_type.memory_type,
-                        device_type.allocation_map->default_compute_type
+                        device_type.allocation_map->default_compute_type,
+                        0,
+                        AllocationFlags::kRW,
+                        device_type.device_id
                     )
                 ),
                 device_type,
@@ -631,7 +637,14 @@ public:
             offset = this->data.data - (R*)this->storage_pointer->cached_massaged_pointers[this->data.metadata.hash()];
         }
 
-        auto result = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type));
+        int compute_device_id = this->data.metadata.device_id;
+        if (compute_type == ComputeType::kCPU || compute_type == ComputeType::kFILE || compute_type == ComputeType::kUnknown) {
+            compute_device_id = 0;
+        } else if (this->data.metadata.compute_device != compute_type) {
+            compute_device_id = this->device->device_id;
+        }
+
+        auto result = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type, 0, AllocationFlags::kRW, compute_device_id));
         return Tensor<R,rank>{
             shape,
             result + offset,

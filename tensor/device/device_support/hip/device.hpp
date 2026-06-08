@@ -14,6 +14,7 @@ void HIP_ERROR_CHECK(hipError_t err){
 AllocationMap* create_hip_mapper(int device_id){
     // Create HIP AllocationMap
     AllocationMap* mapper = new AllocationMap();
+        mapper->device_id = device_id;
         hipDeviceProp_t prop;
         HIP_ERROR_CHECK(hipGetDeviceProperties(&prop, device_id));
         mapper->default_compute_type = ComputeType::kHIP;

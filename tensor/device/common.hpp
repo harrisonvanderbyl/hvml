@@ -368,6 +368,7 @@ __weak int count_cpu_devices(){
 __weak AllocationMap* create_cpu_mapper(int device_id){
         // No special properties for CPU
     AllocationMap* mapper = new AllocationMap();
+    mapper->device_id = device_id;
     mapper->default_compute_type = ComputeType::kCPU;
     mapper->default_allocator_type = ComputeType::kCPU;
     mapper->supports_compute_device[ComputeType::kCPU] = true;
@@ -540,6 +541,7 @@ __weak DeviceManager global_device_manager;
 __weak AllocationMap* create_disk_mapper(int device_id){
     // No special properties for disk memory, but we can implement swapping to disk later
     AllocationMap* mapper = new AllocationMap();
+    mapper->device_id = device_id;
     mapper->default_compute_type = ComputeType::kCPU; // default to CPU compute for disk memory
     mapper->default_allocator_type = ComputeType::kFILE;
     mapper->supports_compute_device[ComputeType::kCPU] = true;

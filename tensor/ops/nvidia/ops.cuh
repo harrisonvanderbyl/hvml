@@ -62,11 +62,14 @@ static __inline__ __attribute__((host)) cudaError_t cudaLaunchKernel(
 
 template <typename OP, typename... Args>
 void call_cuda(
+    int device_id,
     unsigned long total_size,
     Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
     Parameter<Args>... params
 )  
 {
+
+    CUDA_ERROR_CHECK(cudaSetDevice(device_id));
 
     int threadsPerBlock = 256;
     auto firstParamShape = std::get<0>(std::tuple<Parameter<Args>...>(params...)).shape;

@@ -13,6 +13,7 @@ AllocationMap* create_cuda_mapper(int device_id){
    
 
         AllocationMap* mapper = new AllocationMap();
+    mapper->device_id = device_id;
         cudaDeviceProp prop;
         CUDA_ERROR_CHECK(cudaGetDeviceProperties(&prop, device_id));
         mapper->default_compute_type = ComputeType::kCUDA;
