@@ -60,7 +60,7 @@ __global__ void OPKERNEL_HIP(
         }
         else {
           
-           AssignmentHelper<OP::assignment_type,kCUDA>::assignOperation(output.get_index(global_idx) , OP::apply(
+           AssignmentHelper<OP::assignment_type,kHIP>::assignOperation(output.get_index(global_idx) , OP::apply(
                 params.get_index(global_idx)...
             ));
         }
@@ -69,11 +69,14 @@ __global__ void OPKERNEL_HIP(
 
 template <typename OP, typename... Args>
 void call_hip(
+        int device_id,
         unsigned long total_size,
         Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
         Parameter<Args>... params
     ) 
     {
+
+        HIP_ERROR_CHECK(hipSetDevice(device_id));
 
         int threadsPerBlock = 256;
         auto firstParamShape = std::get<0>(std::tuple<Parameter<Args>...>(params...)).shape;
