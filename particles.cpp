@@ -279,9 +279,8 @@ __weak int main(){
     OpenGLDisplay window({1024,1024},  WP_ON_TOP);
     Scene scene(&window);
 
-    Tensor<uint84,2> mypointer = Tensor<uint84,2>({1024,768}, window.device->default_memory_type, kOPENGL);
  
-    VectorDisplay display(mypointer);
+    VectorDisplay<float16x4> display({1024,768}, kOPENGL);
 
     global_device_manager.get_device(MemoryType::kDDR,0).default_compute_type = ComputeType::kCPU;
 
@@ -539,12 +538,13 @@ __weak int main(){
 
 
         particles_renderable.bind();
-        camera.bind(particles_renderable.material->shader_program);
+        camera.bind(*particles_renderable.material);
         // // // blend mode additive
         // glDisable(GL_BLEND);
         // // // add blend mode, source + destination
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        mat4::identity().bind(particles_renderable.material->shader_program, "model");
+
+        // mat4::identity().bind(particles_renderable.material, "model");
 
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
         // set depthOnly to 1.0f
@@ -578,7 +578,7 @@ __weak int main(){
         particles_renderable_liquid.bind();
         glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
         glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
-        camera.bind(particles_renderable_liquid.material->shader_program);
+        camera.bind(*particles_renderable_liquid.material);
         particles_renderable_liquid.draw();
 
         // glaDepthMask(true); // re-enable adepth writing
