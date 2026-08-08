@@ -1,0 +1,8 @@
+godot-cpp/
+demo/bin/
+*.so
+*.dll
+*.framework/
+*.os
+*.a
+.sconsign.dblite
