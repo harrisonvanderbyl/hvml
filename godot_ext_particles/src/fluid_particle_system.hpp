@@ -49,7 +49,7 @@ class FluidParticleSystem : public Node3D {
 
 public:
     enum DebugMode {
-        DEBUG_NONE         = 0,  // normal simulation + CompositorEffect render
+        DEBUG_NONE         = 0,  // normal simulation + real ray-sphere/liquid render
         DEBUG_BOUNDING_BOX = 1,  // wire-frame grid AABB overlay
         DEBUG_SIMPLE_POINTS= 2,  // point-only render (no ray-sphere), simulation runs
         DEBUG_STATIC       = 3,  // no compute, particles at spawn positions only
@@ -68,8 +68,10 @@ public:
     void set_grid_height(int v);    int get_grid_height()    const { return grid_height; }
     void set_grid_depth(int v);     int get_grid_depth()     const { return grid_depth; }
     void set_num_particles(int v);  int get_num_particles()  const { return num_particles; }
-    void set_gravity(float v)       { gravity = v; }
-    float get_gravity()             const { return gravity; }
+    void set_gravity(Vector3 v)    { gravity_vec = v; }
+    Vector3 get_gravity()           const { return gravity_vec; }
+    void set_gravity_local(bool v)  { gravity_local = v; }
+    bool get_gravity_local()        const { return gravity_local; }
     void set_surface_tension(float v) { surface_tension = v; }
     float get_surface_tension()     const { return surface_tension; }
     void set_water_viscosity(float v) { water_viscosity = v; }
@@ -143,7 +145,8 @@ private:
     int   grid_height     = 256;    // aheight
     int   grid_depth      = 256;    // adepth
     int   num_particles   = 10000000; // 100*100*1000
-    float gravity         = 0.1f;   // gravity
+    Vector3 gravity_vec   = Vector3(0, -0.1f, 0);  // gravity vector (world or local)
+    bool    gravity_local = true;   // if true, transformed by node basis into grid space
     float surface_tension = 1.1f;   // surfaceTension
     float water_viscosity = 1.0f;   // waterviscosity
     float attraction_force = 1.0f;  // global multiplier on per-particle attraction/repulsion
@@ -159,14 +162,11 @@ private:
     Color     initial_chunk_color     = Color(1.0f, 1.0f, 1.0f, 1.0f);  // solid white
     float     initial_chunk_attraction = 0.0f;  // solid particles have 0 attraction
 
-    // ── rendering ─────────────────────────────────────────────────────────
-    // Rendering is handled by FluidParticleEffect (CompositorEffect), which
-    // reads particle_buf directly on the render thread — no CPU copy.
-    // The system just holds a pointer to notify the effect when the buffer
-    // RID changes (e.g. after a resize).
-    class FluidParticleEffect *render_effect = nullptr;
+    // ── rendering ────────────────────────────────────────────────
+    // A normal MeshInstance3D (debug_pts_node) rebuilds its ArrayMesh every
+    // frame from a CPU readback of particle_buf. See _update_debug_points().
 
-    // ── RenderingDevice compute pipeline ──────────────────────────────────
+    // ── RenderingDevice compute pipeline ────────────────────────
     RenderingDevice *rd = nullptr;
 
     // GPU buffers (RIDs)
@@ -174,7 +174,6 @@ private:
     RID chunk_buf;
     RID runnable_buf;
     RID sort_key_buf;
-    RID uniform_buf;      // push-constant / UBO for per-dispatch params
 
     // Pipelines
     RID clear_pipeline;
@@ -200,9 +199,11 @@ private:
     int              debug_mode      = DEBUG_NONE;
     MeshInstance3D  *debug_bb_node   = nullptr;   // bounding-box wire frame
     Ref<ImmediateMesh> debug_bb_mesh;
-    MeshInstance3D  *debug_pts_node  = nullptr;   // simple-points fallback
+    MeshInstance3D  *debug_pts_node  = nullptr;   // shared points node (real shader or flat debug shader)
     Ref<ArrayMesh>   debug_pts_mesh;
-    Ref<ShaderMaterial> debug_material;
+    Ref<ShaderMaterial> debug_material;   // flat, unshaded (SIMPLE_POINTS / STATIC)
+    Ref<ShaderMaterial> render_material;  // full ray-sphere/liquid spatial shader (NONE)
+    String render_shader_path = "res://addons/fluid_particles/shaders/particle_render.gdshader";
 
     void _rebuild_debug_bb();
     void _update_debug_points();
@@ -212,9 +213,6 @@ private:
     void _dispatch_clear_grid();
     void _dispatch_physics(Vector3 global_add_velocity);
     void _dispatch_sortkey();
-
-    RID  _load_shader(const String &glsl_path, const String &entry);
-    RID  _make_uniform_set(RID pipeline, TypedArray<RDUniform> uniforms, uint32_t set_index);
 };
 
 }  // namespace godot

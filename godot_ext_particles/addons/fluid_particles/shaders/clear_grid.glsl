@@ -12,7 +12,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(push_constant, std430) uniform PushConstants {
     int   grid_w, grid_h, grid_d;
     int   num_particles;
-    float gravity;
+    vec3 gravity;
     float surface_tension;
     float water_viscosity;
     float _pad0;

@@ -1,6 +1,5 @@
 #include "register_types.hpp"
 #include "fluid_particle_system.hpp"
-#include "fluid_particle_effect.hpp"
 #include "fluid_source_sink.hpp"
 
 #include <godot_cpp/core/defs.hpp>
@@ -13,7 +12,6 @@ void initialize_fluid_particles_module(ModuleInitializationLevel p_level) {
         return;
     }
     ClassDB::register_class<FluidParticleSystem>();
-    ClassDB::register_class<FluidParticleEffect>();
     ClassDB::register_abstract_class<FluidSourceBase>();
     ClassDB::register_class<FluidSource>();
     ClassDB::register_class<FluidSink>();

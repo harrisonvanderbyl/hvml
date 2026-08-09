@@ -9,15 +9,16 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(push_constant, std430) uniform PushConstants {
     int   grid_w, grid_h, grid_d;
     int   num_particles;
-    float gravity;
     float surface_tension;
     float water_viscosity;
-    float attraction_force;  // global multiplier on per-particle attraction
-    vec3  global_vel;
+    float attraction_force;
+    float _pad0;         // padding before vec3s
+    vec3  gravity;       // gravity vector in grid space
     int   frame_count;
+    vec3  global_vel;
     int   neighbor_mode;
     int   num_runnable;
-    int   _pad1[2];
+    int   _pad1[3];
 } pc;
 
 struct Particle {
@@ -143,7 +144,7 @@ void main() {
         p.neighbors_filled = 0.0;
     }
 
-    //momentum.y -= pc.gravity + vec3(2.0,2.0,2.0);
+    momentum -= pc.gravity;
 
     float sz = 1.0;
     if (p.position.y < 1.0 + sz || p.position.y > float(pc.grid_h) - 1.0 - sz) {
