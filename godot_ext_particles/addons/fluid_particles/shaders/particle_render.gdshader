@@ -12,7 +12,7 @@
 //   Depth-only pass   : controlled by the "depth_only" uniform (set externally)
 
 shader_type spatial;
-render_mode unshaded, depth_draw_always, cull_disabled, skip_vertex_transform;
+render_mode unshaded;//, depth_draw_always, cull_disabled, skip_vertex_transform;
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 uniform sampler2D texture1       : source_color, filter_linear_mipmap, repeat_enable;
@@ -31,11 +31,11 @@ void vertex() {
     float neighbors_filled = CUSTOM0.z;
 
     // Kill invisible or fully-buried particles
-    if (neighbors_filled < 0.5) {
-        POSITION    = vec4(0.0);
-        POINT_SIZE  = 0.0;
-        return;
-    }
+    //if (neighbors_filled < 0.5) {
+        //POSITION    = vec4(0.0);
+        //POINT_SIZE  = 0.0;
+       //
+    //}
 
     bool is_solid = (COLOR.a > (200.0 / 255.0));
 
@@ -48,7 +48,7 @@ void vertex() {
         radius      = 1.0;
         radius_grow = 0.0;
         // Surface-coverage colour blend (liquid look)
-        float blend = pow(1.0 - neighbors_filled / 15.0, 3.0);
+        float blend = 0.0f;//pow(1.0 - neighbors_filled / 15.0, 3.0);
         final_color.rgb = mix(COLOR.rgb, vec3(0.5), blend);
     }
 
@@ -63,20 +63,18 @@ void vertex() {
     v_world_pos = world;
 
     // Camera world position (extract from inverse view)
-    v_cam_pos = vec4(INV_VIEW_MATRIX[3][0],
-                     INV_VIEW_MATRIX[3][1],
-                     INV_VIEW_MATRIX[3][2], 1.0);
+    v_cam_pos.xyz = CAMERA_POSITION_WORLD;
 
     // Eye-space position for point size calculation
     vec4 eye_pos = VIEW_MATRIX * world;
-    POSITION = PROJECTION_MATRIX * eye_pos;
-
+    //POSITION = PROJECTION_MATRIX * eye_pos;
+	
     float dist        = length(eye_pos.xyz);
     float focal_len   = PROJECTION_MATRIX[1][1];
-    POINT_SIZE = (radius * focal_len * screen_height) / max(dist, 0.001);
+    POINT_SIZE = (radius * VIEWPORT_SIZE.y) / max(dist, 0.001);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
+//
+//// ─────────────────────────────────────────────────────────────────────────────
 void fragment() {
     // Discard outside circle
     vec2  puv    = POINT_COORD - vec2(0.5);
@@ -87,9 +85,8 @@ void fragment() {
     if (depth_only > 0.5) {
         ALBEDO = vec3(0.0);
         DEPTH  = FRAGCOORD.z;
-        return;
-    }
-
+        
+    }else{
     bool is_solid = (v_color.a > (200.0 / 255.0));
 
     // ── Reconstruct world-space ray ───────────────────────────────────────────
@@ -138,8 +135,8 @@ void fragment() {
         vec3 final_color = bg_color * water_tint + v_color.rgb + vec3(fresnel * 0.143);
         ALBEDO           = final_color;
         ALPHA            = 1.0;
-        return;
-    }
+      
+    }else{
 
     // ── Solid particle — directional light (from above) + triplanar texture ──
     float light = max(dot(normal, vec3(0.0, 1.0, 0.0)), 0.0);
@@ -167,4 +164,4 @@ void fragment() {
 
     ALBEDO = base_color * light;
     ALPHA  = v_color.a;
-}
+}}}

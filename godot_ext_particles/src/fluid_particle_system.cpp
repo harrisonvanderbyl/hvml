@@ -82,14 +82,7 @@ void FluidParticleSystem::_bind_methods() {
     ClassDB::bind_method(D_METHOD("reset_grid"),
                          &FluidParticleSystem::reset_grid);
 
-    // Debug
-    ClassDB::bind_method(D_METHOD("set_debug_mode","v"), &FluidParticleSystem::set_debug_mode);
-    ClassDB::bind_method(D_METHOD("get_debug_mode"),     &FluidParticleSystem::get_debug_mode);
     ClassDB::bind_method(D_METHOD("get_grid_aabb"),      &FluidParticleSystem::get_grid_aabb);
-    BIND_ENUM_CONSTANT(DEBUG_NONE);
-    BIND_ENUM_CONSTANT(DEBUG_BOUNDING_BOX);
-    BIND_ENUM_CONSTANT(DEBUG_SIMPLE_POINTS);
-    BIND_ENUM_CONSTANT(DEBUG_STATIC);
 
     // Shader paths
     ClassDB::bind_method(D_METHOD("set_clear_shader_path","v"),   &FluidParticleSystem::set_clear_shader_path);
@@ -98,12 +91,8 @@ void FluidParticleSystem::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_physics_shader_path"),      &FluidParticleSystem::get_physics_shader_path);
     ClassDB::bind_method(D_METHOD("set_sortkey_shader_path","v"), &FluidParticleSystem::set_sortkey_shader_path);
     ClassDB::bind_method(D_METHOD("get_sortkey_shader_path"),      &FluidParticleSystem::get_sortkey_shader_path);
-    ClassDB::bind_method(D_METHOD("set_debug_shader_path","v"),   &FluidParticleSystem::set_debug_shader_path);
-    ClassDB::bind_method(D_METHOD("get_debug_shader_path"),        &FluidParticleSystem::get_debug_shader_path);
-
-    ADD_PROPERTY(PropertyInfo(Variant::INT, "debug_mode",
-        PROPERTY_HINT_ENUM, "None,BoundingBox,SimplePoints,Static"),
-        "set_debug_mode", "get_debug_mode");
+    ClassDB::bind_method(D_METHOD("set_render_shader_path","v"),  &FluidParticleSystem::set_render_shader_path);
+    ClassDB::bind_method(D_METHOD("get_render_shader_path"),       &FluidParticleSystem::get_render_shader_path);
 
     // Shader paths group
     ADD_GROUP("Shaders", "");
@@ -113,8 +102,8 @@ void FluidParticleSystem::_bind_methods() {
         PROPERTY_HINT_FILE, "*.glsl"), "set_physics_shader_path", "get_physics_shader_path");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "sortkey_shader_path",
         PROPERTY_HINT_FILE, "*.glsl"), "set_sortkey_shader_path", "get_sortkey_shader_path");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "debug_shader_path",
-        PROPERTY_HINT_FILE, "*.gdshader,*.glsl"), "set_debug_shader_path", "get_debug_shader_path");
+    ADD_PROPERTY(PropertyInfo(Variant::STRING, "render_shader_path",
+        PROPERTY_HINT_FILE, "*.gdshader"), "set_render_shader_path", "get_render_shader_path");
     ADD_GROUP("", "");
 
     ADD_PROPERTY(PropertyInfo(Variant::INT,   "grid_width"),      "set_grid_width",      "get_grid_width");
@@ -145,107 +134,36 @@ void FluidParticleSystem::set_grid_height(int v)  { grid_height = v; }
 void FluidParticleSystem::set_grid_depth(int v)   { grid_depth  = v; }
 void FluidParticleSystem::set_num_particles(int v){ num_particles = v; }
 
-void FluidParticleSystem::set_debug_mode(int v) {
-    debug_mode = v;
-    // Show/hide debug nodes immediately when mode changes
-    if (debug_bb_node)  debug_bb_node->set_visible(debug_mode == DEBUG_BOUNDING_BOX);
-    if (debug_pts_node) {
-        // Points node is visible for NONE (real shader), SIMPLE_POINTS and
-        // STATIC (flat debug shader) — only hidden for BOUNDING_BOX.
-        debug_pts_node->set_visible(debug_mode != DEBUG_BOUNDING_BOX);
-        if (debug_mode == DEBUG_NONE && render_material.is_valid()) {
-            debug_pts_node->set_material_override(render_material);
-        } else if (debug_material.is_valid()) {
-            debug_pts_node->set_material_override(debug_material);
-        }
-    }
-    if (debug_mode == DEBUG_BOUNDING_BOX) _rebuild_debug_bb();
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
-// Draw the grid AABB as a wireframe box using ImmediateMesh lines
+// Ensure the render node exists (lazy-created): a MeshInstance3D whose
+// ArrayMesh is rebuilt every frame from a CPU readback of particle_buf,
+// shaded by particle_render.gdshader (real ray-sphere/liquid rendering with
+// automatic camera matrices via Godot's own render pipeline).
 // ─────────────────────────────────────────────────────────────────────────────
-void FluidParticleSystem::_rebuild_debug_bb() {
-    if (!debug_bb_mesh.is_valid()) return;
-    debug_bb_mesh->clear_surfaces();
-    debug_bb_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
+void FluidParticleSystem::_ensure_render_node() {
+    if (render_node) return;
 
-    float w = grid_width, h = grid_height, d = grid_depth;
-    // 8 corners of the AABB
-    Vector3 c[8] = {
-        {0,0,0},{w,0,0},{w,h,0},{0,h,0},
-        {0,0,d},{w,0,d},{w,h,d},{0,h,d}
-    };
-    // 12 edges
-    int edges[12][2] = {
-        {0,1},{1,2},{2,3},{3,0}, // front face
-        {4,5},{5,6},{6,7},{7,4}, // back face
-        {0,4},{1,5},{2,6},{3,7}  // connecting edges
-    };
-    for (auto &e : edges) {
-        debug_bb_mesh->surface_set_color(Color(0.2f,1.0f,0.4f,1.0f));
-        debug_bb_mesh->surface_add_vertex(c[e[0]]);
-        debug_bb_mesh->surface_add_vertex(c[e[1]]);
-    }
-    debug_bb_mesh->surface_end();
-}
+    Ref<Shader> shader;
+    shader.instantiate();
+    Ref<FileAccess> sf = FileAccess::open(render_shader_path, FileAccess::READ);
+    if (sf.is_valid()) shader->set_code(sf->get_as_text());
+    else UtilityFunctions::printerr("FluidParticleSystem: cannot open render shader: ", render_shader_path);
+    render_material.instantiate();
+    render_material->set_shader(shader);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Ensure debug/render scene nodes exist (lazy-created).
-// debug_pts_node is the ONE points node used both as the primary render path
-// (DEBUG_NONE, using particle_render.gdshader — a full spatial-shader port of
-// the ray-sphere/liquid rendering with real camera matrices for free) and as
-// the flat debug view (SIMPLE_POINTS / STATIC, using particle_debug.gdshader).
-// Both read the same CPU-readback ArrayMesh built in _update_debug_points().
-// ─────────────────────────────────────────────────────────────────────────────
-void FluidParticleSystem::_ensure_debug_nodes() {
-    // Bounding-box wire frame
-    if (!debug_bb_node) {
-        debug_bb_mesh.instantiate();
-        debug_bb_node = memnew(MeshInstance3D);
-        debug_bb_node->set_mesh(debug_bb_mesh);
-        add_child(debug_bb_node);
-        _rebuild_debug_bb();
-    }
-
-    if (!debug_pts_node) {
-        // Flat debug shader (SIMPLE_POINTS / STATIC)
-        Ref<Shader> dbg_shader;
-        dbg_shader.instantiate();
-        Ref<FileAccess> sf = FileAccess::open(debug_shader_path, FileAccess::READ);
-        if (sf.is_valid()) dbg_shader->set_code(sf->get_as_text());
-        else UtilityFunctions::printerr("FluidParticleSystem: cannot open debug shader: ", debug_shader_path);
-        debug_material.instantiate();
-        debug_material->set_shader(dbg_shader);
-
-        // Full ray-sphere/liquid spatial shader (DEBUG_NONE — the real render path)
-        Ref<Shader> render_shader;
-        render_shader.instantiate();
-        Ref<FileAccess> rsf = FileAccess::open(render_shader_path, FileAccess::READ);
-        if (rsf.is_valid()) render_shader->set_code(rsf->get_as_text());
-        else UtilityFunctions::printerr("FluidParticleSystem: cannot open render shader: ", render_shader_path);
-        render_material.instantiate();
-        render_material->set_shader(render_shader);
-
-        debug_pts_mesh.instantiate();
-        debug_pts_node = memnew(MeshInstance3D);
-        debug_pts_node->set_mesh(debug_pts_mesh);
-        debug_pts_node->set_material_override(
-            debug_mode == DEBUG_NONE ? render_material : debug_material);
-        add_child(debug_pts_node);
-    }
-
-    debug_bb_node->set_visible(debug_mode == DEBUG_BOUNDING_BOX);
-    debug_pts_node->set_visible(debug_mode != DEBUG_BOUNDING_BOX);
+    render_mesh.instantiate();
+    render_node = memnew(MeshInstance3D);
+    render_node->set_mesh(render_mesh);
+    render_node->set_material_override(render_material);
+    add_child(render_node);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CPU readback → ArrayMesh(PRIMITIVE_POINTS) with CUSTOM0 (attraction_force,
-// opacity_fade, neighbors_filled). Drives both the debug flat-shader view AND
-// the primary real-shader render path — rebuilt every frame from particle_buf.
+// opacity_fade, neighbors_filled), rebuilt every frame from particle_buf.
 // ─────────────────────────────────────────────────────────────────────────────
-void FluidParticleSystem::_update_debug_points() {
-    if (!debug_pts_mesh.is_valid() || !rd || !particle_buf.is_valid()) return;
+void FluidParticleSystem::_update_render_mesh() {
+    if (!render_mesh.is_valid() || !rd || !particle_buf.is_valid()) return;
 
     PackedByteArray raw = rd->buffer_get_data(particle_buf);
     if (raw.is_empty()) return;
@@ -266,7 +184,7 @@ void FluidParticleSystem::_update_debug_points() {
     }
 
     if (active_count == 0) {
-        if (debug_pts_mesh->get_surface_count() > 0) debug_pts_mesh->clear_surfaces();
+        if (render_mesh->get_surface_count() > 0) render_mesh->clear_surfaces();
         return;
     }
 
@@ -297,8 +215,8 @@ void FluidParticleSystem::_update_debug_points() {
     arrays[Mesh::ARRAY_VERTEX]  = positions;
     arrays[Mesh::ARRAY_COLOR]   = colors;
     arrays[Mesh::ARRAY_CUSTOM0] = custom0;
-    if (debug_pts_mesh->get_surface_count() > 0) debug_pts_mesh->clear_surfaces();
-    debug_pts_mesh->add_surface_from_arrays(
+    if (render_mesh->get_surface_count() > 0) render_mesh->clear_surfaces();
+    render_mesh->add_surface_from_arrays(
         Mesh::PRIMITIVE_POINTS, arrays, TypedArray<Array>(), Dictionary(),
         (BitField<Mesh::ArrayFormat>)((int64_t)Mesh::ARRAY_CUSTOM_RGBA_FLOAT << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT));
 }
@@ -306,21 +224,20 @@ void FluidParticleSystem::_update_debug_points() {
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_enter_tree() {
     _build_gpu_resources();
-    _ensure_debug_nodes();
+    _ensure_render_node();
 }
 
 void FluidParticleSystem::_exit_tree() {
     _destroy_gpu_resources();
-    // debug nodes are children and freed automatically
+    // render_node is a child and freed automatically
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_build_gpu_resources() {
-    // Use a LOCAL RenderingDevice: rendering now goes through a normal
-    // MeshInstance3D + CPU-readback ArrayMesh (see _update_debug_points),
-    // not a CompositorEffect sharing buffers with the render thread's main
-    // device. A local device gives deterministic submit()/sync() semantics
-    // needed for correct, non-stale buffer_get_data() readbacks.
+    // Use a LOCAL RenderingDevice: rendering goes through a normal
+    // MeshInstance3D + CPU-readback ArrayMesh (see _update_render_mesh), not
+    // a shared render-thread device. A local device gives deterministic
+    // submit()/sync() semantics needed for correct, non-stale readbacks.
     rd = RenderingServer::get_singleton()->create_local_rendering_device();
     if (!rd) {
         UtilityFunctions::printerr("FluidParticleSystem: Could not create RenderingDevice.");
@@ -478,9 +395,9 @@ void FluidParticleSystem::_build_gpu_resources() {
     }
 
     // ── Rendering ──────────────────────────────────────────────────────────
-    // Rendering goes through a normal MeshInstance3D (debug_pts_node) whose
+    // Rendering goes through a normal MeshInstance3D (render_node) whose
     // ArrayMesh is rebuilt each frame from a CPU readback of particle_buf
-    // (see _update_debug_points). This uses Godot's ordinary render pipeline
+    // (see _update_render_mesh). This uses Godot's ordinary render pipeline
     // (automatic camera matrices, sorting, shadows) via particle_render.gdshader.
     gpu_ready = true;
     UtilityFunctions::print("FluidParticleSystem: GPU resources ready.");
@@ -516,15 +433,9 @@ void FluidParticleSystem::_destroy_gpu_resources() {
 void FluidParticleSystem::_process(double delta) {
     if (!gpu_ready) return;
 
-    // DEBUG_STATIC: render spawn positions without running any compute
-    if (debug_mode == DEBUG_STATIC) {
-        _update_debug_points();
-        return;
-    }
-
     // Simulation can be paused from the editor
     if (!simulation_active) {
-        _update_debug_points();  // keep the render mesh in sync with frozen state
+        _update_render_mesh();  // keep the render mesh in sync with frozen state
         return;
     }
 
@@ -559,12 +470,11 @@ void FluidParticleSystem::_process(double delta) {
     rd->submit();
     rd->sync();
 
-    // Rebuild the ArrayMesh from the compute results every frame. This drives
-    // both the primary render path (DEBUG_NONE, particle_render.gdshader —
-    // real ray-sphere/liquid shading via a normal MeshInstance3D, automatic
-    // camera matrices/sorting/shadows from Godot's own pipeline) and the flat
-    // debug view (SIMPLE_POINTS).
-    _update_debug_points();
+    // Rebuild the ArrayMesh from the compute results every frame, shaded by
+    // particle_render.gdshader (real ray-sphere/liquid rendering) through a
+    // normal MeshInstance3D — automatic camera matrices/sorting/shadows come
+    // from Godot's own render pipeline.
+    _update_render_mesh();
 
     frame_count++;
 }

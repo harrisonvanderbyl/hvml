@@ -3,7 +3,6 @@
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/rd_shader_file.hpp>
 #include <godot_cpp/classes/rd_uniform.hpp>
-#include <godot_cpp/classes/immediate_mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/array_mesh.hpp>
 #include <godot_cpp/classes/shader_material.hpp>
@@ -48,13 +47,6 @@ class FluidParticleSystem : public Node3D {
     GDCLASS(FluidParticleSystem, Node3D)
 
 public:
-    enum DebugMode {
-        DEBUG_NONE         = 0,  // normal simulation + real ray-sphere/liquid render
-        DEBUG_BOUNDING_BOX = 1,  // wire-frame grid AABB overlay
-        DEBUG_SIMPLE_POINTS= 2,  // point-only render (no ray-sphere), simulation runs
-        DEBUG_STATIC       = 3,  // no compute, particles at spawn positions only
-    };
-
     FluidParticleSystem();
     ~FluidParticleSystem();
 
@@ -104,17 +96,15 @@ public:
     String get_physics_shader_path() const { return physics_shader_path; }
     void   set_sortkey_shader_path(const String &v) { sortkey_shader_path = v; }
     String get_sortkey_shader_path() const { return sortkey_shader_path; }
-    void   set_debug_shader_path(const String &v)  { debug_shader_path = v; }
-    String get_debug_shader_path()  const { return debug_shader_path; }
+    void   set_render_shader_path(const String &v)  { render_shader_path = v; }
+    String get_render_shader_path()  const { return render_shader_path; }
 
     // Spawn helpers callable from GDScript
     void spawn_block(Vector3 origin, int w, int h, int d, Color color, float attraction);
     void add_velocity_impulse(Vector3 impulse);
     void reset_grid();  // explicitly clear chunk grid (occupants + velocities)
 
-    // Debug
-    void  set_debug_mode(int v);
-    int   get_debug_mode() const { return debug_mode; }
+    // Grid bounding box, used by the editor gizmo (plugin.gd)
     AABB  get_grid_aabb()  const {
         return AABB(Vector3(0,0,0), Vector3((float)grid_width,(float)grid_height,(float)grid_depth));
     }
@@ -138,7 +128,7 @@ private:
     String clear_shader_path   = "res://addons/fluid_particles/shaders/clear_grid.glsl";
     String physics_shader_path = "res://addons/fluid_particles/shaders/velocity_spread.glsl";
     String sortkey_shader_path = "res://addons/fluid_particles/shaders/depth_sort_key.glsl";
-    String debug_shader_path   = "res://addons/fluid_particles/shaders/particle_debug.gdshader";
+    String render_shader_path  = "res://addons/fluid_particles/shaders/particle_render.gdshader";
 
     // ── simulation parameters (matching particles.cpp reference) ──────────
     int   grid_width      = 256;    // awidth
@@ -163,8 +153,9 @@ private:
     float     initial_chunk_attraction = 0.0f;  // solid particles have 0 attraction
 
     // ── rendering ────────────────────────────────────────────────
-    // A normal MeshInstance3D (debug_pts_node) rebuilds its ArrayMesh every
-    // frame from a CPU readback of particle_buf. See _update_debug_points().
+    // A normal MeshInstance3D (render_node) rebuilds its ArrayMesh every frame
+    // from a CPU readback of particle_buf, shaded by particle_render.gdshader
+    // (real ray-sphere/liquid rendering). See _update_render_mesh().
 
     // ── RenderingDevice compute pipeline ────────────────────────
     RenderingDevice *rd = nullptr;
@@ -195,19 +186,13 @@ private:
     bool      impulse_pending = false;
     bool      gpu_ready    = false;
 
-    // ── debug ──────────────────────────────────────────────────────────────
-    int              debug_mode      = DEBUG_NONE;
-    MeshInstance3D  *debug_bb_node   = nullptr;   // bounding-box wire frame
-    Ref<ImmediateMesh> debug_bb_mesh;
-    MeshInstance3D  *debug_pts_node  = nullptr;   // shared points node (real shader or flat debug shader)
-    Ref<ArrayMesh>   debug_pts_mesh;
-    Ref<ShaderMaterial> debug_material;   // flat, unshaded (SIMPLE_POINTS / STATIC)
-    Ref<ShaderMaterial> render_material;  // full ray-sphere/liquid spatial shader (NONE)
-    String render_shader_path = "res://addons/fluid_particles/shaders/particle_render.gdshader";
+    // ── render mesh ──────────────────────────────────────────────────────────
+    MeshInstance3D  *render_node  = nullptr;   // real ray-sphere/liquid render node
+    Ref<ArrayMesh>   render_mesh;
+    Ref<ShaderMaterial> render_material;  // full ray-sphere/liquid spatial shader
 
-    void _rebuild_debug_bb();
-    void _update_debug_points();
-    void _ensure_debug_nodes();
+    void _update_render_mesh();
+    void _ensure_render_node();
     void _build_gpu_resources();
     void _destroy_gpu_resources();
     void _dispatch_clear_grid();
@@ -216,5 +201,3 @@ private:
 };
 
 }  // namespace godot
-
-VARIANT_ENUM_CAST(godot::FluidParticleSystem::DebugMode);

@@ -1,63 +1,21 @@
 @tool
 extends EditorPlugin
 
-# ─── FluidParticleSystem editor plugin ───────────────────────────────────────
+# --- FluidParticleSystem editor plugin ---------------------------------------
 # Drop this addon into res://addons/fluid_particles/ of any Godot 4.3+ project.
 # Provides:
-#   • Bounding-box gizmo drawn in the 3-D viewport
-#   • Inspector-editable shader paths with defaults pointing to addon shaders
-#   • Toolbar debug-mode selector
-# ─────────────────────────────────────────────────────────────────────────────
-
-const ADDON_BASE   := "res://addons/fluid_particles"
-const SHADER_DIR   := ADDON_BASE + "/shaders"
+#   - Bounding-box gizmo drawn in the 3-D viewport
+#   - Inspector-editable shader paths with defaults pointing to addon shaders
+# ------------------------------------------------------------------------------
 
 var _gizmo_plugin: FluidGizmoPlugin = null
-var _toolbar: HBoxContainer         = null
-var _mode_btn: OptionButton         = null
 
 func _enter_tree() -> void:
 	_gizmo_plugin = FluidGizmoPlugin.new()
 	add_node_3d_gizmo_plugin(_gizmo_plugin)
 
-	_toolbar = HBoxContainer.new()
-	var lbl := Label.new()
-	lbl.text = "Fluid Debug: "
-	_toolbar.add_child(lbl)
-
-	_mode_btn = OptionButton.new()
-	_mode_btn.add_item("None",             0)
-	_mode_btn.add_item("Bounding Box",     1)
-	_mode_btn.add_item("Simple Points",    2)
-	_mode_btn.add_item("Static (no sim)",  3)
-	_mode_btn.connect("item_selected", _on_mode_selected)
-	_toolbar.add_child(_mode_btn)
-
-	add_control_to_container(EditorPlugin.CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
-
 func _exit_tree() -> void:
 	remove_node_3d_gizmo_plugin(_gizmo_plugin)
-	if _toolbar:
-		remove_control_from_container(EditorPlugin.CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
-		_toolbar.queue_free()
-
-# ── Toolbar ───────────────────────────────────────────────────────────────────
-func _on_mode_selected(idx: int) -> void:
-	var root := get_editor_interface().get_edited_scene_root()
-	if root:
-		_apply_mode_recursive(root, idx)
-
-func _apply_mode_recursive(node: Node, mode: int) -> void:
-	if node.get_class() == "FluidParticleSystem":
-		node.set("debug_mode", mode)
-	for child in node.get_children():
-		_apply_mode_recursive(child, mode)
-
-# ── Node creation helper ──────────────────────────────────────────────────────
-# Called when the user instantiates a new FluidParticleSystem from the scene
-# editor — fills in default shader paths from the addon.
-func _make_visible(visible: bool) -> void:
-	pass  # nothing extra to show/hide
 
 func _handles(object: Object) -> bool:
 	return object != null and object.get_class() == "FluidParticleSystem"
@@ -66,7 +24,7 @@ func _edit(object: Object) -> void:
 	if _gizmo_plugin and object:
 		update_overlays()
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 class FluidGizmoPlugin extends EditorNode3DGizmoPlugin:
 
 	func _get_gizmo_name() -> String:
