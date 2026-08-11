@@ -91,8 +91,8 @@ void FluidParticleSystem::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_physics_shader_path"),      &FluidParticleSystem::get_physics_shader_path);
     ClassDB::bind_method(D_METHOD("set_sortkey_shader_path","v"), &FluidParticleSystem::set_sortkey_shader_path);
     ClassDB::bind_method(D_METHOD("get_sortkey_shader_path"),      &FluidParticleSystem::get_sortkey_shader_path);
-    ClassDB::bind_method(D_METHOD("set_render_shader_path","v"),  &FluidParticleSystem::set_render_shader_path);
-    ClassDB::bind_method(D_METHOD("get_render_shader_path"),       &FluidParticleSystem::get_render_shader_path);
+    ClassDB::bind_method(D_METHOD("set_render_material","v"),  &FluidParticleSystem::set_render_material);
+    ClassDB::bind_method(D_METHOD("get_render_material"),       &FluidParticleSystem::get_render_material);
 
     // Shader paths group
     ADD_GROUP("Shaders", "");
@@ -102,8 +102,8 @@ void FluidParticleSystem::_bind_methods() {
         PROPERTY_HINT_FILE, "*.glsl"), "set_physics_shader_path", "get_physics_shader_path");
     ADD_PROPERTY(PropertyInfo(Variant::STRING, "sortkey_shader_path",
         PROPERTY_HINT_FILE, "*.glsl"), "set_sortkey_shader_path", "get_sortkey_shader_path");
-    ADD_PROPERTY(PropertyInfo(Variant::STRING, "render_shader_path",
-        PROPERTY_HINT_FILE, "*.gdshader"), "set_render_shader_path", "get_render_shader_path");
+    ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "render_material",
+        PROPERTY_HINT_RESOURCE_TYPE, "ShaderMaterial"), "set_render_material", "get_render_material");
     ADD_GROUP("", "");
 
     ADD_PROPERTY(PropertyInfo(Variant::INT,   "grid_width"),      "set_grid_width",      "get_grid_width");
@@ -135,26 +135,78 @@ void FluidParticleSystem::set_grid_depth(int v)   { grid_depth  = v; }
 void FluidParticleSystem::set_num_particles(int v){ num_particles = v; }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Default render shader path. Used to pre-fill the render_shader resource when
+// it has not been set (or has been cleared) in the inspector.
+// ─────────────────────────────────────────────────────────────────────────────
+static const char *DEFAULT_RENDER_SHADER_PATH =
+    "res://addons/fluid_particles/shaders/particle_render.gdshader";
+
+// Loads the default particle render shader code into a new Shader resource.
+static Ref<Shader> _load_default_render_shader() {
+    Ref<Shader> shader;
+    shader.instantiate();
+    Ref<FileAccess> sf = FileAccess::open(DEFAULT_RENDER_SHADER_PATH, FileAccess::READ);
+    if (sf.is_valid()) {
+        shader->set_code(sf->get_as_text());
+    } else {
+        UtilityFunctions::printerr("FluidParticleSystem: cannot open default render shader: ",
+                                    DEFAULT_RENDER_SHADER_PATH);
+    }
+    return shader;
+}
+
+void FluidParticleSystem::set_render_material(const Ref<ShaderMaterial> &v) {
+    render_material = v;
+
+    if (render_material.is_valid()) {
+        // If the material has no shader or empty code, pre-fill with the default
+        // particle render shader so the user can edit code + uniforms immediately.
+        Ref<Shader> shader = render_material->get_shader();
+        if (shader.is_null() || shader->get_code().is_empty()) {
+            render_material->set_shader(_load_default_render_shader());
+        }
+    }
+
+    // If the render node already exists, swap the material override live.
+    // Using the user's ShaderMaterial directly means shader/uniform edits
+    // are reflected instantly by Godot's own resource signaling.
+    if (render_node) {
+        if (render_material.is_valid()) {
+            render_node->set_material_override(render_material);
+        } else if (internal_material.is_valid()) {
+            render_node->set_material_override(internal_material);
+        }
+    }
+}
+
+Ref<ShaderMaterial> FluidParticleSystem::get_render_material() const {
+    return render_material;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Ensure the render node exists (lazy-created): a MeshInstance3D whose
 // ArrayMesh is rebuilt every frame from a CPU readback of particle_buf,
-// shaded by particle_render.gdshader (real ray-sphere/liquid rendering with
-// automatic camera matrices via Godot's own render pipeline).
+// shaded by the render_shader resource (defaults to particle_render.gdshader).
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_ensure_render_node() {
     if (render_node) return;
 
-    Ref<Shader> shader;
-    shader.instantiate();
-    Ref<FileAccess> sf = FileAccess::open(render_shader_path, FileAccess::READ);
-    if (sf.is_valid()) shader->set_code(sf->get_as_text());
-    else UtilityFunctions::printerr("FluidParticleSystem: cannot open render shader: ", render_shader_path);
-    render_material.instantiate();
-    render_material->set_shader(shader);
+    // If the user hasn't set a render_material, create an internal default
+    // material from the addon's particle_render.gdshader. This is NOT exposed
+    // as the property — the property stays null so the user knows they're
+    // using the built-in default.
+    if (render_material.is_null() && internal_material.is_null()) {
+        internal_material.instantiate();
+        internal_material->set_shader(_load_default_render_shader());
+    }
+
+    // Use the user's material if set, otherwise the internal default.
+    Ref<ShaderMaterial> mat = render_material.is_valid() ? render_material : internal_material;
 
     render_mesh.instantiate();
     render_node = memnew(MeshInstance3D);
     render_node->set_mesh(render_mesh);
-    render_node->set_material_override(render_material);
+    render_node->set_material_override(mat);
     add_child(render_node);
 }
 

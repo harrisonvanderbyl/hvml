@@ -96,8 +96,12 @@ public:
     String get_physics_shader_path() const { return physics_shader_path; }
     void   set_sortkey_shader_path(const String &v) { sortkey_shader_path = v; }
     String get_sortkey_shader_path() const { return sortkey_shader_path; }
-    void   set_render_shader_path(const String &v)  { render_shader_path = v; }
-    String get_render_shader_path()  const { return render_shader_path; }
+    // Render material resource. If null, uses the addon's particle_render.gdshader
+    // internally (not editable). If set in the inspector with an empty shader, the
+    // default particle render code is copied in so the user can edit code + uniforms
+    // per-instance. Edits to the shader or uniform values reflect instantly.
+    void   set_render_material(const Ref<ShaderMaterial> &v);
+    Ref<ShaderMaterial> get_render_material() const;
 
     // Spawn helpers callable from GDScript
     void spawn_block(Vector3 origin, int w, int h, int d, Color color, float attraction);
@@ -128,13 +132,16 @@ private:
     String clear_shader_path   = "res://addons/fluid_particles/shaders/clear_grid.glsl";
     String physics_shader_path = "res://addons/fluid_particles/shaders/velocity_spread.glsl";
     String sortkey_shader_path = "res://addons/fluid_particles/shaders/depth_sort_key.glsl";
-    String render_shader_path  = "res://addons/fluid_particles/shaders/particle_render.gdshader";
+    // User-facing ShaderMaterial property. null → use internal_material (default).
+    Ref<ShaderMaterial> render_material;
+    // Internal default material, created when render_material is null.
+    Ref<ShaderMaterial> internal_material;
 
     // ── simulation parameters (matching particles.cpp reference) ──────────
     int   grid_width      = 256;    // awidth
     int   grid_height     = 256;    // aheight
     int   grid_depth      = 256;    // adepth
-    int   num_particles   = 10000000; // 100*100*1000
+    int   num_particles   = 262144; // 100*100*100
     Vector3 gravity_vec   = Vector3(0, -0.1f, 0);  // gravity vector (world or local)
     bool    gravity_local = true;   // if true, transformed by node basis into grid space
     float surface_tension = 1.1f;   // surfaceTension
@@ -148,7 +155,7 @@ private:
     // ── initial chunk fill (matching particles.cpp reference spawn) ────────
     bool      use_initial_chunk       = true;
     Vector3   initial_chunk_origin    = Vector3(2, 2, 2);
-    Vector3i  initial_chunk_size      = Vector3i(32, 32, 32);
+    Vector3i  initial_chunk_size      = Vector3i(64, 64, 64);
     Color     initial_chunk_color     = Color(1.0f, 1.0f, 1.0f, 1.0f);  // solid white
     float     initial_chunk_attraction = 0.0f;  // solid particles have 0 attraction
 
@@ -189,7 +196,6 @@ private:
     // ── render mesh ──────────────────────────────────────────────────────────
     MeshInstance3D  *render_node  = nullptr;   // real ray-sphere/liquid render node
     Ref<ArrayMesh>   render_mesh;
-    Ref<ShaderMaterial> render_material;  // full ray-sphere/liquid spatial shader
 
     void _update_render_mesh();
     void _ensure_render_node();

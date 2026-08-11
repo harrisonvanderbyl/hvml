@@ -43,7 +43,26 @@ struct Particle {
     float _pad1[4];
 };
 
-layout(set = 0, binding = 0, std430) buffer ParticleBuffer { Particle particles[]; };
+struct ChunkCell {
+    int  occupant;
+    uint vel_x_bits;
+    uint vel_y_bits;
+    uint vel_z_bits;
+    uint vel_w_bits;
+    uint _pad[3];
+};
+
+layout(set = 0, binding = 0, std430) buffer ParticleBuffer { Particle   particles[]; };
+layout(set = 0, binding = 1, std430) buffer ChunkBuffer    { ChunkCell cells[]; };
+
+int cell_index(ivec3 p) {
+    p = clamp(p, ivec3(0), ivec3(pc.grid_w - 1, pc.grid_h - 1, pc.grid_d - 1));
+    return p.x + p.y * pc.grid_w + p.z * pc.grid_w * pc.grid_h;
+}
+
+bool cell_try_place(int cidx, int pidx) {
+    return atomicCompSwap(cells[cidx].occupant, -1, pidx) == -1;
+}
 
 // Shared atomic counter — how many particles we've claimed/released this dispatch
 shared int s_claimed;
@@ -112,6 +131,14 @@ void main() {
         particles[gid].opacity_fade     = pc.opacity_fade;
         particles[gid].neighbors_filled = 0.0;
 
+        // Claim the grid cell so the physics step sees this particle as occupied.
+        // If the cell is already taken, release the particle back to the inactive
+        // pool rather than overlapping another occupant.
+        ivec3 cell_pos = ivec3(round(particles[gid].position));
+        if (!cell_try_place(cell_index(cell_pos), int(gid))) {
+            set_inactive(int(gid));
+        }
+
     } else {
         // ── SINK: deactivate active particles near world_pos ─────────────────
         if (is_inactive(int(gid))) return;
@@ -121,6 +148,13 @@ void main() {
 
         int slot = atomicAdd(s_claimed, 1);
         if (slot >= pc.max_count) return;
+
+        // Free the grid cell so other particles can move into it.
+        // Only clear if we still own this cell — avoids evicting a neighbor
+        // that may have swapped in during the physics step.
+        ivec3 cell_pos = ivec3(round(particles[gid].position));
+        int   cidx     = cell_index(cell_pos);
+        atomicCompSwap(cells[cidx].occupant, int(gid), -1);
 
         set_inactive(int(gid));
     }

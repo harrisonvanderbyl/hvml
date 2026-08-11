@@ -12,11 +12,12 @@
 //   Depth-only pass   : controlled by the "depth_only" uniform (set externally)
 
 shader_type spatial;
-render_mode unshaded;//, depth_draw_always, cull_disabled, skip_vertex_transform;
-
+render_mode unshaded;//, cull_disabled, skip_vertex_transform;
+uniform sampler2D depth_texture : hint_depth_texture, repeat_disable, filter_nearest;
 // ── Uniforms ──────────────────────────────────────────────────────────────────
 uniform sampler2D texture1       : source_color, filter_linear_mipmap, repeat_enable;
 uniform sampler2D screen_texture : hint_screen_texture, filter_linear;
+uniform vec3 water_tint : source_color;
 uniform float     screen_height  = 1024.0;
 uniform float     depth_only     = 0.0;  // 1.0 = depth-only pass
 
@@ -112,11 +113,16 @@ void fragment() {
 
     float t              = (-b - sqrt(discriminant)) / (2.0 * a);
     vec3  hit            = v_cam_pos.xyz + t * ray_dir;
-
-    // Write correct sphere depth
+	float depth = textureLod(depth_texture, SCREEN_UV, 0.0).r;
+    vec4 upos = INV_PROJECTION_MATRIX * vec4(SCREEN_UV * 2.0 - 1.0, depth, 1.0);
+	// Write correct sphere depth
     vec4 clip_hit = PROJECTION_MATRIX * VIEW_MATRIX * vec4(hit, 1.0);
-    DEPTH = (clip_hit.z / clip_hit.w) * 0.5 + 0.5;
-
+    //if((clip_hit.z / clip_hit.w) * 0.5 + 0.5 > depth){
+		//discard;
+	//}
+	
+	DEPTH = (clip_hit.z / clip_hit.w) ;
+	
     vec3 normal = normalize(hit - v_world_pos.xyz);
 
     // ── Liquid particle — screen-space refraction + Fresnel ──────────────────
@@ -131,7 +137,6 @@ void fragment() {
         vec3  view_dir = normalize(v_cam_pos.xyz - hit);
         float fresnel  = pow(1.0 - abs(dot(view_dir, normal)), 3.0);
 
-        vec3 water_tint  = vec3(0.85, 0.92, 1.0);
         vec3 final_color = bg_color * water_tint + v_color.rgb + vec3(fresnel * 0.143);
         ALBEDO           = final_color;
         ALPHA            = 1.0;
