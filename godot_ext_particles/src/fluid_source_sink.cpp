@@ -25,7 +25,6 @@ struct SourceSinkPC {
     int32_t attrib_stride_words;
     int32_t color_offset_words;
     int32_t custom0_offset_words;
-    int32_t _pad1;  // pad to 16-byte alignment
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
