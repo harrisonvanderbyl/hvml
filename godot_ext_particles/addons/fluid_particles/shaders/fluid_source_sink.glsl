@@ -30,18 +30,11 @@ layout(push_constant, std430) uniform PushConstants {
     int   max_count;     // max particles to activate/deactivate this dispatch
     int   num_particles; // total particles in buffer
     int   grid_w, grid_h, grid_d;
-    int   _pad;
+    int   vertex_stride_floats;
+    int   attrib_stride_words;
+    int   color_offset_words;
+    int   custom0_offset_words;
 } pc;
-
-struct Particle {
-    vec3  position;
-    float _pad0;
-    uint  color_packed;
-    float attraction_force;
-    float opacity_fade;
-    float neighbors_filled;
-    float _pad1[4];
-};
 
 struct ChunkCell {
     int  occupant;
@@ -52,8 +45,26 @@ struct ChunkCell {
     uint _pad[3];
 };
 
-layout(set = 0, binding = 0, std430) buffer ParticleBuffer { Particle   particles[]; };
-layout(set = 0, binding = 1, std430) buffer ChunkBuffer    { ChunkCell cells[]; };
+layout(set = 0, binding = 0, std430) buffer VertexBuffer { float vtx[]; };
+layout(set = 0, binding = 1, std430) buffer AttribBuffer { uint  atr[]; };
+layout(set = 0, binding = 2, std430) buffer ChunkBuffer  { ChunkCell cells[]; };
+
+vec3 get_position(int idx) {
+    int base = idx * pc.vertex_stride_floats;
+    return vec3(vtx[base + 0], vtx[base + 1], vtx[base + 2]);
+}
+void set_position(int idx, vec3 p) {
+    int base = idx * pc.vertex_stride_floats;
+    vtx[base + 0] = p.x; vtx[base + 1] = p.y; vtx[base + 2] = p.z;
+}
+void set_color(int idx, uint c) {
+    atr[idx * pc.attrib_stride_words + pc.color_offset_words] = c;
+}
+void set_custom0(int idx, vec4 v) {
+    int base = idx * pc.attrib_stride_words + pc.custom0_offset_words;
+    atr[base+0] = floatBitsToUint(v.x); atr[base+1] = floatBitsToUint(v.y);
+    atr[base+2] = floatBitsToUint(v.z); atr[base+3] = floatBitsToUint(v.w);
+}
 
 int cell_index(ivec3 p) {
     p = clamp(p, ivec3(0), ivec3(pc.grid_w - 1, pc.grid_h - 1, pc.grid_d - 1));
@@ -69,12 +80,13 @@ shared int s_claimed;
 
 bool is_inactive(int idx) {
     // NaN check: a float is NaN if it != itself
-    return !(particles[idx].position.x == particles[idx].position.x);
+    float x = get_position(idx).x;
+    return !(x == x);
 }
 
 void set_inactive(int idx) {
     // 0x7FC00000 = quiet NaN
-    particles[idx].position = vec3(uintBitsToFloat(0x7FC00000u), 0.0, 0.0);
+    set_position(idx, vec3(uintBitsToFloat(0x7FC00000u), 0.0, 0.0));
 }
 
 void main() {
@@ -92,15 +104,6 @@ void main() {
         // ── SOURCE: activate inactive particles near world_pos ──────────────
         if (!is_inactive(int(gid))) return;
 
-        vec3 d = particles[gid].position - pc.world_pos;
-        // Inactive particles have NaN position, so the distance check above
-        // would fail. Instead, we assign position first, then check.
-        // Actually: inactive particles have NaN position, so we can't distance-check.
-        // Strategy: each thread claims an inactive particle via atomicAdd on s_claimed,
-        // then assigns it a position within radius of world_pos.
-        // This is a "spawn" model — we grab any inactive particle and place it
-        // near the source, rather than finding inactive particles that are already near.
-
         int slot = atomicAdd(s_claimed, 1);
         if (slot >= pc.max_count) return;
 
@@ -110,31 +113,30 @@ void main() {
         float ang2 = float((seed / 1000u) % 1000u) / 1000.0 * 3.14159265;
         float r = pc.radius * float((seed / 1000000u) % 1000u) / 1000.0;
 
-        particles[gid].position = pc.world_pos + vec3(
+        vec3 new_pos = pc.world_pos + vec3(
             r * sin(ang2) * cos(ang1),
             r * sin(ang2) * sin(ang1),
             r * cos(ang2)
         );
 
         // Clamp to grid bounds
-        particles[gid].position.x = clamp(particles[gid].position.x, 2.0, float(pc.grid_w) - 2.0);
-        particles[gid].position.y = clamp(particles[gid].position.y, 2.0, float(pc.grid_h) - 2.0);
-        particles[gid].position.z = clamp(particles[gid].position.z, 2.0, float(pc.grid_d) - 2.0);
+        new_pos.x = clamp(new_pos.x, 2.0, float(pc.grid_w) - 2.0);
+        new_pos.y = clamp(new_pos.y, 2.0, float(pc.grid_h) - 2.0);
+        new_pos.z = clamp(new_pos.z, 2.0, float(pc.grid_d) - 2.0);
+        set_position(int(gid), new_pos);
 
         // Pack color
         uint cr = uint(clamp(pc.color.r * 255.0, 0.0, 255.0));
         uint cg = uint(clamp(pc.color.g * 255.0, 0.0, 255.0));
         uint cb = uint(clamp(pc.color.b * 255.0, 0.0, 255.0));
         uint ca = uint(clamp(pc.color.a * 255.0, 0.0, 255.0));
-        particles[gid].color_packed     = cr | (cg << 8) | (cb << 16) | (ca << 24);
-        particles[gid].attraction_force = pc.attraction;
-        particles[gid].opacity_fade     = pc.opacity_fade;
-        particles[gid].neighbors_filled = 0.0;
+        set_color(int(gid), cr | (cg << 8) | (cb << 16) | (ca << 24));
+        set_custom0(int(gid), vec4(pc.attraction, pc.opacity_fade, 0.0, 0.0));
 
         // Claim the grid cell so the physics step sees this particle as occupied.
         // If the cell is already taken, release the particle back to the inactive
         // pool rather than overlapping another occupant.
-        ivec3 cell_pos = ivec3(round(particles[gid].position));
+        ivec3 cell_pos = ivec3(round(new_pos));
         if (!cell_try_place(cell_index(cell_pos), int(gid))) {
             set_inactive(int(gid));
         }
@@ -143,7 +145,7 @@ void main() {
         // ── SINK: deactivate active particles near world_pos ─────────────────
         if (is_inactive(int(gid))) return;
 
-        vec3 d = particles[gid].position - pc.world_pos;
+        vec3 d = get_position(int(gid)) - pc.world_pos;
         if (dot(d, d) > r2) return;
 
         int slot = atomicAdd(s_claimed, 1);
@@ -152,7 +154,7 @@ void main() {
         // Free the grid cell so other particles can move into it.
         // Only clear if we still own this cell — avoids evicting a neighbor
         // that may have swapped in during the physics step.
-        ivec3 cell_pos = ivec3(round(particles[gid].position));
+        ivec3 cell_pos = ivec3(round(get_position(int(gid))));
         int   cidx     = cell_index(cell_pos);
         atomicCompSwap(cells[cidx].occupant, int(gid), -1);
 

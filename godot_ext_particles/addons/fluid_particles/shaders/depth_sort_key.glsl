@@ -20,34 +20,35 @@ layout(push_constant, std430) uniform PushConstants {
     int   frame_count;
     int   neighbor_mode;
     int   num_runnable;
-    int   _pad1[2];
+    int   vertex_stride_floats;
+    int   attrib_stride_words;
+    int   color_offset_words;
+    int   custom0_offset_words;
 } pc;
 
-struct Particle {
-    vec3  position;
-    float _pad0;
-    uint  color_packed;
-    float attraction_force;
-    float opacity_fade;
-    float neighbors_filled;
-    float _pad1[4];
-};
+layout(set = 0, binding = 0, std430) buffer VertexBuffer   { float vtx[];           };
+layout(set = 0, binding = 1, std430) buffer AttribBuffer   { uint  _unused_attr[];  };
+layout(set = 0, binding = 2, std430) buffer ChunkBuffer    { int   _unused_chunk[]; };
+layout(set = 0, binding = 3, std430) buffer RunnableBuffer { int   runnable_indices[]; };
+layout(set = 0, binding = 4, std430) buffer SortKeyBuffer  { float sort_keys[];        };
 
-layout(set = 0, binding = 0, std430) buffer ParticleBuffer { Particle particles[];        };
-layout(set = 0, binding = 1, std430) buffer ChunkBuffer    { int      _unused[];          };
-layout(set = 0, binding = 2, std430) buffer RunnableBuffer { int      runnable_indices[]; };
-layout(set = 0, binding = 3, std430) buffer SortKeyBuffer  { float    sort_keys[];        };
+vec3 get_position(int idx) {
+    int base = idx * pc.vertex_stride_floats;
+    return vec3(vtx[base + 0], vtx[base + 1], vtx[base + 2]);
+}
 
 void main() {
     uint gid = gl_GlobalInvocationID.x;
     if (int(gid) >= pc.num_particles) return;
 
+    vec3 position = get_position(int(gid));
+
     // Skip inactive particles (NaN sentinel) — push them to back of sort
-    if (!(particles[gid].position.x == particles[gid].position.x)) {
+    if (!(position.x == position.x)) {
         sort_keys[gid] = 1e30;
         return;
     }
 
-    vec3 to_cam = pc.camera_pos - particles[gid].position;
+    vec3 to_cam = pc.camera_pos - position;
     sort_keys[gid] = dot(to_cam, to_cam);
 }

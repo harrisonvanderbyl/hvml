@@ -21,7 +21,11 @@ struct SourceSinkPC {
     int    max_count;
     int    num_particles;
     int    grid_w, grid_h, grid_d;
-    int    _pad;
+    int32_t vertex_stride_floats;
+    int32_t attrib_stride_words;
+    int32_t color_offset_words;
+    int32_t custom0_offset_words;
+    int32_t _pad1;  // pad to 16-byte alignment
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,10 +111,19 @@ void FluidSourceBase::_build_pipeline() {
     pipeline   = rd->compute_pipeline_create(shader_rid);
 
     // Uniform set: binding 0 = particle_buf, binding 1 = chunk_buf (shared with parent)
-    RID particle_buf = parent_system->get_particle_buf();
+    RID particle_buf = parent_system->get_vertex_buf();
+    RID attribute_buf = parent_system->get_attribute_buf();
     RID chunk_buf    = parent_system->get_chunk_buf();
     if (!particle_buf.is_valid()) {
         UtilityFunctions::printerr("FluidSource/Sink: parent particle_buf is invalid.");
+        return;
+    }
+    if (!attribute_buf.is_valid()) {
+        UtilityFunctions::printerr("FluidSource/Sink: parent attribute_buf is invalid.");
+        return;
+    }
+    if (!chunk_buf.is_valid()) {
+        UtilityFunctions::printerr("FluidSource/Sink: parent chunk_buf is invalid.");
         return;
     }
 
@@ -125,8 +138,9 @@ void FluidSourceBase::_build_pipeline() {
 
     TypedArray<RDUniform> uniforms;
     uniforms.append(make_storage_uniform(particle_buf, 0));
+    uniforms.append(make_storage_uniform(attribute_buf, 1));
     if (chunk_buf.is_valid()) {
-        uniforms.append(make_storage_uniform(chunk_buf, 1));
+        uniforms.append(make_storage_uniform(chunk_buf, 2));
     }
     uniform_set = rd->uniform_set_create(uniforms, shader_rid, 0);
 
@@ -160,6 +174,10 @@ void FluidSourceBase::_dispatch() {
     pc.grid_w        = parent_system->get_grid_w();
     pc.grid_h        = parent_system->get_grid_h();
     pc.grid_d        = parent_system->get_grid_d();
+    pc.vertex_stride_floats = parent_system->get_vertex_stride_floats();
+    pc.attrib_stride_words  = parent_system->get_attrib_stride_words();
+    pc.color_offset_words   = parent_system->get_color_offset_words();
+    pc.custom0_offset_words = parent_system->get_custom0_offset_words();
 
     // Fill source-specific attributes (subclass overrides for sink, but the
     // values are ignored by the shader in sink mode)

@@ -20,20 +20,17 @@ layout(push_constant, std430) uniform PushConstants {
     int   frame_count;
     int   neighbor_mode;
     int   num_runnable;
-    int   _pad1[2];
+    int   vertex_stride_floats;
+    int   attrib_stride_words;
+    int   color_offset_words;
+    int   custom0_offset_words;
 } pc;
 
 // ── Buffers ───────────────────────────────────────────────────────────────────
-struct Particle {
-    vec3  position;
-    float _pad0;
-    uint  color_packed;
-    float attraction_force;
-    float opacity_fade;
-    float neighbors_filled;
-    float _pad1[4];
-};
-
+// Particle position/color/custom0 now live directly inside the render mesh's
+// own vertex/attribute storage buffers (bindings 0/1), not a separate buffer.
+// This shader doesn't touch them, but declares them to keep the uniform set
+// layout identical across clear/physics/sortkey pipelines.
 struct ChunkCell {
     int  occupant;
     uint vel_x_bits;
@@ -43,10 +40,11 @@ struct ChunkCell {
     uint _pad[3];
 };
 
-layout(set = 0, binding = 0, std430) buffer ParticleBuffer  { Particle  particles[]; };
-layout(set = 0, binding = 1, std430) buffer ChunkBuffer     { ChunkCell cells[]; };
-layout(set = 0, binding = 2, std430) buffer RunnableBuffer  { int runnable_indices[]; };
-layout(set = 0, binding = 3, std430) buffer SortKeyBuffer   { float sort_keys[]; };
+layout(set = 0, binding = 0, std430) buffer VertexBuffer   { float vtx[]; };
+layout(set = 0, binding = 1, std430) buffer AttribBuffer   { uint  atr[]; };
+layout(set = 0, binding = 2, std430) buffer ChunkBuffer    { ChunkCell cells[]; };
+layout(set = 0, binding = 3, std430) buffer RunnableBuffer { int   runnable_indices[]; };
+layout(set = 0, binding = 4, std430) buffer SortKeyBuffer  { float sort_keys[]; };
 
 // ─────────────────────────────────────────────────────────────────────────────
 void main() {

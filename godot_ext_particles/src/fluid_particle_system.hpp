@@ -17,21 +17,6 @@
 namespace godot {
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Mirrors the GPU-side Particle struct (std430, 32 bytes)
-// ──────────────────────────────────────────────────────────────────────────────
-struct GPUParticle {
-    float  position[3];      // x, y, z
-    float  _pad0;
-    uint32_t color_packed;   // r|g|b|a packed as uint8 × 4
-    float  attraction_force; // temperatureopacity[0]
-    float  opacity_fade;     // temperatureopacity[1]
-    float  neighbors_filled;
-    float  _pad1;
-    // 36 bytes → pad to 48 for cleaner alignment
-    float  _pad2[3];
-};  // 48 bytes
-
-// ──────────────────────────────────────────────────────────────────────────────
 // Mirrors the GPU-side ChunkCell struct (std430, 32 bytes)
 // ──────────────────────────────────────────────────────────────────────────────
 struct GPUChunkCell {
@@ -114,15 +99,21 @@ public:
     }
 
     // ── Access for child source/sink nodes ────────────────────────────────
-    // These expose the GPU particle buffer + RenderingDevice so that
-    // FluidSource / FluidSink can dispatch their own compute shaders against
-    // the same buffer without any CPU round-trip.
-    RenderingDevice *get_rd()           const { return rd; }
-    RID              get_particle_buf() const { return particle_buf; }
-    RID              get_chunk_buf()    const { return chunk_buf; }
-    int              get_grid_w()       const { return grid_width; }
-    int              get_grid_h()       const { return grid_height; }
-    int              get_grid_d()       const { return grid_depth; }
+    // These expose the render mesh's own vertex/attribute RD storage buffers
+    // (bindings for position and color/custom0, respectively) plus the chunk
+    // grid, so FluidSource / FluidSink can dispatch their own compute shaders
+    // directly against the same buffers the renderer reads — no CPU round-trip.
+    RenderingDevice *get_rd()             const { return rd; }
+    RID              get_vertex_buf()     const { return vertex_buf; }
+    RID              get_attribute_buf()  const { return attrib_buf; }
+    RID              get_chunk_buf()      const { return chunk_buf; }
+    int              get_grid_w()         const { return grid_width; }
+    int              get_grid_h()         const { return grid_height; }
+    int              get_grid_d()         const { return grid_depth; }
+    int              get_vertex_stride_floats() const { return vertex_stride_floats; }
+    int              get_attrib_stride_words()  const { return attrib_stride_words; }
+    int              get_color_offset_words()   const { return color_offset_words; }
+    int              get_custom0_offset_words() const { return custom0_offset_words; }
 
 protected:
     static void _bind_methods();
@@ -165,13 +156,29 @@ private:
     // (real ray-sphere/liquid rendering). See _update_render_mesh().
 
     // ── RenderingDevice compute pipeline ────────────────────────
+    // Shared RenderingDevice (RenderingServer's main device) — required so
+    // buffer RIDs fetched via mesh_surface_get_vertex_buffer_rd_rid()/
+    // mesh_surface_get_attribute_buffer_rd_rid() can be bound directly in our
+    // own compute pipelines (RIDs are not portable across separate
+    // RenderingDevice instances, so a local device would not work here).
     RenderingDevice *rd = nullptr;
 
-    // GPU buffers (RIDs)
-    RID particle_buf;
+    // GPU buffers (RIDs). Position/color/custom0 live inside the render
+    // mesh's own vertex/attribute storage buffers (see _ensure_render_node).
+    RID vertex_buf;
+    RID attrib_buf;
     RID chunk_buf;
     RID runnable_buf;
     RID sort_key_buf;
+
+    // Byte-stride/offset (in 4-byte words) describing how particle data is
+    // packed inside vertex_buf/attrib_buf. Computed once from the mesh's
+    // array format via RenderingServer::mesh_surface_get_format_*, and passed
+    // to every compute shader via push constants.
+    int vertex_stride_floats  = 3;
+    int attrib_stride_words   = 0;
+    int color_offset_words    = 0;
+    int custom0_offset_words  = 0;
 
     // Pipelines
     RID clear_pipeline;
@@ -194,10 +201,12 @@ private:
     bool      gpu_ready    = false;
 
     // ── render mesh ──────────────────────────────────────────────────────────
-    MeshInstance3D  *render_node  = nullptr;   // real ray-sphere/liquid render node
+    // Created once (not rebuilt per frame): a persistent ArrayMesh whose
+    // vertex/attribute storage buffers are written to directly by the compute
+    // shaders. See _ensure_render_node().
+    MeshInstance3D  *render_node  = nullptr;
     Ref<ArrayMesh>   render_mesh;
 
-    void _update_render_mesh();
     void _ensure_render_node();
     void _build_gpu_resources();
     void _destroy_gpu_resources();

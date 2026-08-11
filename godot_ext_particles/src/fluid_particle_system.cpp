@@ -33,7 +33,10 @@ struct PushConstants {
     float   global_vel[3];
     int32_t neighbor_mode;
     int32_t num_runnable;
-    int32_t _pad1[3];
+    int32_t vertex_stride_floats;
+    int32_t attrib_stride_words;
+    int32_t color_offset_words;
+    int32_t custom0_offset_words;
 };
 
 
@@ -184,12 +187,14 @@ Ref<ShaderMaterial> FluidParticleSystem::get_render_material() const {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ensure the render node exists (lazy-created): a MeshInstance3D whose
-// ArrayMesh is rebuilt every frame from a CPU readback of particle_buf,
-// shaded by the render_shader resource (defaults to particle_render.gdshader).
+// Ensure the render node exists (lazy-created): a MeshInstance3D that displays
+// the render_mesh built in _build_gpu_resources(). The mesh's own vertex and
+// attribute RD storage buffers are written to directly by the compute
+// shaders — no CPU readback or per-frame rebuild.
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_ensure_render_node() {
     if (render_node) return;
+    if (!render_mesh.is_valid()) return;
 
     // If the user hasn't set a render_material, create an internal default
     // material from the addon's particle_render.gdshader. This is NOT exposed
@@ -203,74 +208,11 @@ void FluidParticleSystem::_ensure_render_node() {
     // Use the user's material if set, otherwise the internal default.
     Ref<ShaderMaterial> mat = render_material.is_valid() ? render_material : internal_material;
 
-    render_mesh.instantiate();
     render_node = memnew(MeshInstance3D);
     render_node->set_mesh(render_mesh);
     render_node->set_material_override(mat);
+    render_node->set_custom_aabb(get_grid_aabb());
     add_child(render_node);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CPU readback → ArrayMesh(PRIMITIVE_POINTS) with CUSTOM0 (attraction_force,
-// opacity_fade, neighbors_filled), rebuilt every frame from particle_buf.
-// ─────────────────────────────────────────────────────────────────────────────
-void FluidParticleSystem::_update_render_mesh() {
-    if (!render_mesh.is_valid() || !rd || !particle_buf.is_valid()) return;
-
-    PackedByteArray raw = rd->buffer_get_data(particle_buf);
-    if (raw.is_empty()) return;
-    const GPUParticle *parts = reinterpret_cast<const GPUParticle*>(raw.ptr());
-
-    PackedVector3Array  positions;
-    PackedColorArray    colors;
-    PackedFloat32Array  custom0;  // (attraction_force, opacity_fade, neighbors_filled, 0) per vertex
-    Vector3 *pp = nullptr;
-    Color   *cp = nullptr;
-    float   *c0 = nullptr;
-
-    // First pass: count active (non-NaN) particles
-    int active_count = 0;
-    for (int i = 0; i < num_particles; i++) {
-        float x = parts[i].position[0];
-        if (x == x) active_count++;  // NaN check: x != x means inactive
-    }
-
-    if (active_count == 0) {
-        if (render_mesh->get_surface_count() > 0) render_mesh->clear_surfaces();
-        return;
-    }
-
-    positions.resize(active_count);
-    colors.resize(active_count);
-    custom0.resize(active_count * 4);
-    pp = positions.ptrw();
-    cp = colors.ptrw();
-    c0 = custom0.ptrw();
-
-    int out = 0;
-    for (int i = 0; i < num_particles; i++) {
-        float x = parts[i].position[0];
-        if (x != x) continue;  // skip inactive (NaN sentinel)
-        pp[out] = Vector3(parts[i].position[0], parts[i].position[1], parts[i].position[2]);
-        uint32_t c = parts[i].color_packed;
-        cp[out] = Color(((c>>0)&0xff)/255.f, ((c>>8)&0xff)/255.f,
-                        ((c>>16)&0xff)/255.f, ((c>>24)&0xff)/255.f);
-        c0[out*4 + 0] = parts[i].attraction_force;
-        c0[out*4 + 1] = parts[i].opacity_fade;
-        c0[out*4 + 2] = parts[i].neighbors_filled;
-        c0[out*4 + 3] = 0.0f;
-        out++;
-    }
-
-    Array arrays;
-    arrays.resize(Mesh::ARRAY_MAX);
-    arrays[Mesh::ARRAY_VERTEX]  = positions;
-    arrays[Mesh::ARRAY_COLOR]   = colors;
-    arrays[Mesh::ARRAY_CUSTOM0] = custom0;
-    if (render_mesh->get_surface_count() > 0) render_mesh->clear_surfaces();
-    render_mesh->add_surface_from_arrays(
-        Mesh::PRIMITIVE_POINTS, arrays, TypedArray<Array>(), Dictionary(),
-        (BitField<Mesh::ArrayFormat>)((int64_t)Mesh::ARRAY_CUSTOM_RGBA_FLOAT << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,67 +228,101 @@ void FluidParticleSystem::_exit_tree() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_build_gpu_resources() {
-    // Use a LOCAL RenderingDevice: rendering goes through a normal
-    // MeshInstance3D + CPU-readback ArrayMesh (see _update_render_mesh), not
-    // a shared render-thread device. A local device gives deterministic
-    // submit()/sync() semantics needed for correct, non-stale readbacks.
-    rd = RenderingServer::get_singleton()->create_local_rendering_device();
+    // Use the shared RenderingDevice (RenderingServer's main device). This is
+    // required so the RIDs returned by mesh_surface_get_vertex_buffer_rd_rid()/
+    // mesh_surface_get_attribute_buffer_rd_rid() can be bound directly in our
+    // own compute pipelines — RIDs from a local device are not valid on the
+    // shared device (and vice versa), so a local device cannot be used here.
+    RenderingServer *rs = RenderingServer::get_singleton();
+    rd = rs->get_rendering_device();
     if (!rd) {
-        UtilityFunctions::printerr("FluidParticleSystem: Could not create RenderingDevice.");
+        UtilityFunctions::printerr("FluidParticleSystem: Could not get shared RenderingDevice.");
         return;
     }
 
-    // ── Particle buffer ──────────────────────────────────────────────────────
+    // ── Render mesh + storage-buffer-backed vertex/attribute buffers ────────
+    // Position lives in the mesh's vertex buffer, color+custom0 (attraction_
+    // force, opacity_fade, neighbors_filled) in its attribute buffer. Compute
+    // shaders write directly into these buffers — the renderer reads the same
+    // memory with zero copies.
     {
-        int64_t buf_size = (int64_t)num_particles * sizeof(GPUParticle);
-        PackedByteArray data;
-        data.resize(buf_size);
-        data.fill(0);
-
-        // Default initialise: all particles start INACTIVE (NaN position)
-        // so FluidSource nodes can spawn them on demand. If use_initial_chunk
-        // is checked, activate a block of particles at initial_chunk_origin.
-        GPUParticle *p = reinterpret_cast<GPUParticle*>(data.ptrw());
         const uint32_t nan_bits = 0x7FC00000u;
         float nan_val;
         std::memcpy(&nan_val, &nan_bits, sizeof(float));
 
-        // Pack initial chunk color
-        uint32_t init_col = ((uint32_t)(initial_chunk_color.r * 255) & 0xff)
-                          | (((uint32_t)(initial_chunk_color.g * 255) & 0xff) << 8)
-                          | (((uint32_t)(initial_chunk_color.b * 255) & 0xff) << 16)
-                          | (((uint32_t)(initial_chunk_color.a * 255) & 0xff) << 24);
+        PackedVector3Array positions;
+        PackedColorArray   colors;
+        PackedFloat32Array custom0;
+        positions.resize(num_particles);
+        colors.resize(num_particles);
+        custom0.resize(num_particles * 4);
+        Vector3 *pp = positions.ptrw();
+        Color   *cp = colors.ptrw();
+        float   *c0 = custom0.ptrw();
 
         for (int i = 0; i < num_particles; i++) {
-            p[i].position[0] = nan_val;  // inactive sentinel
-            p[i].position[1] = 0.0f;
-            p[i].position[2] = 0.0f;
-            p[i].color_packed     = init_col;
-            p[i].attraction_force = initial_chunk_attraction;
-            p[i].opacity_fade     = 1.0f;
-            p[i].neighbors_filled = 0.0f;
+            pp[i] = Vector3(nan_val, 0.0f, 0.0f);  // inactive sentinel
+            cp[i] = initial_chunk_color;
+            c0[i*4 + 0] = initial_chunk_attraction;
+            c0[i*4 + 1] = 1.0f;
+            c0[i*4 + 2] = 0.0f;
+            c0[i*4 + 3] = 0.0f;
         }
 
         // If initial chunk is enabled, activate particles in a block.
         // All liquid so they repulse each other and flow.
         if (use_initial_chunk) {
+            Color solid_col = Color(0.0f, 0.0f, 0.0f, 17.0f / 255.0f); // alpha=0x11 -> liquid
             int idx = 0;
             for (int iz = 0; iz < initial_chunk_size.z && idx < num_particles; iz++) {
                 for (int iy = 0; iy < initial_chunk_size.y && idx < num_particles; iy++) {
                     for (int ix = 0; ix < initial_chunk_size.x && idx < num_particles; ix++, idx++) {
-                        p[idx].position[0] = initial_chunk_origin.x + ix;
-                        p[idx].position[1] = initial_chunk_origin.y + iy;
-                        p[idx].position[2] = initial_chunk_origin.z + iz;
-                        // Liquid: attraction = water_viscosity (enables repulsion)
-                        p[idx].color_packed     = 0x00u | (0x00u << 8) | (0x00u << 16) | (0x11u << 24);
-                        p[idx].attraction_force = water_viscosity;
-                        p[idx].opacity_fade     = 1.0f;
-                        p[idx].neighbors_filled = 0.0f;
+                        pp[idx] = Vector3(initial_chunk_origin.x + ix, initial_chunk_origin.y + iy, initial_chunk_origin.z + iz);
+                        cp[idx] = solid_col;
+                        c0[idx*4 + 0] = water_viscosity;
+                        c0[idx*4 + 1] = 1.0f;
+                        c0[idx*4 + 2] = 0.0f;
+                        c0[idx*4 + 3] = 0.0f;
                     }
                 }
             }
         }
-        particle_buf = rd->storage_buffer_create(buf_size, data);
+
+        Array arrays;
+        arrays.resize(Mesh::ARRAY_MAX);
+        arrays[Mesh::ARRAY_VERTEX]  = positions;
+        arrays[Mesh::ARRAY_COLOR]   = colors;
+        arrays[Mesh::ARRAY_CUSTOM0] = custom0;
+
+        render_mesh.instantiate();
+        render_mesh->add_surface_from_arrays(
+            Mesh::PRIMITIVE_POINTS, arrays, TypedArray<Array>(), Dictionary(),
+            (BitField<Mesh::ArrayFormat>)(
+                ((int64_t)Mesh::ARRAY_CUSTOM_RGBA_FLOAT << Mesh::ARRAY_FORMAT_CUSTOM0_SHIFT)
+                | Mesh::ARRAY_FLAG_USE_STORAGE_BUFFER));
+
+        RID mesh_rid = render_mesh->get_rid();
+        vertex_buf = rs->mesh_surface_get_vertex_buffer_rd_rid(mesh_rid, 0);
+        attrib_buf = rs->mesh_surface_get_attribute_buffer_rd_rid(mesh_rid, 0);
+        if (!vertex_buf.is_valid() || !attrib_buf.is_valid()) {
+            UtilityFunctions::printerr("FluidParticleSystem: could not fetch mesh RD storage buffers. "
+                "Requires Godot 4.8+ with mesh_surface_get_vertex_buffer_rd_rid/attribute_buffer_rd_rid exposed.");
+            return;
+        }
+
+        uint64_t format = (1ULL << RenderingServer::ARRAY_VERTEX) | (1ULL << RenderingServer::ARRAY_COLOR) | (1ULL << RenderingServer::ARRAY_CUSTOM0);
+        format |= (uint64_t)RenderingServer::ARRAY_CUSTOM_RGBA_FLOAT << RenderingServer::ARRAY_FORMAT_CUSTOM0_SHIFT;
+
+        BitField<RenderingServer::ArrayFormat> bformat = (BitField<RenderingServer::ArrayFormat>)format;
+        uint32_t vertex_stride_bytes = rs->mesh_surface_get_format_vertex_stride(bformat, num_particles);
+        uint32_t attrib_stride_bytes = rs->mesh_surface_get_format_attribute_stride(bformat, num_particles);
+        uint32_t color_offset_bytes  = rs->mesh_surface_get_format_offset(bformat, num_particles, RenderingServer::ARRAY_COLOR);
+        uint32_t custom0_offset_bytes = rs->mesh_surface_get_format_offset(bformat, num_particles, RenderingServer::ARRAY_CUSTOM0);
+
+        vertex_stride_floats = (int)(vertex_stride_bytes / 4);
+        attrib_stride_words  = (int)(attrib_stride_bytes / 4);
+        color_offset_words   = (int)(color_offset_bytes / 4);
+        custom0_offset_words = (int)(custom0_offset_bytes / 4);
     }
 
     // ── Chunk grid buffer ────────────────────────────────────────────────────
@@ -416,10 +392,11 @@ void FluidParticleSystem::_build_gpu_resources() {
 
     // ── Build uniform sets ────────────────────────────────────────────────────
     // All three pipelines share the same buffer bindings:
-    //   binding 0 → particles
-    //   binding 1 → chunk_grid
-    //   binding 2 → runnable_indices
-    //   binding 3 → sort_keys
+    //   binding 0 → vertex buffer (position, owned by render_mesh)
+    //   binding 1 → attribute buffer (color + custom0, owned by render_mesh)
+    //   binding 2 → chunk_grid
+    //   binding 3 → runnable_indices
+    //   binding 4 → sort_keys
 
     auto make_storage_uniform = [](RID buf, uint32_t binding) -> Ref<RDUniform> {
         Ref<RDUniform> u;
@@ -431,10 +408,11 @@ void FluidParticleSystem::_build_gpu_resources() {
     };
 
     TypedArray<RDUniform> uniforms;
-    uniforms.append(make_storage_uniform(particle_buf,  0));
-    uniforms.append(make_storage_uniform(chunk_buf,     1));
-    uniforms.append(make_storage_uniform(runnable_buf,  2));
-    uniforms.append(make_storage_uniform(sort_key_buf,  3));
+    uniforms.append(make_storage_uniform(vertex_buf,   0));
+    uniforms.append(make_storage_uniform(attrib_buf,   1));
+    uniforms.append(make_storage_uniform(chunk_buf,    2));
+    uniforms.append(make_storage_uniform(runnable_buf, 3));
+    uniforms.append(make_storage_uniform(sort_key_buf, 4));
 
     if (clear_shader.is_valid()) {
         clear_uniform_set   = rd->uniform_set_create(uniforms, clear_shader,   0);
@@ -447,10 +425,9 @@ void FluidParticleSystem::_build_gpu_resources() {
     }
 
     // ── Rendering ──────────────────────────────────────────────────────────
-    // Rendering goes through a normal MeshInstance3D (render_node) whose
-    // ArrayMesh is rebuilt each frame from a CPU readback of particle_buf
-    // (see _update_render_mesh). This uses Godot's ordinary render pipeline
-    // (automatic camera matrices, sorting, shadows) via particle_render.gdshader.
+    // Rendering goes through a normal MeshInstance3D (render_node) displaying
+    // render_mesh, whose vertex/attribute RD buffers are written directly by
+    // the compute shaders every frame (see _process). No CPU round-trip.
     gpu_ready = true;
     UtilityFunctions::print("FluidParticleSystem: GPU resources ready.");
 }
@@ -471,13 +448,14 @@ void FluidParticleSystem::_destroy_gpu_resources() {
     if (physics_shader.is_valid())   rd->free_rid(physics_shader);
     if (sortkey_shader.is_valid())   rd->free_rid(sortkey_shader);
 
-    if (particle_buf.is_valid())  rd->free_rid(particle_buf);
+    // vertex_buf/attrib_buf are owned by render_mesh (RenderingServer), not by
+    // us — freed automatically when render_mesh is released. Do NOT free_rid
+    // them here (they belong to the shared device's mesh storage).
     if (chunk_buf.is_valid())     rd->free_rid(chunk_buf);
     if (runnable_buf.is_valid())  rd->free_rid(runnable_buf);
     if (sort_key_buf.is_valid())  rd->free_rid(sort_key_buf);
 
-    // rd is a local device we own — free it.
-    memdelete(rd);
+    // rd is the shared RenderingServer device — do not delete it.
     rd = nullptr;
 }
 
@@ -485,11 +463,9 @@ void FluidParticleSystem::_destroy_gpu_resources() {
 void FluidParticleSystem::_process(double delta) {
     if (!gpu_ready) return;
 
-    // Simulation can be paused from the editor
-    if (!simulation_active) {
-        _update_render_mesh();  // keep the render mesh in sync with frozen state
-        return;
-    }
+    // Simulation can be paused from the editor. The render mesh already
+    // reflects the last GPU state, so there's nothing to do when paused.
+    if (!simulation_active) return;
 
     Vector3 impulse = Vector3();
     if (impulse_pending) {
@@ -517,17 +493,11 @@ void FluidParticleSystem::_process(double delta) {
         _dispatch_sortkey();
     }
 
-    // rd is a local RenderingDevice we own, so submit + sync deterministically
-    // before reading the buffer back on the CPU below.
-    rd->submit();
-    rd->sync();
-
-    // Rebuild the ArrayMesh from the compute results every frame, shaded by
-    // particle_render.gdshader (real ray-sphere/liquid rendering) through a
-    // normal MeshInstance3D — automatic camera matrices/sorting/shadows come
-    // from Godot's own render pipeline.
-    _update_render_mesh();
-
+    // rd is the shared RenderingDevice (owned by RenderingServer) — we must
+    // NOT call submit()/sync() ourselves. The compute lists recorded above
+    // are submitted automatically as part of the engine's own frame, and the
+    // render mesh's vertex/attribute buffers are read directly by the
+    // renderer with no CPU round-trip.
     frame_count++;
 }
 
@@ -595,6 +565,10 @@ void FluidParticleSystem::_dispatch_physics(Vector3 global_add_velocity) {
     pc.frame_count      = (int32_t)(frame_count & 0x7fffffff);
     pc.neighbor_mode    = neighbor_mode;
     pc.num_runnable     = num_particles;
+    pc.vertex_stride_floats = vertex_stride_floats;
+    pc.attrib_stride_words  = attrib_stride_words;
+    pc.color_offset_words   = color_offset_words;
+    pc.custom0_offset_words = custom0_offset_words;
 
     uint32_t groups = (uint32_t)((num_particles + 63) / 64);
     dispatch_compute(rd, physics_pipeline, physics_uniform_set, pc, groups);
@@ -602,15 +576,15 @@ void FluidParticleSystem::_dispatch_physics(Vector3 global_add_velocity) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 void FluidParticleSystem::_dispatch_sortkey() {
-    PushConstants pc{};
-    pc.grid_w        = grid_width;
-    pc.grid_h        = grid_height;
-    pc.grid_d        = grid_depth;
-    pc.num_particles = num_particles;
-    // Camera position is baked into the sort key shader via global_vel[0..2]
-    // We pass (0,0,0) here; in _process you could pass the camera world position.
-    uint32_t groups = (uint32_t)((num_particles + 63) / 64);
-    dispatch_compute(rd, sortkey_pipeline, sortkey_uniform_set, pc, groups);
+    // PushConstants pc{};
+    // pc.grid_w        = grid_width;
+    // pc.grid_h        = grid_height;
+    // pc.grid_d        = grid_depth;
+    // pc.num_particles = num_particles;
+    // // Camera position is baked into the sort key shader via global_vel[0..2]
+    // // We pass (0,0,0) here; in _process you could pass the camera world position.
+    // uint32_t groups = (uint32_t)((num_particles + 63) / 64);
+    // dispatch_compute(rd, sortkey_pipeline, sortkey_uniform_set, pc, groups);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -620,31 +594,20 @@ void FluidParticleSystem::spawn_block(Vector3 origin, int w, int h, int d,
 {
     if (!rd) return;
 
-    PackedByteArray raw = rd->buffer_get_data(particle_buf);
-    if (raw.is_empty()) return;
-    GPUParticle *particles = reinterpret_cast<GPUParticle*>(raw.ptrw());
-
-    uint32_t col_packed = ((uint32_t)(color.r * 255) & 0xff)
-                        | (((uint32_t)(color.g * 255) & 0xff) << 8)
-                        | (((uint32_t)(color.b * 255) & 0xff) << 16)
-                        | (((uint32_t)(color.a * 255) & 0xff) << 24);
-
-    int idx = 0;
+    int64_t idx = 0;
     for (int iz = 0; iz < d && idx < num_particles; iz++) {
         for (int iy = 0; iy < h && idx < num_particles; iy++) {
             for (int ix = 0; ix < w && idx < num_particles; ix++, idx++) {
-                particles[idx].position[0] = origin.x + ix;
-                particles[idx].position[1] = origin.y + iy;
-                particles[idx].position[2] = origin.z + iz;
-                particles[idx].color_packed        = col_packed;
-                particles[idx].attraction_force    = attraction;
-                particles[idx].opacity_fade        = 1.0f;
-                particles[idx].neighbors_filled    = 0.0f;
+                Vector3 pos = Vector3(origin.x + ix, origin.y + iy, origin.z + iz);
+                // Write directly into the render mesh's vertex/attribute buffers via the RD storage buffer RIDs. No CPU round-trip.
+                // rd->storage_buffer_write(vertex_buf, idx * vertex_stride_floats * sizeof(float), (const uint8_t*)&pos, sizeof(Vector3));
+                // Color col = color;
+                // rd->storage_buffer_write(attrib_buf, idx * attrib_stride_words * sizeof(uint32_t) + color_offset_words * sizeof(uint32_t), (const uint8_t*)&col, sizeof(Color));
+                // float custom0[4] = { attraction, 1.0f, 0.0f, 0.0f };
+                // rd->storage_buffer_write(attrib_buf, idx * attrib_stride_words * sizeof(uint32_t) + custom0_offset_words * sizeof(uint32_t), (const uint8_t*)custom0, sizeof(float) * 4);
             }
         }
     }
-
-    rd->buffer_update(particle_buf, 0, raw.size(), raw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
