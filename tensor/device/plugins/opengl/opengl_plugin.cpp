@@ -5,8 +5,16 @@
 //                  -o plugins/opengl/libopengl_plugin.so opengl_plugin.cpp \
 //                  -lGL -lGLEW -lSDL3
 //
-// Priority 60 — loaded last; depends on a GL context (created here via SDL)
-// and registers interop converters on CUDA/HIP AllocationMaps created earlier.
+// Priority 60 — loaded last; depends on a GL context existing.
+//
+// This plugin uses deferred init: plugin_register() does nothing except
+// announce the plugin.  The actual GL context creation / device registration
+// happens in plugin_init(), which is called by the display layer via
+// dm->init_plugin("opengl") after a GL context is available.
+//
+// plugin_init() will reuse the currently-current GL context if one exists
+// (i.e. BasicDisplay has already created its window + context).  If no
+// context is current, it creates a hidden 1x1 SDL window as a fallback.
 
 #include "plugin.hpp"
 
@@ -20,6 +28,7 @@ static SDL_Window* gl_window = nullptr;
 static SDL_GLContext gl_context = nullptr;
 static bool opengl_initialized = false;
 static bool gl_functions_loaded = false;
+static bool owns_gl_context = false;  // true if we created the context ourselves
 
 static bool loadGLFunctions() {
     if (gl_functions_loaded) return true;
@@ -192,35 +201,57 @@ extern "C" int plugin_priority() {
     return 60;
 }
 
+// Lightweight registration — no GL context yet.  The display layer will
+// call plugin_init() once a GL context is available.
 extern "C" void plugin_register(DeviceManager* dm) {
+    std::cout << "[opengl] registered (deferred init — waiting for GL context)" << std::endl;
+}
+
+// Deferred init — called by dm->init_plugin("opengl") after the display
+// layer has created a GL context.  If a context is already current we
+// reuse it; otherwise we create a hidden fallback window.
+extern "C" void plugin_init(DeviceManager* dm) {
     if (opengl_initialized) {
+        // Already initialised — re-register the compute device in case dm
+        // was reset (shouldn't happen, but be safe).
         dm->register_compute_device(ComputeType::kOPENGL, 0, create_opengl_compute_device(0));
         return;
     }
 
-    // Create a hidden SDL window with GL context for compute
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        std::cerr << "[opengl] SDL_Init failed: " << SDL_GetError() << std::endl;
-        return;
+    // Check if a GL context is already current (e.g. BasicDisplay created one)
+    if (SDL_GL_GetCurrentContext() != nullptr) {
+        std::cout << "[opengl] Reusing existing GL context from display layer" << std::endl;
+        gl_context = SDL_GL_GetCurrentContext();
+        gl_window = SDL_GL_GetCurrentWindow();
+        owns_gl_context = false;
+    } else {
+        // No context — create a hidden fallback window
+        std::cout << "[opengl] No current GL context, creating hidden fallback window" << std::endl;
+        if (!SDL_Init(SDL_INIT_VIDEO)) {
+            std::cerr << "[opengl] SDL_Init failed: " << SDL_GetError() << std::endl;
+            return;
+        }
+
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+        gl_window = SDL_CreateWindow("deviceManager GL", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+        if (!gl_window) {
+            std::cerr << "[opengl] SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
+            return;
+        }
+
+        gl_context = SDL_GL_CreateContext(gl_window);
+        if (!gl_context) {
+            std::cerr << "[opengl] SDL_GL_CreateContext failed: " << SDL_GetError() << std::endl;
+            return;
+        }
+
+        SDL_GL_MakeCurrent(gl_window, gl_context);
+        owns_gl_context = true;
     }
 
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-
-    gl_window = SDL_CreateWindow("deviceManager GL", 1, 1, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
-    if (!gl_window) {
-        std::cerr << "[opengl] SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
-        return;
-    }
-
-    gl_context = SDL_GL_CreateContext(gl_window);
-    if (!gl_context) {
-        std::cerr << "[opengl] SDL_GL_CreateContext failed: " << SDL_GetError() << std::endl;
-        return;
-    }
-
-    SDL_GL_MakeCurrent(gl_window, gl_context);
     if (!loadGLFunctions()) {
         std::cerr << "[opengl] GLEW init failed — OpenGL backend disabled" << std::endl;
         return;

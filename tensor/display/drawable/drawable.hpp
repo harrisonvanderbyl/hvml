@@ -1,6 +1,6 @@
 #ifndef DRAWABLE_HPP
 #define DRAWABLE_HPP
-
+#include <GL/glew.h>
 #include <iostream>
 #include <vector>
 #include <string>

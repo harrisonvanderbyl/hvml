@@ -316,6 +316,7 @@ extern "C" {
     typedef const char* (*plugin_name_fn)();
     typedef int (*plugin_priority_fn)();
     typedef void (*plugin_register_fn)(DeviceManager*);
+    typedef void (*plugin_init_fn)(DeviceManager*);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +332,16 @@ struct DeviceManager {
 
     // keep dlopen handles alive (lambdas inside AllocationMaps reference plugin code)
     std::vector<void*> plugin_handles;
+
+    // plugins that export plugin_init — can be lazily initialised on demand
+    // (e.g. OpenGL, which needs a GL context before it can register devices)
+    struct LazyPlugin {
+        void* handle;
+        std::string name;
+        plugin_init_fn init_fn;
+        bool initialized = false;
+    };
+    std::vector<LazyPlugin> lazy_plugins;
 
     bool initialized = false;
     bool initializing = false;
@@ -443,12 +454,47 @@ struct DeviceManager {
                 std::cerr << "  Plugin " << entry.name << " failed to register: " << e.what() << std::endl;
                 std::cerr << "  Continuing without " << entry.name << " support." << std::endl;
             }
+
+            // Check for optional plugin_init — deferred initialisation entry point
+            auto init_fn = (plugin_init_fn)dlsym(entry.handle, "plugin_init");
+            if (init_fn) {
+                lazy_plugins.push_back({entry.handle, entry.name, init_fn, false});
+                std::cout << "  Plugin " << entry.name << " has deferred init (plugin_init)" << std::endl;
+            }
         }
 
         initialized = true;
         initializing = false;
 
         std::cout << "Device initialization complete." << std::endl;
+    }
+
+    // ---- deferred plugin init ---------------------------------------------
+    //
+    //  Some backends (e.g. OpenGL) cannot create their devices until an
+    //  external resource exists — a GL context, a Vulkan instance, etc.
+    //  Those plugins export plugin_init() instead of doing all their work
+    //  in plugin_register().  The display layer calls this method after
+    //  it has created the necessary context.
+    //
+    //  Returns true if the plugin was found and initialised successfully
+    //  (or was already initialised).
+    bool init_plugin(const std::string& name) {
+        for (auto& lp : lazy_plugins) {
+            if (lp.name != name) continue;
+            if (lp.initialized) return true;
+            std::cout << "Deferred init for plugin: " << lp.name << std::endl;
+            try {
+                lp.init_fn(this);
+                lp.initialized = true;
+                return true;
+            } catch (const std::exception& e) {
+                std::cerr << "  Plugin " << lp.name << " deferred init failed: " << e.what() << std::endl;
+                return false;
+            }
+        }
+        std::cerr << "No deferred plugin named '" << name << "' found" << std::endl;
+        return false;
     }
 
     // ---- registration API (called by plugins) ------------------------------

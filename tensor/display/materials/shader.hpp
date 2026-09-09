@@ -5,6 +5,7 @@
 #include "ops/ops.hpp"
 #include "vector/vectors.hpp"
 #include "file_loaders/texture.hpp"
+#include <GL/glew.h>
 // function traits to extract argument types
 #include <tuple>
 #include <type_traits>

@@ -11,6 +11,17 @@
 //      int         plugin_priority();    // load order (lower = earlier)
 //      void        plugin_register(DeviceManager* dm);
 //
+//  A plugin MAY optionally export a fourth symbol for deferred init:
+//
+//      void        plugin_init(DeviceManager* dm);
+//
+//  This is used by backends that depend on an external resource which does
+//  not exist at program start — e.g. OpenGL needs a live GL context before
+//  it can query the vendor or register allocators.  When plugin_init is
+//  present, plugin_register() should do only lightweight setup (no device
+//  creation).  The display layer calls dm->init_plugin("name") after the
+//  required context has been created.
+//
 //  Inside plugin_register() the plugin:
 //    1. Counts its devices.
 //    2. Creates an AllocationMap per device and registers it via
@@ -37,5 +48,6 @@
 using PluginNameFn     = const char* (*)();
 using PluginPriorityFn = int (*)();
 using PluginRegisterFn = void (*)(DeviceManager*);
+using PluginInitFn     = void (*)(DeviceManager*);
 
 #endif // DEVICE_MANAGER_PLUGIN_HPP

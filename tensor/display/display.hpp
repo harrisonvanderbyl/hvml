@@ -3,6 +3,8 @@
 #include "device/device.hpp"
 #include "vector/vectors.hpp"
 #include "display/displaytensor.hpp"
+#include <GL/glew.h>
+#include <set>
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
 
@@ -357,13 +359,15 @@ struct BasicDisplay
         if (!glctx) {
             throw std::runtime_error("Failed to create OpenGL context: " + std::string(SDL_GetError()));
         }
-        loadGLFunctions();
-
+        //loadGLFunctions();
         
         glEnable(GL_DEPTH_TEST);
         SDL_GL_SetSwapInterval(0);
 
-        device = create_opengl_compute_device(0);
+        // Now that a GL context is current, trigger deferred OpenGL plugin
+        // init so it registers its allocators / converters on this context.
+        global_device_manager.init_plugin("opengl");
+        device = &global_device_manager.get_compute_device(kOPENGL, 0);
 
     }
     
