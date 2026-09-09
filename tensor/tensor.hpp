@@ -599,6 +599,8 @@ public:
             return output;
         }
         else{
+            // print what memory type this has
+            std::cout << "Current memory type for tensor: " << device->this_device_type << std::endl;
             result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
         
 

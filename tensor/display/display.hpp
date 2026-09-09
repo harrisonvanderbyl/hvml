@@ -1,4 +1,5 @@
 #include "tensor.hpp"
+#include <SDL3/SDL.h>
 #include "device/device.hpp"
 #include "vector/vectors.hpp"
 #include "display/displaytensor.hpp"
