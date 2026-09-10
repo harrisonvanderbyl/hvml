@@ -59,6 +59,35 @@ struct UniformSetter
         set(value);
     }
 
+    template <int size>
+    void operator=(const Shape<size>& value)
+    {
+        if(!initialized || shader_program == 0 || location == -1){
+            return;
+        };
+
+        if constexpr (size == 1)
+        {
+            glUniform1i(location, value[0]);
+        }
+        else if constexpr (size == 2)
+        {
+            glUniform2i(location, value[0], value[1]);
+        }
+        else if constexpr (size == 3)
+        {
+            glUniform3i(location, value[0], value[1], value[2]);
+        }
+        else if constexpr (size == 4)
+        {
+            glUniform4i(location, value[0], value[1], value[2], value[3]);
+        }
+        else
+        {
+            static_assert(size <= 4, "UniformSetter set() not implemented for this size");
+        };
+    }
+
 
     template <typename T, int size>
     void set(const Hvec<T, size>& value)

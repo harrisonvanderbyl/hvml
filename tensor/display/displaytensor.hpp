@@ -141,8 +141,7 @@ class VectorDisplay: public Tensor<bufftype,2>
         // glClear(GL_COLOR_BUFFER_BIT);
         rect.bind();
         
-        glUniform2i(glGetUniformLocation(rect.material->shader_program, "dimensions"), int(this->shape[0]), int(this->shape[1]));
-        
+        rect.material->uniform_setters["dimensions"] = this->shape;
 
         rect.draw();
 
