@@ -19,7 +19,7 @@ __weak int main(){
 
     VectorDisplay<float16x4> display({1024,1024}, kOPENGL);
     display[{{}}] = float16x4{0.0f,0.0f,0.0f,0.0f};
-    display[{{0,100},{0,100}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
+    display[{{0,100,2},{0,100,2}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
 
     gltf model = gltf("examples/porygon/","scene.gltf");
     std::cout << model << std::endl;

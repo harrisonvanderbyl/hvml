@@ -40,58 +40,121 @@ struct UniformSetter
     };
 
     void operator=(const UniformSetter& other) {
+        // copy string
         name = other.name;
         shader_program = other.shader_program;
         location = other.location;
         type = other.type;
+        initialized = other.initialized;
+    }
+
+    void operator=(Hvec<float, 1> value)
+    {
+        set(value);
     }
 
     template <typename T, int size>
-    void set(const Hvec<T, size>& value, GLuint shader_programa, const std::string& namea)
+    void operator=(const Hvec<T, size>& value)
     {
-        if (location == -1 || !initialized)
-        {
-            location = glGetUniformLocation(shader_programa, namea.c_str());
-        }
+        set(value);
+    }
+
+
+    template <typename T, int size>
+    void set(const Hvec<T, size>& value)
+    {
+        if(!initialized || shader_program == 0 || location == -1){
+            return;
+        };
 
         if constexpr (std::is_same_v<T, float>){
-            glUniform1fv(location, size, value.data);
+            if (size == 1)
+            {
+                glUniform1f(location, value[0]);
+            }
+            else if (size == 2)
+            {
+                glUniform2fv(location, 1, value.data);
+            }
+            else if (size == 3)
+            {
+                glUniform3fv(location, 1, value.data);
+            }
+            else if (size == 4)
+            {
+                glUniform4fv(location, 1, value.data);
+            }
         }
         else if constexpr (std::is_same_v<T, int>){
-            glUniform1iv(location, size, value.data);
+            if (size == 1)
+            {
+                glUniform1i(location, value[0]);
+            }
+            else if (size == 2)
+            {
+                glUniform2iv(location, 1, value.data);
+            }
+            else if (size == 3)
+            {
+                glUniform3iv(location, 1, value.data);
+            }
+            else if (size == 4)
+            {
+                glUniform4iv(location, 1, value.data);
+            }
         }
         else if constexpr (std::is_same_v<T, uint32_t>){
-            glUniform1uiv(location, size, value.data);
+            if (size == 1)
+            {
+                glUniform1ui(location, value[0]);
+            }
+            else if (size == 2)
+            {
+                glUniform2uiv(location, 1, value.data);
+            }
+            else if (size == 3)
+            {
+                glUniform3uiv(location, 1, value.data);
+            }
+            else if (size == 4)
+            {
+                glUniform4uiv(location, 1, value.data);
+            }
         }
         else if constexpr (std::is_same_v<T, float32x4> && size == 4){
             glUniformMatrix4fv(location, 1, GL_FALSE, (float*)&value);
         }        
         else {
-            static_assert(sizeof(T) == 0, "UniformSetter does not support this type");
+            static_assert(sizeof(T) == 0, "UniformSetter set() not implemented for this type");
         }
     }
 
 };
 
+struct UniformManager
+{
+    std::map<std::string, UniformSetter> uniform_setters;
+    GLuint shader_program;
 
+    UniformManager(GLuint shader_program)
+    {
+        // Initialize uniform setters for all active uniforms in the shader program
+        this->shader_program = shader_program;
+    };
 
-// template <typename T>
-// struct UniformHelper {
-//     operator=(const T& value) {
-//         static_assert(sizeof(T) == 0, "UniformHelper assignment operator not implemented for this type");
-//     }
-// };
-
-
-// template <typename T, int size>
-// struct Uniform: public Hvec<T, size>
-// {
-//     using Hvec<T, size>::Hvec; // Inherit constructors
-
-//     std::string name;
-//     GLuint shader_program;
-
-// };
+    UniformSetter& operator[](const std::string& uniform_name) {
+        if (uniform_setters.find(uniform_name) != uniform_setters.end())
+        {
+            return uniform_setters[uniform_name];
+        }
+        else
+        {
+            UniformSetter setter(uniform_name, shader_program);
+            uniform_setters[uniform_name] = setter;
+            return uniform_setters[uniform_name];
+        };
+    }
+};
 
 struct Material
 {
@@ -109,18 +172,14 @@ struct Material
         throw std::runtime_error("getGeometryShaderSource not implemented for this material");
     };
 
-    virtual void init_uniforms(GLuint shader_program) {
-        // default implementation does nothing
-    };
-
     GLuint shader_program = 0;
     std::string name;
     bool double_sided = false;
     bool transparent = false;
     std::map<std::string, GLuint> textures_ids;
     std::map<std::string, GLuint> texture_types;
-    std::map<std::string, UniformSetter> uniform_setters;
-    virtual bool createShaderProgram()
+    UniformManager uniform_setters = UniformManager(shader_program);
+    bool createShaderProgram()
     {
 
         const char* vertex_shader_source = getVertexShaderSource();
@@ -182,7 +241,7 @@ struct Material
         }
 
         // set actvive to get uniform locations
-        this->init_uniforms(shader_program);
+        uniform_setters = UniformManager(shader_program);
 
         return true;
     }
@@ -193,7 +252,6 @@ struct Material
             std::cerr << "Shader program not created!, creating now..." << std::endl;
             this->createShaderProgram();
             glUseProgram(shader_program);
-            init_uniforms(shader_program);
         }
         else
         {

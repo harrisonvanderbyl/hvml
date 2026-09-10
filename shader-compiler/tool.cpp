@@ -660,12 +660,7 @@ private:
         output += "return R\"(";
         output += shader.vertex;
         output += ")\";\n}\n\n";
-
-        output += "void init_uniforms(GLuint shader_program) override {\n    ";
-        for (const auto& uniform_pair : shader.uniforms) {
-            output += "uniform_setters[\"" + uniform_pair.second + "\"] = UniformSetter(\"" + uniform_pair.second + "\", shader_program);\n    ";
-        }
-        output += "};\n\n";
+        
         output += "};\n\n";
         return output;
     }

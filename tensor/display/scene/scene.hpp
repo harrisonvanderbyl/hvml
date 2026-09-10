@@ -30,6 +30,11 @@ private:
 
     OpenGLDisplay* current_display;
 public:
+    float32x3 light_position = float32x3(2.0f, 2.0f, 2.0f);
+    float32x3 light_color = float32x3(1.0f, 1.0f, 1.0f);
+    float32x3 object_color = float32x3(1.0f, 1.0f, 1.0f);
+    float object_alpha = 1.0f;
+
     Camera camera;
     // Platform-specific transparency setup
     float time = 0.0f;
@@ -182,10 +187,6 @@ public:
         time += 0.01f; // Increment time for animation
         // Clear the screen
 
-        float lightPos[] = {2.0f, 2.0f, 2.0f};
-        float lightColor[] = {1.0f, 1.0f, 1.0f};
-        float objectColor[] = {1.0, 1.0f, 1.0f};
-        float objectAlpha = 1.0f; // Semi-transparent for desktop pet
 
 
         // Render all meshes
@@ -193,20 +194,15 @@ public:
         {
             // Bind material's shader
             mesh.bind();
+            mesh.material->bind();
 
 
             camera.bind(*mesh.material);
-            
-            GLint meshLightPosLoc = glGetUniformLocation(mesh.material->shader_program, "lightPos");
-            GLint meshLightColorLoc = glGetUniformLocation(mesh.material->shader_program, "lightColor");
-            GLint meshObjectColorLoc = glGetUniformLocation(mesh.material->shader_program, "objectColor");
-            GLint meshObjectAlphaLoc = glGetUniformLocation(mesh.material->shader_program, "objectAlpha");
 
-            glUniform3fv(meshLightPosLoc, 1, lightPos);
-            glUniform3fv(meshLightColorLoc, 1, lightColor);
-            glUniform3fv(meshObjectColorLoc, 1, objectColor);
-            glUniform1f(meshObjectAlphaLoc, objectAlpha);
-
+            mesh.material->uniform_setters["lightPos"] = light_position;
+            mesh.material->uniform_setters["lightColor"] = light_color;
+            mesh.material->uniform_setters["objectColor"] = object_color;
+            mesh.material->uniform_setters["objectAlpha"] = object_alpha;
             // Draw mesh
             mesh.draw();
         }
