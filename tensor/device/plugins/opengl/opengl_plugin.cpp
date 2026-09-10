@@ -95,6 +95,7 @@ static ComputeDeviceBase* create_opengl_compute_device(int device_id) {
 
     auto& mem_device = global_device_manager.get_device(mem, 0);
     mem_device.supports_compute_device[ComputeType::kOPENGL] = true;
+    mem_device.supports_compute_device[ComputeType::kOPENGLTEXTURE] = true;
 
     if (mem == kDDR) {
         mem_device.compute_device_allocators[ComputeType::kOPENGL] = [](AllocationMetadata metadata, void* existing_data) {
@@ -115,6 +116,8 @@ static ComputeDeviceBase* create_opengl_compute_device(int device_id) {
             return ptra;
         };
 
+        
+
         mem_device.compute_mapping_deallocators[ComputeType::kCPU] = [](void* ptr, BaseMemoryAllocation* original) {
             glBindBuffer(GL_ARRAY_BUFFER, (GLuint)(size_t)original->data);
             glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -130,6 +133,39 @@ static ComputeDeviceBase* create_opengl_compute_device(int device_id) {
             return new BaseMemoryAllocation(meta, reinterpret_cast<void*>(static_cast<uintptr_t>(buffer)));
         };
     }
+
+    mem_device.compute_type_converters[{ComputeType::kOPENGL, ComputeType::kOPENGLTEXTURE}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
+            // Create buffer texture that references the buffer
+            GLuint bufferTexture = 0;  // Buffer texture handle
+            glGenTextures(1, &bufferTexture);
+            glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
+
+            size_t bytesize = original->metadata.byte_size;
+            GLenum internalFormat;
+            if(bytesize == 8){ //fp16x4
+                internalFormat = GL_RGBA16F;
+            } else if(bytesize == 4){ //uint8x4
+                internalFormat = GL_RGBA8;
+            } else if(bytesize == 6){ //fp16x3
+                internalFormat = GL_RGB16F;
+            } else if(bytesize == 3){ //uint8x3
+                internalFormat = GL_RGB8;
+            } else {
+                throw std::runtime_error("Unsupported buffer type for OpenGL display");
+            }
+
+            glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(size_t)ptr);
+            
+            auto glErr = glGetError();
+            if (glErr != GL_NO_ERROR) {
+                throw std::runtime_error("OpenGL error creating buffer texture: " + std::to_string(glErr));
+            }
+            
+            glBindTexture(GL_TEXTURE_BUFFER, 0);
+            glFinish();
+            
+            return reinterpret_cast<void*>(static_cast<uintptr_t>(bufferTexture));
+        };
 
     mem_device.compute_type_converters[{ComputeType::kOPENGLTEXTURE, ComputeType::kCPU}] = [](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) {
         return (void*)0;

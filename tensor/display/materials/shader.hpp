@@ -205,7 +205,7 @@ struct Material
     std::string name;
     bool double_sided = false;
     bool transparent = false;
-    std::map<std::string, GLuint> textures_ids;
+    std::map<std::string, Tensor<void,-1>> textures_ids;
     std::map<std::string, GLuint> texture_types;
     UniformManager uniform_setters = UniformManager(shader_program);
     bool createShaderProgram()
@@ -289,12 +289,21 @@ struct Material
 
         for (const auto& tex_pair : textures_ids)
         {
-            GLuint texture_unit = tex_pair.second;
-            glActiveTexture(GL_TEXTURE0 + texture_unit);
+
             GLuint textype = GL_TEXTURE_2D;
             if (texture_types.find(tex_pair.first) != texture_types.end()) {
                 textype = texture_types[tex_pair.first];
             }
+
+
+            GLuint texture_unit = (GLuint)(size_t)tex_pair.second.storage_pointer->data;
+
+            if (textype == GL_TEXTURE_BUFFER){
+                texture_unit = (GLuint)(size_t)tex_pair.second.data;
+            }
+            
+            glActiveTexture(GL_TEXTURE0 + texture_unit);
+            
             glBindTexture(textype, texture_unit);
             GLint uniform_location = glGetUniformLocation(shader_program, tex_pair.first.c_str());
             glUniform1i(uniform_location, texture_unit);

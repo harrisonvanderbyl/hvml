@@ -50,37 +50,10 @@ class VectorDisplay: public Tensor<bufftype,2>
         // This function can be used to initialize OpenGL textures if needed
         rect = *get_overlay_rect();
             if(this->storage_pointer->metadata.compute_device == ComputeType::kOPENGL){
-                // Create buffer texture that references the buffer
-                GLuint bufferTexture = 0;  // Buffer texture handle
-                glGenTextures(1, &bufferTexture);
-                glBindTexture(GL_TEXTURE_BUFFER, bufferTexture);
-
-                size_t bytesize = this->bitsize;
-                GLenum internalFormat;
-                if(bytesize == 8){ //fp16x4
-                    internalFormat = GL_RGBA16F;
-                } else if(bytesize == 4){ //uint8x4
-                    internalFormat = GL_RGBA8;
-                } else if(bytesize == 6){ //fp16x3
-                    internalFormat = GL_RGB16F;
-                } else if(bytesize == 3){ //uint8x3
-                    internalFormat = GL_RGB8;
-                } else {
-                    throw std::runtime_error("Unsupported buffer type for OpenGL display");
-                }
-
-                glTexBuffer(GL_TEXTURE_BUFFER, internalFormat, (GLuint)(size_t)this->storage_pointer->data);
-                
-                auto glErr = glGetError();
-                if (glErr != GL_NO_ERROR) {
-                    throw std::runtime_error("OpenGL error creating buffer texture: " + std::to_string(glErr));
-                }
-                
-                glBindTexture(GL_TEXTURE_BUFFER, 0);
-                glFinish();
+            
 
                 rect.material = new Shader<OverLayShader<true>>();
-                rect.material->textures_ids["bufferTex"] = bufferTexture;
+                rect.material->textures_ids["bufferTex"] = this->to_compute(ComputeType::kOPENGLTEXTURE);
                 rect.material->texture_types["bufferTex"] = GL_TEXTURE_BUFFER;
                 rect.material->transparent = true;
 
@@ -88,7 +61,7 @@ class VectorDisplay: public Tensor<bufftype,2>
             }else if (this->storage_pointer->metadata.compute_device == ComputeType::kOPENGLTEXTURE){
 
                 rect.material = new Shader<OverLayShader<false>>();    
-                rect.material->textures_ids["bufferTex"] = (GLuint)((size_t)this->storage_pointer->data);
+                rect.material->textures_ids["bufferTex"] = *this;
                 rect.material->texture_types["bufferTex"] = GL_TEXTURE_2D;
                 rect.material->transparent = true;
             } else {

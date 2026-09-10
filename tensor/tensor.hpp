@@ -706,8 +706,8 @@ class Tensor<void, rank> {
     Tensor(Shape<rank> __a, MemoryType device_type = MemoryType::kDDR) = delete;
     Tensor(Shape<rank> __a, void *datain, MemoryType device_type = MemoryType::kDDR) = delete;
     friend std::ostream &operator<<(std::ostream &os, Tensor<void, rank> tensor) = delete;
-    template <typename T>
-    Tensor(const Tensor<T, rank>& other){
+    template <typename T, int orank = rank>
+    Tensor(const Tensor<T, orank>& other){
         this->device = other.device;
         this->shape = other.shape;
         this->strides = other.strides;
@@ -717,6 +717,10 @@ class Tensor<void, rank> {
         this->storage_pointer = other.storage_pointer;
         device->register_allocation(this->storage_pointer);
     }
+
+    Tensor(){
+
+    };
     // copy constructor
     Tensor(const Tensor<void, rank> &other)
     {

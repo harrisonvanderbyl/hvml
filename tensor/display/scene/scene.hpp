@@ -91,19 +91,15 @@ public:
             
             if (material.baseColorTextureIndex >= 0 && material.baseColorTextureIndex < render_textures.size())
             {
-                auto glint = (GLuint)(size_t)render_textures[material.baseColorTextureIndex].storage_pointer->data;
-                std::cout << "texture1:" << glint << ":" << (size_t)render_textures[material.baseColorTextureIndex].storage_pointer->data << ":" << render_textures[material.baseColorTextureIndex].storage_pointer->data << "\n";
-                render_material.textures_ids["texture1"] = glint;
+                render_material.textures_ids["texture1"] = render_textures[material.baseColorTextureIndex];
             }
             if (material.normalTextureIndex >= 0 && material.normalTextureIndex < render_textures.size())
             {
-                auto glint = (GLuint)(size_t)render_textures[material.normalTextureIndex].storage_pointer->data;
-                render_material.textures_ids["normalMap"] = glint;
+                render_material.textures_ids["normalMap"] = render_textures[material.normalTextureIndex];
             }
             if (material.metallicRoughnessTextureIndex >= 0 && material.metallicRoughnessTextureIndex < render_textures.size())
             {
-                auto glint = (GLuint)(size_t)render_textures[material.metallicRoughnessTextureIndex].storage_pointer->data;
-                render_material.textures_ids["metallicMap"] = glint;
+                render_material.textures_ids["metallicMap"] = render_textures[material.metallicRoughnessTextureIndex];
             }
             render_materials.push_back(render_material);
         }
