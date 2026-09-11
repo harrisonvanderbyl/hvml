@@ -1,6 +1,6 @@
 #ifndef DRAWABLE_HPP
 #define DRAWABLE_HPP
-#include <GL/glew.h>
+#include <vulkan/vulkan.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -9,173 +9,169 @@
 #include <cmath>
 #include "tensor.hpp"
 #include "vector/vectors.hpp"
-// #include "../vector/uint84.hpp"
 #include "file_loaders/gltf.hpp"
 #include "ops/ops.hpp"
 #include "display/materials/materials.hpp"
 
 
+// Primitive topology values (shared with gltf.hpp)
+// VK_TOPOLOGY_POINTS=0, VK_TOPOLOGY_LINES=1, ..., VK_TOPOLOGY_TRIANGLE_FAN=6
+
 template <typename... vertex_types>
 struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 {
-    
-    GLenum primitive_type = GL_POINTS;
+    int primitive_type = VK_TOPOLOGY_POINTS;
     mat4 model_matrix = mat4::identity();
     Material* material = nullptr;
     Skeleton bone_matrices;
-    GLuint VAO;
+
+    // Vulkan resources
+    VkBuffer vertexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
+    VkBuffer indexBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
     Tensor<int, 1> indices;
     int offset = 0;
     int count = -1;
+    bool buffersCreated = false;
 
     RenderStruct() : Tensor<mytuple<vertex_types...>, 1>() {}
 
-    void setupVAO()
+    VkPrimitiveTopology getTopology() const {
+        switch (primitive_type) {
+            case VK_TOPOLOGY_POINTS:         return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+            case VK_TOPOLOGY_LINES:           return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+            case VK_TOPOLOGY_LINE_STRIP:      return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+            case VK_TOPOLOGY_TRIANGLES:       return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            case VK_TOPOLOGY_TRIANGLE_STRIP:  return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+            case VK_TOPOLOGY_TRIANGLE_FAN:    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+            default:                          return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        }
+    }
+
+    void createVulkanBuffers()
     {
-        glGenVertexArrays(1, &VAO);
-        glBindVertexArray(VAO);
-        if (indices.data != nullptr){
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (size_t)indices.storage_pointer->data);
+        if (buffersCreated) return;
+        if (!g_vk_ctx) {
+            std::cerr << "[vulkan] No context for buffer creation" << std::endl;
+            return;
         }
-        glBindBuffer(GL_ARRAY_BUFFER, (size_t)this->storage_pointer->data);
-        long offset = 0;
-        for (int i = 0; i < VertexLayout<vertex_types...>::num_attributes; i++)
-        {
-            std::cout << "Setting up attribute " << i << ": size=" << VertexLayout<vertex_types...>::sizes[i] << ", type=" << VertexLayout<vertex_types...>::types[i] << ", normalized=" << VertexLayout<vertex_types...>::normalized[i] << ", attribute_size=" << VertexLayout<vertex_types...>::attribute_sizes[i] << std::endl;
-            glEnableVertexAttribArray(i);
-            if (VertexLayout<vertex_types...>::types[i] == GL_INT)
-            {
-                glVertexAttribIPointer(
-                    i,
-                    VertexLayout<vertex_types...>::sizes[i],
-                    VertexLayout<vertex_types...>::types[i],
-                    sizeof(VertexLayout<vertex_types...>),
-                    (void*)(unsigned long)offset);
-            }
-            else
-            {
-                glVertexAttribPointer(
-                    i,
-                    VertexLayout<vertex_types...>::sizes[i],
-                    VertexLayout<vertex_types...>::types[i],
-                    VertexLayout<vertex_types...>::normalized[i],
-                    sizeof(VertexLayout<vertex_types...>),
-                    (void*)(unsigned long)offset);
-            };
-            offset += VertexLayout<vertex_types...>::attribute_sizes[i];
+
+        // When allocated with kVULKAN, storage_pointer->data is a VulkanBufferHandle*
+        // (first field is VkBuffer) created by the vulkan plugin's kVULKAN allocator.
+        if (this->storage_pointer && this->storage_pointer->data) {
+            vertexBuffer = *(VkBuffer*)this->storage_pointer->data;
         }
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glBindVertexArray(0);
+
+        // Index buffer — also allocated with kVULKAN
+        if (indices.storage_pointer && indices.storage_pointer->data) {
+            indexBuffer = *(VkBuffer*)indices.storage_pointer->data;
+        }
+
+        buffersCreated = true;
     }
 
     RenderStruct(Tensor<vertex_types, 1>... tensors) : Tensor<mytuple<vertex_types...>, 1>(
-        // shape of first tensor
         std::get<0>(std::make_tuple(tensors...)).shape,
-        global_device_manager.get_compute_device(kOPENGL).default_memory_type,
-        kOPENGL)
+        g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+        kVULKAN)
     {
-
-        setupVAO();
-        // copy data from tensors into this tensor
         CopyDataHelper<vertex_types...>::run(tensors.to(*this->device)..., this->to_compute(this->device->default_compute_type));
     }
 
-    RenderStruct(
-        Shape<1> shape
-    ) : Tensor<mytuple<vertex_types...>, 1>(
+    RenderStruct(Shape<1> shape) : Tensor<mytuple<vertex_types...>, 1>(
             shape,
-            global_device_manager.get_compute_device(kOPENGL).default_memory_type,
-            kOPENGL)
+            g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+            kVULKAN)
     {
-        setupVAO();
     }
 
-    RenderStruct(
-        Shape<1> shape,
-        Tensor<int, 1> inindices
-    ) : Tensor<mytuple<vertex_types...>, 1>(
+    RenderStruct(Shape<1> shape, Tensor<int, 1> inindices) : Tensor<mytuple<vertex_types...>, 1>(
             shape,
-            global_device_manager.get_compute_device(kOPENGL).default_memory_type,
-            kOPENGL),
-        indices(inindices.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL))
+            g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+            kVULKAN),
+        indices(inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN))
     {
-        setupVAO();
     }
 
     RenderStruct(Skeleton bones, Tensor<int, 1> inindices, Tensor<vertex_types, 1>... inputs) : Tensor<mytuple<vertex_types...>, 1>(
-        std::get<0>(std::make_tuple(inputs.shape...)), global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL), bone_matrices(bones)
+        std::get<0>(std::make_tuple(inputs.shape...)), g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN), bone_matrices(bones)
     {
-        indices = inindices.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL);
-        setupVAO();
-
-        // indices = Tensor<int, 1>(inindices.shape, global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL);
-        std::cout << "Index storage pointer: " << indices << std::endl;
+        indices = inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN);
         this->device->synchronize_function();
 
-
-        
-
         CopyDataHelper<vertex_types...>::run(inputs.to(*this->device)..., this->to_compute(this->device->default_compute_type));
-
-        this->primitive_type = GL_TRIANGLES;
+        this->primitive_type = VK_TOPOLOGY_TRIANGLES;
     }
 
-    RenderStruct(
-        const RenderStruct<vertex_types...>& other,
-        Tensor<int, 1> inindices
-    ) :  Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(inindices.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGL))
+    RenderStruct(const RenderStruct<vertex_types...>& other, Tensor<int, 1> inindices) : Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN))
     {
-        setupVAO();
     }
 
-    void draw() const
+    void draw(VkCommandBuffer cmd = VK_NULL_HANDLE) const
     {
-        if (material == nullptr)
-        {
+        if (material == nullptr) {
             std::cerr << "No material assigned to RenderStruct, cannot draw!" << std::endl;
             return;
         }
 
-        glBindVertexArray(VAO);
-        glBindBuffer(GL_ARRAY_BUFFER, (size_t)this->storage_pointer->data);
-        // set bone matrices
-        if (bone_matrices.data != nullptr){
-            GLint bonesLoc = glGetUniformLocation(material->shader_program, "bone_matrices");
-            glUniformMatrix4fv(bonesLoc, bone_matrices.shape.A, GL_TRUE, (float *)(void *)bone_matrices.data.data); // Assuming 100 bones for simplicity
+        if (cmd == VK_NULL_HANDLE) return;
+
+        if (!buffersCreated) {
+            const_cast<RenderStruct*>(this)->createVulkanBuffers();
         }
 
+        // Bind vertex buffer
+        VkBuffer vertexBuffers[] = {vertexBuffer};
+        VkDeviceSize offsets[] = {0};
+        vkCmdBindVertexBuffers(cmd, 0, 1, vertexBuffers, offsets);
 
-        if (indices.data != nullptr)
-        {
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (size_t)indices.storage_pointer->data);
-            if (count > 0){
-                glDrawElements(primitive_type, count, GL_UNSIGNED_INT, (void*)(unsigned long)offset);
-                return;
+        // Bind index buffer and draw indexed, or draw arrays
+        if (indexBuffer != VK_NULL_HANDLE) {
+            vkCmdBindIndexBuffer(cmd, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            if (count > 0) {
+                vkCmdDrawIndexed(cmd, count, 1, offset, 0, 0);
+            } else {
+                vkCmdDrawIndexed(cmd, indices.shape[0], 1, 0, 0, 0);
             }
-            
-            glDrawElements(primitive_type, indices.shape[0], GL_UNSIGNED_INT,0);
-            
-        }
-        else
-        {
-            // if offset and count are set, use them
-            if (count > 0){
-                glDrawArrays(primitive_type, offset, count);
-                return;
+        } else {
+            if (count > 0) {
+                vkCmdDraw(cmd, count, 1, offset, 0);
+            } else {
+                vkCmdDraw(cmd, this->shape[0], 1, 0, 0);
             }
-            glDrawArrays(primitive_type, 0, this->shape[0]);
         }
-        glBindVertexArray(0);
     }
 
-    void bind()
+    void bind(VkCommandBuffer cmd = VK_NULL_HANDLE)
     {
-        if (material == nullptr)
-        {
+        if (material == nullptr) {
             std::cerr << "No material assigned to RenderStruct, cannot bind!" << std::endl;
             return;
         }
-        material->bind();
+
+        // Set vertex input layout on the material before pipeline creation
+        if (material->vertexBindingDescs.empty()) {
+            using VLayout = VertexLayout<vertex_types...>;
+            VkVertexInputBindingDescription bindingDesc{};
+            bindingDesc.binding = 0;
+            bindingDesc.stride = sizeof(mytuple<vertex_types...>);
+            bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+            material->vertexBindingDescs.push_back(bindingDesc);
+
+            size_t offset = 0;
+            for (int i = 0; i < VLayout::num_attributes; i++) {
+                VkVertexInputAttributeDescription attrDesc{};
+                attrDesc.binding = 0;
+                attrDesc.location = i;
+                attrDesc.format = VLayout::formats[i];
+                attrDesc.offset = offset;
+                offset += VLayout::attribute_sizes[i];
+                material->vertexAttrDescs.push_back(attrDesc);
+            }
+        }
+
+        material->bind(cmd);
         material->uniform_setters["model"] = model_matrix;
     }
 };

@@ -276,11 +276,11 @@ __weak int main(){
     std::cout << "testptr: " << testptr << std::endl;
 
 
-    OpenGLDisplay window({1024,1024},  WP_ON_TOP);
+    VulkanDisplay window({1024,1024},  WP_ON_TOP);
     Scene scene(&window);
 
  
-    VectorDisplay<float16x4> display({1024,768}, kOPENGL);
+    VectorDisplay<float16x4> display({1024,768}, kVULKANTEXTURE);
 
     global_device_manager.get_device(MemoryType::kDDR,0).default_compute_type = ComputeType::kCPU;
 
@@ -350,7 +350,7 @@ __weak int main(){
 
     Tensor<float,1> adepthsortkey = Tensor<float,1>({num_particles}, window.device->default_memory_type);
 
-    // auto particleindexcuda = particleindex.to(window.device->default_memory_type, kOPENGL);
+    // auto particleindexcuda = particleindex.to(window.device->default_memory_type, kVULKAN);
 
     RenderStruct<float32x3, float32x2, float, uint84> particles_renderable(
         Shape<1>{num_particles},
@@ -366,7 +366,7 @@ __weak int main(){
     
 
     sampler2D rock = load_texture("./image.png");
-    auto rockdevice = rock.to(window.device->default_memory_type, kOPENGLTEXTURE);
+    auto rockdevice = rock.to(window.device->default_memory_type, kVULKANTEXTURE);
     Tensor<Particle, 1> particles = particles_renderable.view<Particle,1>({-1});
 
 
@@ -379,11 +379,10 @@ __weak int main(){
 
     window.setMouseGrab(true);
 
-    glEnable(GL_PROGRAM_POINT_SIZE);
     Camera& camera = scene.getCamera();
     size_t last_frame_time = 0;
     size_t total_frames = 0;
-    window.add_on_update([&](CurrentScreenInputInfo& info){
+    window.add_on_update([&](CurrentScreenInputInfo& info, VkCommandBuffer cmd){
         size_t current_time = std::chrono::high_resolution_clock::now().time_since_epoch() / std::chrono::milliseconds(1);
         size_t time_since_last_frame = current_time - last_frame_time;
         last_frame_time = current_time;
@@ -537,49 +536,26 @@ __weak int main(){
         // );
 
 
-        particles_renderable.bind();
+        particles_renderable.bind(cmd);
         camera.bind(*particles_renderable.material);
-        // // // blend mode additive
-        // glDisable(GL_BLEND);
-        // // // add blend mode, source + destination
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // mat4::identity().bind(particles_renderable.material, "model");
-
-        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-        // set depthOnly to 1.0f
-        GLuint depthOnlyLocation = glGetUniformLocation(particles_renderable.material->shader_program, "depthOnly");
-        GLuint chunksizesLocation = glGetUniformLocation(particles_renderable.material->shader_program, "chunksizes");
-        GLuint chunksperrotationLocation = glGetUniformLocation(particles_renderable.material->shader_program, "chunksperrotation");
-        glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
-        glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
-        glUniform1f(depthOnlyLocation, 1.0f);
-        
-        particles_renderable.draw(); // cheap adepth-only
+        // Depth-only pass
+        particles_renderable.material->uniform_setters["depthOnly"] = Hvec<float,1>(1.0f);
+        particles_renderable.material->uniform_setters["chunksizes"] = chunksizes;
+        particles_renderable.material->uniform_setters["chunksperrotation"] = chunksperrotation;
+        particles_renderable.draw(cmd); // cheap depth-only
 
         // Main pass: full shading with early-z rejection
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        particles_renderable.material->uniform_setters["depthOnly"] = Hvec<float,1>(0.0f);
+        particles_renderable.draw(cmd);
 
-        glUniform1f(depthOnlyLocation, 0.0f);
-        particles_renderable.draw();
-        // particles_renderable.draw();
- 
-        GLenum err;
-        while ((err = glGetError()) != GL_NO_ERROR) {
-            std::cerr << "OpenGL error: " << err << std::endl;
-        }
+        window.activateBackBuffer(cmd);
 
-        // water, have it glow by having it be additive blended with itself
-        // glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-        // glaDepthMask(false); // disable adepth writing for water to prevent z-fighting
-
-        window.activateBackBuffer();
-
-        particles_renderable_liquid.bind();
-        glUniform3fv(chunksizesLocation, 1, &chunksizes[0]);
-        glUniform3fv(chunksperrotationLocation, 1, &chunksperrotation[0]);
+        particles_renderable_liquid.bind(cmd);
+        particles_renderable_liquid.material->uniform_setters["chunksizes"] = chunksizes;
+        particles_renderable_liquid.material->uniform_setters["chunksperrotation"] = chunksperrotation;
         camera.bind(*particles_renderable_liquid.material);
-        particles_renderable_liquid.draw();
+        particles_renderable_liquid.draw(cmd);
 
         // glaDepthMask(true); // re-enable adepth writing
         // 

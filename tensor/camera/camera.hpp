@@ -21,7 +21,8 @@ struct Camera {
         float tanHalfFov = tan(fov * 0.5f * M_PI / 180.0f);
         
         result[0] = float32x4(1.0f / (aspect * tanHalfFov), 0, 0, 0);
-        result[1] = float32x4(0, 1.0f / tanHalfFov, 0, 0);
+        // Vulkan NDC Y is down — negate Y to flip the image right-side up
+        result[1] = float32x4(0, -1.0f / tanHalfFov, 0, 0);
         result[2] = float32x4(0, 0, -(far_plane + near_plane) / (far_plane - near_plane), -1);
         result[3] = float32x4(0, 0, -(2.0f * far_plane * near_plane) / (far_plane - near_plane), 0);
         

@@ -10,6 +10,15 @@
 #define __nv_bfloat16 __hip_bfloat16
 #define __nv_bfloat162 __hip_bfloat162
 
+#define HIP_ERROR_CHECK(__call)                                                 \
+    do {                                                                        \
+        hipError_t __err = __call;                                              \
+        if (__err != hipSuccess) {                                              \
+            std::cerr << "HIP error: " << hipGetErrorString(__err)              \
+                      << " at " << __FILE__ << ":" << __LINE__ << std::endl;   \
+        }                                                                       \
+    } while (0)
+
 void hip_thrust_sort(float* keys, int* indices, size_t count) {
     
      // Allocate temp storage

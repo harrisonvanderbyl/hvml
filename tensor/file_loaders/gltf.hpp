@@ -16,11 +16,21 @@ using json = nlohmann::json;
 // png and jpeg libs
 #define STB_IMAGE_IMPLEMENTATION
 #include "file_loaders/image.hpp"
-// GL enums for primitive types
-#include <GL/gl.h>
+// Primitive topology types (Vulkan-compatible, replaces GL enums)
+
+// Topology enum values matching VkPrimitiveTopologyType in drawable.hpp
+enum PrimitiveTopologyType {
+    VK_TOPOLOGY_POINTS = 0,
+    VK_TOPOLOGY_LINES = 1,
+    VK_TOPOLOGY_LINE_LOOP = 2,
+    VK_TOPOLOGY_LINE_STRIP = 3,
+    VK_TOPOLOGY_TRIANGLES = 4,
+    VK_TOPOLOGY_TRIANGLE_STRIP = 5,
+    VK_TOPOLOGY_TRIANGLE_FAN = 6,
+};
 
 
-typedef GLenum PrimitiveType;
+typedef int PrimitiveType;
 
 
 struct Primitive
@@ -30,29 +40,29 @@ struct Primitive
 
     Tensor<int, 1> indices; // Indices of the mesh
 
-    PrimitiveType type = GL_TRIANGLES; // Default to TRIANGLES
+    PrimitiveType type = VK_TOPOLOGY_TRIANGLES; // Default to TRIANGLES
 
     static PrimitiveType fromInt(int mode)
     {
         switch (mode)
         {
         case 0:
-            return GL_POINTS;
+            return VK_TOPOLOGY_POINTS;
         case 1:
-            return GL_LINES;
+            return VK_TOPOLOGY_LINES;
         case 2:
-            return GL_LINE_LOOP;
+            return VK_TOPOLOGY_LINE_LOOP;
         case 3:
-            return GL_LINE_STRIP;
+            return VK_TOPOLOGY_LINE_STRIP;
         case 4:
-            return GL_TRIANGLES;
+            return VK_TOPOLOGY_TRIANGLES;
         case 5:
-            return GL_TRIANGLE_STRIP;
+            return VK_TOPOLOGY_TRIANGLE_STRIP;
         case 6:
-            return GL_TRIANGLE_FAN;
+            return VK_TOPOLOGY_TRIANGLE_FAN;
         default:
             std::cerr << "Unknown primitive type: " << mode << std::endl;
-            return GL_TRIANGLES; // Default fallback
+            return VK_TOPOLOGY_TRIANGLES; // Default fallback
         }
     }
 

@@ -11,6 +11,7 @@
 #include <hip/hip_runtime.h>
 #include <hip/driver_types.h>
 #include <hip/hip_gl_interop.h>
+#include <unistd.h>
 
 #define HIP_CHECK(__call)                                                      \
     do {                                                                       \
@@ -168,6 +169,74 @@ static ComputeDeviceBase* create_hip_compute_device(int device_id) {
             HIP_CHECK(hipFree(ptr));
         };
     }
+
+    // -----------------------------------------------------------------
+    //  Vulkan → HIP interop
+    //
+    //  When a tensor is allocated with kVULKAN on this memory device,
+    //  the vulkan plugin stores a VulkanBufferHandle* in
+    //  BaseMemoryAllocation::data.  The Tensor constructor auto-calls
+    //  get_massaged_pointer(default_compute_type=kHIP), which looks up
+    //  this {kVULKAN, kHIP} converter.
+    //
+    //  We import the VkBuffer's exported fd into HIP via
+    //  hipImportExternalMemory + hipExternalMemoryGetMappedBuffer,
+    //  returning a HIP device pointer that HIP kernels can read/write
+    //  directly.  The underlying memory is the same VkDeviceMemory —
+    //  no copy.
+    // -----------------------------------------------------------------
+    auto& hip_mem_device = global_device_manager.get_device(MemoryType::kHIP_VRAM, device_id);
+    hip_mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
+
+    hip_mem_device.compute_type_converters[{ComputeType::kVULKAN, ComputeType::kHIP}] =
+        [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) -> void* {
+            VulkanBufferHandle* handle = (VulkanBufferHandle*)ptr;
+            if (!handle || handle->fd < 0) {
+                std::cerr << "[hip] No fd for Vulkan→HIP interop" << std::endl;
+                return nullptr;
+            }
+
+            // Duplicate the fd — hipImportExternalMemory takes ownership on success
+            int dup_fd = dup(handle->fd);
+            if (dup_fd < 0) {
+                std::cerr << "[hip] dup(fd) failed for Vulkan→HIP interop" << std::endl;
+                return nullptr;
+            }
+
+            hipExternalMemoryHandleDesc extMemDesc{};
+            extMemDesc.type = hipExternalMemoryHandleTypeOpaqueFd;
+            extMemDesc.handle.fd = dup_fd;
+            extMemDesc.size = handle->alloc_size;
+            extMemDesc.flags = 0;
+
+            hipExternalMemory_t extMem;
+            hipError_t err = hipImportExternalMemory(&extMem, &extMemDesc);
+            if (err != hipSuccess) {
+                std::cerr << "[hip] hipImportExternalMemory failed: " << hipGetErrorString(err) << std::endl;
+                return nullptr;
+            }
+
+            hipExternalMemoryBufferDesc bufDesc{};
+            bufDesc.offset = 0;
+            bufDesc.size = metadata.byte_size;
+            bufDesc.flags = 0;
+
+            void* devPtr = nullptr;
+            err = hipExternalMemoryGetMappedBuffer(&devPtr, extMem, &bufDesc);
+            if (err != hipSuccess) {
+                std::cerr << "[hip] hipExternalMemoryGetMappedBuffer failed: " << hipGetErrorString(err) << std::endl;
+                return nullptr;
+            }
+
+            return devPtr;
+        };
+
+    // The mapped HIP pointer is a view of the VkBuffer's memory.
+    // Do NOT hipFree it — the vulkan plugin frees the VkBuffer/VkDeviceMemory.
+    hip_mem_device.compute_mapping_deallocators[ComputeType::kHIP] =
+        [device_id](void* ptr, BaseMemoryAllocation* original) {
+            // Nothing — the underlying memory is owned by the VulkanBufferHandle.
+        };
 
     return device;
 }

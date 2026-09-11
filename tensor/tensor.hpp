@@ -593,6 +593,12 @@ public:
         AllocationMap& target_device = global_device_manager.get_device(device_type.memory_type, device_type.device_id);
 
         if(indexer != nullptr || strides != shape.calc_strides()){
+            // For Vulkan compute types, we can't use to_compute() (no kernel ops).
+            // Instead, make a contiguous copy on CPU first, then convert.
+            if (compute_type == ComputeType::kVULKAN || compute_type == ComputeType::kVULKANTEXTURE) {
+                Tensor<R,rank> contiguous = this->to(MemoryLocation(MemoryType::kDDR, 0), ComputeType::kCPU);
+                return contiguous.to(device_type, compute_type);
+            }
             std::cout << "Shape: " << shape << " Strides: " << strides << " Calculated strides: " << shape.calc_strides() << std::endl;
             Tensor output = {shape, device_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type};
             output = this->to_compute(compute_type);
@@ -603,7 +609,6 @@ public:
             std::cout << "Current memory type for tensor: " << device->this_device_type << std::endl;
             result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
         
-
             return {
                 shape,
                 device_type.allocation_map->get_massaged_pointer<R>(

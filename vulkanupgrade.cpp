@@ -4,12 +4,10 @@
 
 
 __weak int main(){
-    setenv("DRI_PRIME", "1", 1);
-    setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 1);
+    setenv("DRI_PRIME", "0", 1);
     setenv("SDL_VIDEO_DRIVER", "x11", 1);
-    setenv("EGL_PLATFORM", "x11", 1);
     
-    OpenGLDisplay window({1024,1024},  WP_ON_TOP);
+    VulkanDisplay window({1024,1024},  WP_ON_TOP);
     Scene scene(&window);
 
 
@@ -17,23 +15,28 @@ __weak int main(){
 
     scene.setCamera({0, 0, -5.0f}, {0, 0, 1.0f}, {0, 1, 0});
 
-    VectorDisplay<float16x4> display({1024,1024}, kOPENGL);
-    display[{{}}] = float16x4{0.0f,0.0f,0.0f,0.0f};
-    display[{{0,100,2},{0,100,2}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
+    VectorDisplay<float16x4> display({1024,1024}, kVULKAN);
+    //display[{{}}] = float16x4{0.0f,0.0f,0.0f,0.0f};
+    //display[{{0,100,2},{0,100,2}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
+
+    // Convert to GPU texture — creates VkImage on rendering device and uploads data
+    std::cout << "=== Converting display to GPU ===" << std::endl;
+    std::cout << "=== Display converted OK ===" << std::endl;
 
     gltf model = gltf("examples/porygon/","scene.gltf");
     std::cout << model << std::endl;
+    std::cout << "=== Loading GLTF ===" << std::endl;
     scene.loadGLTF(model);
+    std::cout << "=== GLTF loaded OK ===" << std::endl;
 
 
 
     window.setMouseGrab(true);
 
-    glEnable(GL_PROGRAM_POINT_SIZE);
     Camera& camera = scene.getCamera();
     size_t last_frame_time = 0;
     size_t total_frames = 0;
-    window.add_on_update([&](CurrentScreenInputInfo& info){
+    window.add_on_update([&](CurrentScreenInputInfo& info, VkCommandBuffer cmd){
         size_t current_time = std::chrono::high_resolution_clock::now().time_since_epoch() / std::chrono::milliseconds(1);
         size_t time_since_last_frame = current_time - last_frame_time;
         last_frame_time = current_time;
@@ -68,26 +71,14 @@ __weak int main(){
             window.setMouseGrab(!info.isMouseGrabbed());
         }
 
-        
- 
-        GLenum err;
-        while ((err = glGetError()) != GL_NO_ERROR) {
-            std::cerr << "OpenGL error: " << err << std::endl;
-        }
-
         SDL_Delay(16);
-        // print fps using current_time and last_frame_time
         
         size_t frame_time = std::chrono::high_resolution_clock::now().time_since_epoch() / std::chrono::milliseconds(1) - current_time;
         
         std::cout << "Frame time: " << frame_time << " ms, FPS: " << 1000.0f / frame_time << "\r" << std::flush;
         
-        // limit to 60fps by sleeping for the remaining time
-        // if (frame_time < 16) {
-        //     SDL_Delay(16 - frame_time);
-        // }
-        window.activateBackBuffer();
-        display.present();
+        window.activateBackBuffer(cmd);
+        display.present(cmd);
 
         total_frames++;
         

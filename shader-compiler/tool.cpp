@@ -333,6 +333,9 @@ private:
 
         out = std::regex_replace(out, std::regex("discard\\(\\);"), "discard;");
 
+        // Vulkan GLSL: texture2D() → texture()
+        out = std::regex_replace(out, std::regex("\\btexture2D\\b"), "texture");
+
         for (const std::string& a : {"x", "y", "z", "w", "r", "g", "b", "a"}) {
             for (const std::string& b : {"x", "y", "z", "w", "r", "g", "b", "a", ""}) {
                 for (const std::string& c : {"x", "y", "z", "w", "r", "g", "b", "a", ""}) {
@@ -386,6 +389,17 @@ private:
         return result;
     }
 
+    // Reformat array types: "mat4[100]" + name "bone_matrices" → "mat4 bone_matrices[100]"
+    std::string formatFieldDecl(const std::string& type, const std::string& name) {
+        auto bracketPos = type.find('[');
+        if (bracketPos == std::string::npos) {
+            return type + " " + name;
+        }
+        std::string baseType = type.substr(0, bracketPos);
+        std::string arraySuffix = type.substr(bracketPos);
+        return baseType + " " + name + arraySuffix;
+    }
+
     std::string getInstantiatedSourceText(Stmt *S) {
         if (!S) return "";
         std::string result;
@@ -411,19 +425,44 @@ private:
     ) {
         GLSLShader s;
 
+        // Separate sampler uniforms from regular uniforms
+        std::vector<std::pair<std::string, std::string>> samplerUniforms;
+        std::vector<std::pair<std::string, std::string>> regularUniforms;
+        for (auto &u : uniforms) {
+            if (u.first == "sampler2D" || u.first == "samplerBuffer") {
+                samplerUniforms.push_back(u);
+            } else {
+                regularUniforms.push_back(u);
+            }
+        }
+
+        // === Vertex Shader ===
         std::string vs;
-        vs += "#version 330 core\n";
+        vs += "#version 450\n";
         if (hasuint16_t) {
-            vs += "#extension GL_NV_gpu_shader5 : enable\n";
+            vs += "#extension GL_EXT_shader_explicit_arithmetic_types : enable\n";
+        }
+
+        // UBO for regular uniforms
+        if (!regularUniforms.empty()) {
+            vs += "layout(set = 0, binding = 0) uniform UBO {\n";
+            for (auto &u : regularUniforms)
+                vs += "    " + formatFieldDecl(u.first, u.second) + ";\n";
+            vs += "};\n\n";
+        }
+
+        // Samplers
+        uint32_t binding = 1;
+        for (auto &u : samplerUniforms) {
+            vs += "layout(set = 0, binding = " + std::to_string(binding) + ") uniform " +
+                  u.first + " " + u.second + ";\n";
+            binding++;
         }
 
         for (size_t i = 0; i < vertexInputs.size(); i++)
             vs += "layout (location = " + std::to_string(i) + ") in " +
                   vertexInputs[i].first + " a" +
                   capitalize(vertexInputs[i].second) + ";\n";
-
-        for (auto &u : uniforms)
-            vs += "uniform " + u.first + " " + u.second + ";\n";
 
         for (auto &fi : fragmentInputs)
             vs += "out " + fi.first + " " + fi.second + ";\n";
@@ -436,16 +475,35 @@ private:
 
         s.vertex = vs;
 
+        // === Fragment Shader ===
         std::string fs;
-        fs += "#version 330 core\n";
-        fs += "out vec4 FragColor;\n";
+        fs += "#version 450\n";
+        if (hasuint16_t) {
+            fs += "#extension GL_EXT_shader_explicit_arithmetic_types : enable\n";
+        }
+        fs += "layout(location = 0) out vec4 FragColor;\n";
+
+        // UBO for regular uniforms
+        if (!regularUniforms.empty()) {
+            fs += "layout(set = 0, binding = 0) uniform UBO {\n";
+            for (auto &u : regularUniforms)
+                fs += "    " + formatFieldDecl(u.first, u.second) + ";\n";
+            fs += "};\n\n";
+        }
+
+        // Samplers
+        binding = 1;
+        for (auto &u : samplerUniforms) {
+            fs += "layout(set = 0, binding = " + std::to_string(binding) + ") uniform " +
+                  u.first + " " + u.second + ";\n";
+            binding++;
+        }
 
         for (auto &fi : fragmentInputs)
             fs += "in " + fi.first + " " + fi.second + ";\n";
 
         for (auto &u : uniforms)
         {
-            fs += "uniform " + u.first + " " + u.second + ";\n";
             s.uniforms.push_back(u);
         }
 
@@ -531,6 +589,7 @@ public:
         // ----------------------------------------------------------------
         std::string headerOutput;
         headerOutput += "#include \"display/materials/materials.hpp\"\n";
+        headerOutput += "#include <vulkan/vulkan.h>\n";
 
         for (auto &s : Visitor->shaders) {
             llvm::outs() << "==== Vertex Shader (" << s.struct_name << ") ====\n" << s.vertex << "\n";
@@ -614,7 +673,7 @@ private:
         glslFile << glslSource;
         glslFile.close();
 
-        std::string cmd = "glslangValidator --auto-map-locations -G -S " + shaderType +
+        std::string cmd = "glslangValidator --auto-map-locations --target-env vulkan1.2 -G -S " + shaderType +
                          " -o " + tempSPV + " " + tempGLSL + " 2>&1";
         FILE* pipe = popen(cmd.c_str(), "r");
         if (!pipe) { llvm::errs() << "Failed to run glslangValidator\n"; return false; }
@@ -660,7 +719,75 @@ private:
         output += "return R\"(";
         output += shader.vertex;
         output += ")\";\n}\n\n";
-        
+
+        // Emit getUniformOrder() — regular (non-sampler) uniforms in struct declaration order
+        output += "std::vector<std::string> getUniformOrder() override {\n";
+        output += "    return {";
+        bool first = true;
+        for (auto &u : shader.uniforms) {
+            if (u.first == "sampler2D" || u.first == "samplerBuffer") continue;
+            if (!first) output += ", ";
+            first = false;
+            output += "\"" + u.second + "\"";
+        }
+        output += "};\n}\n\n";
+
+        // Emit getUniformSizes() — std140 byte size for each uniform (same order as getUniformOrder)
+        output += "std::vector<size_t> getUniformSizes() override {\n";
+        output += "    return {";
+        first = true;
+        for (auto &u : shader.uniforms) {
+            if (u.first == "sampler2D" || u.first == "samplerBuffer") continue;
+            if (!first) output += ", ";
+            first = false;
+            // Compute std140 size based on GLSL type
+            const std::string& t = u.first;
+            size_t sz = 64; // default to mat4 size
+            if (t == "mat4") sz = 64;
+            else if (t == "mat3") sz = 48;
+            else if (t == "mat2") sz = 32;
+            else if (t == "vec4") sz = 16;
+            else if (t == "vec3") sz = 12;
+            else if (t == "vec2") sz = 8;
+            else if (t == "float") sz = 4;
+            else if (t == "int") sz = 4;
+            else if (t == "uint") sz = 4;
+            else if (t == "bool") sz = 4;
+            else if (t.substr(0, 5) == "mat4[" ) {
+                // mat4[N] — parse N
+                int n = 1;
+                sscanf(t.c_str(), "mat4[%d]", &n);
+                sz = 64 * n;
+            }
+            else if (t.substr(0, 5) == "mat3[" ) {
+                int n = 1;
+                sscanf(t.c_str(), "mat3[%d]", &n);
+                sz = 48 * n;
+            }
+            else if (t.substr(0, 5) == "vec4[" ) {
+                int n = 1;
+                sscanf(t.c_str(), "vec4[%d]", &n);
+                sz = 16 * n;
+            }
+            else if (t.substr(0, 5) == "vec3[" ) {
+                int n = 1;
+                sscanf(t.c_str(), "vec3[%d]", &n);
+                sz = 16 * n; // std140: vec3 array elements are 16 bytes each
+            }
+            else if (t.substr(0, 5) == "vec2[" ) {
+                int n = 1;
+                sscanf(t.c_str(), "vec2[%d]", &n);
+                sz = 8 * n;
+            }
+            else if (t.substr(0, 6) == "float[" ) {
+                int n = 1;
+                sscanf(t.c_str(), "float[%d]", &n);
+                sz = 4 * n;
+            }
+            output += std::to_string(sz);
+        }
+        output += "};\n}\n\n";
+
         output += "};\n\n";
         return output;
     }

@@ -1,6 +1,6 @@
 
-#ifndef TENSOR_DISPLAY_MATERIALS_HPP
-#define TENSOR_DISPLAY_MATERIALS_HPP
+#ifndef TENSOR_DISPLAY_MATERIALS_BASIC_HPP
+#define TENSOR_DISPLAY_MATERIALS_BASIC_HPP
 #include "display/materials/shader.hpp"
 
 struct __shader BasicShader : public ShaderProgram
@@ -67,4 +67,4 @@ struct __shader BasicShader : public ShaderProgram
 };
 
 
-#endif // TENSOR_DISPLAY_MATERIALS_HPP
+#endif // TENSOR_DISPLAY_MATERIALS_BASIC_HPP

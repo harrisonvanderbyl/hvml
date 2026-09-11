@@ -1,9 +1,11 @@
 #include "tensor.hpp"
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 #include "device/device.hpp"
 #include "vector/vectors.hpp"
 #include "display/displaytensor.hpp"
-#include <GL/glew.h>
+#include "display/vulkan_context.hpp"
+#include <vulkan/vulkan.h>
 #include <set>
 #ifndef VECTOR_DISPLAY_HPP
 #define VECTOR_DISPLAY_HPP
@@ -316,32 +318,22 @@ struct BasicDisplay
     WindowPropertiesFlags properties;
     CurrentScreenInputInfo current_screen_input_info;
     ComputeDeviceBase* device = nullptr;
-    std::vector<std::function<void(CurrentScreenInputInfo&)>> display_loop_functions;
+    std::vector<std::function<void(CurrentScreenInputInfo&, VkCommandBuffer)>> display_loop_functions;
 
-    
     Clock clock;
+    VulkanContext vk_ctx;
 
-   
-
-    
-
-    
     BasicDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
         : properties(properties),
           width(shape[0]),
           height(shape[1])
     {
         SDL_Init(SDL_INIT_VIDEO);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
         window = SDL_CreateWindow(
-            "CUDA → OpenGL",
+            "Vulkan Display",
             width, height,
-            SDL_WINDOW_OPENGL | int(properties)
+            SDL_WINDOW_VULKAN | int(properties)
         );
 
         if (!window) {
@@ -349,72 +341,76 @@ struct BasicDisplay
         }
 
         display = (void *)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
-        screen = SDL_GetDisplayForWindow(window);        
-        
+        screen = SDL_GetDisplayForWindow(window);
+
         SDL_ShowWindow(window);
 
-        std::cout << "loading GL functions" << std::endl;
-        
-        auto glctx = SDL_GL_CreateContext(window);
-        if (!glctx) {
-            throw std::runtime_error("Failed to create OpenGL context: " + std::string(SDL_GetError()));
-        }
-        //loadGLFunctions();
-        
-        glEnable(GL_DEPTH_TEST);
-        SDL_GL_SetSwapInterval(0);
+        // Initialize Vulkan
+        vk_ctx.init(window, width, height);
+        g_vk_ctx = &vk_ctx;
 
-        // Now that a GL context is current, trigger deferred OpenGL plugin
-        // init so it registers its allocators / converters on this context.
-        global_device_manager.init_plugin("opengl");
-        device = &global_device_manager.get_compute_device(kOPENGL, 0);
+        // Share VkDevice with the vulkan plugin so tensor allocations
+        // use the same device as the render pass
+        vk_ctx.shareWithPlugin();
 
+        // Trigger deferred Vulkan plugin init
+        global_device_manager.init_plugin("vulkan");
+
+        // Set the rendering device's memory device to use kVULKANTEXTURE
+        // as default compute type so tensor allocations don't try to convert
+        int renderIdx = vk_ctx.getRenderingDeviceIndex();
+        device = &global_device_manager.get_compute_device(kVULKAN, renderIdx);
+
+        // Set default_memory_type on the vulkan compute device to the rendering
+        // GPU's memory type (e.g. kHIP_VRAM for AMD, kCUDA_VRAM for NVIDIA)
+        MemoryType renderMem = vk_ctx.getRenderingMemoryType();
+        device->default_memory_type = renderMem;
+        device->supports_memory_location[renderMem] = true;
+
+        // Set default_compute_type on the rendering device's memory device.
+        // kHIP for AMD (kHIP_VRAM), kCUDA for NVIDIA (kCUDA_VRAM).
+        // The Tensor constructor auto-calls get_massaged_pointer(default_compute_type),
+        // which triggers the {kVULKAN, kHIP/kCUDA} interop converter — giving
+        // compute kernels direct access to the Vulkan-allocated buffer.
+        auto& renderMemDevice = global_device_manager.get_device(renderMem, 0);
+        ComputeType default_compute_type = (renderMem == MemoryType::kCUDA_VRAM) ? kCUDA : kHIP;
+        renderMemDevice.default_compute_type = default_compute_type;
+        renderMemDevice.default_allocator_type = kVULKAN;
+        std::cout << "[display] Set renderMemDevice(" << (int)renderMem
+                  << ") default_compute_type=" << default_compute_type
+                  << ", default_allocator_type=kVULKAN" << std::endl;
     }
-    
+
 };
 
 
-struct OpenGLDisplay : public BasicDisplay
+struct VulkanDisplay : public BasicDisplay
 {
     public:
     VectorDisplay<float16x4> solidParticlesTexture;
     VectorDisplay<float16x4> finalRenderTexture;
     VectorDisplay<float> depthbuffer;
 
-    OpenGLDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
+    VulkanDisplay(Shape<2> shape = 0, WindowPropertiesFlags properties = (WindowProperties)0)
         : BasicDisplay(shape, properties),
-            solidParticlesTexture(shape, kOPENGLTEXTURE),
-            finalRenderTexture(shape, kOPENGLTEXTURE),
-            depthbuffer(AllocationMetadata::create<float>(shape, device->default_memory_type, kOPENGLTEXTURE, GL_DEPTH_COMPONENT32F))
+            solidParticlesTexture(shape, kVULKANTEXTURE),
+            finalRenderTexture(shape, kVULKANTEXTURE),
+            depthbuffer(shape, kVULKANTEXTURE)
     {
-
         solidParticlesTexture.attach_depth_buffer(depthbuffer);
-        // === FRAMEBUFFER 2: Final render ===
-        finalRenderTexture.attach_depth_buffer(depthbuffer); // Share depth buffer 
+        finalRenderTexture.attach_depth_buffer(depthbuffer);
     }
 
-
-
 private:
-
-
     void updateMousePositionFromRoot() {
-        // Get global mouse state
         float gx, gy;
         SDL_GetGlobalMouseState(&gx, &gy);
-        
-        // Get window position
         int wx, wy;
         SDL_GetWindowPosition(window, &wx, &wy);
-        
-        // Calculate relative position
-       
         current_screen_input_info.updateMousePositionAbsolute(gx - wx, gy - wy);
     }
 
 public:
-
-  
     void setWindowCaption(const char* title) {
         SDL_SetWindowTitle(window, title);
     }
@@ -443,21 +439,20 @@ public:
         SDL_GetWindowSize(window, &w, &h);
         return {w, h};
     }
-    
+
     void setWindowBorderless() {
         SDL_SetWindowBordered(window, false);
     }
-    
+
     void enableAlphaBlending() {
-        // Set window opacity for compositor
         SDL_SetWindowOpacity(window, 1.0f);
     }
-    
+
     void setWindowOpacity(float opacity) {
         if (!properties.alpha_enabled) return;
         SDL_SetWindowOpacity(window, opacity);
     }
-    
+
     void updateDisplay() {
         auto oldWindowPosition = current_screen_input_info.currentWindowPosition;
         SDL_GetWindowPosition(window, &current_screen_input_info.currentWindowPosition[0], &current_screen_input_info.currentWindowPosition[1]);
@@ -465,28 +460,29 @@ public:
             current_screen_input_info.currentWindowPosition.x() - oldWindowPosition.x(),
             current_screen_input_info.currentWindowPosition.y() - oldWindowPosition.y()
         );
-        
-        SDL_GL_SwapWindow(window);
+        // Vulkan present happens in endFrame()
     }
 
     void resizeDisplay() {
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
-        
+        if (w != width || h != height) {
+            width = w;
+            height = h;
+            vk_ctx.recreateSwapchain(window, w, h);
+        }
     }
-    
+
     bool processEvents() {
         SDL_Event sdl_event;
         current_screen_input_info.clear_mouse_states();
-        
+
         while (SDL_PollEvent(&sdl_event)) {
             if (sdl_event.type == SDL_EVENT_QUIT) {
                 return false;
             }
             else if (sdl_event.type == SDL_EVENT_KEY_DOWN) {
                 current_screen_input_info.updateKeyState(sdl_event.key.key, true);
-                
-                // Check for special keys (like ESC)
                 if (sdl_event.key.key == SDLK_ESCAPE) {
                     return false;
                 }
@@ -508,90 +504,105 @@ public:
                 }
             }
             else if (sdl_event.type == SDL_EVENT_MOUSE_WHEEL) {
-                // Handle mouse wheel scrolling
-                if (sdl_event.wheel.y > 0) {
-                    current_screen_input_info.clearWheelStates();
-                    // Wheel up
-                } else if (sdl_event.wheel.y < 0) {
-                    current_screen_input_info.clearWheelStates();
-                    // Wheel down
-                }
-                if (sdl_event.wheel.x > 0) {
-                    current_screen_input_info.clearWheelStates();
-                    // Wheel right
-                } else if (sdl_event.wheel.x < 0) {
-                    current_screen_input_info.clearWheelStates();
-                    // Wheel left
-                }
+                current_screen_input_info.clearWheelStates();
             }
             else if (sdl_event.type == SDL_EVENT_WINDOW_RESIZED) {
                 resizeDisplay();
             }
         }
-        
-        
+
         return true;
     }
 
-    void activateBackBuffer(){
-        finalRenderTexture.bind_as_render_target();
-        glViewport(0, 0, width, height);
-        glClear(GL_COLOR_BUFFER_BIT);
+    void activateBackBuffer(VkCommandBuffer cmd) {
+        // In Vulkan, we're already rendering to the swapchain.
+        // Just set viewport + scissor for subsequent draw calls.
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float)width;
+        viewport.height = (float)height;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
 
-        // turn off depth write and copy the solid particles texture to the back buffer
-        glDepthMask(GL_FALSE);
-        solidParticlesTexture.present();
-        glDepthMask(GL_TRUE);
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = {(uint32_t)width, (uint32_t)height};
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
     }
-    
+
     void displayLoop() {
         bool running = true;
 
         while (running) {
             resizeDisplay();
-            
-            // === PASS 1: Render ONLY solid particles to solidParticlesTexture ===
-            solidParticlesTexture.bind_as_render_target();
-            glViewport(0, 0, width, height);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glEnable(GL_DEPTH_TEST);
-            
-            for (const auto& callback : display_loop_functions) {
-                callback(current_screen_input_info);
+
+            // Begin Vulkan frame — get command buffer
+            VkCommandBuffer cmd = vk_ctx.beginFrame();
+            if (cmd == VK_NULL_HANDLE) {
+                vk_ctx.recreateSwapchain(window, width, height);
+                running = processEvents();
+                continue;
             }
-            
-            // === Display final result to screen ===
-            finalRenderTexture.unbind_render_target();
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            displayRenderTexture();
-            
+
+            // Set viewport + scissor
+            VkViewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = (float)width;
+            viewport.height = (float)height;
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+            VkRect2D scissor{};
+            scissor.offset = {0, 0};
+            scissor.extent = {(uint32_t)width, (uint32_t)height};
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+            // Run user callbacks
+            for (const auto& callback : display_loop_functions) {
+                callback(current_screen_input_info, cmd);
+            }
+
+            // End frame (submits + presents)
+            vk_ctx.endFrame();
+
             running = processEvents();
             updateDisplay();
         }
     }
 
-    void displayRenderTexture() {
-       
-        finalRenderTexture.present();
+    void displayRenderTexture(VkCommandBuffer cmd) {
+        finalRenderTexture.present(cmd);
     }
-   
-    
-    ~OpenGLDisplay() {
+
+    ~VulkanDisplay() {
+        // Reset textures before VkDevice is cleaned up — their deallocators
+        // call vkDestroyImageView/vkDestroyBufferView which need a valid VkDevice.
+        solidParticlesTexture.storage_pointer = nullptr;
+        solidParticlesTexture.data.data = nullptr;
+        finalRenderTexture.storage_pointer = nullptr;
+        finalRenderTexture.data.data = nullptr;
+        depthbuffer.storage_pointer = nullptr;
+        depthbuffer.data.data = nullptr;
+
+        vk_ctx.cleanup();
         if (window) {
             SDL_DestroyWindow(window);
         }
         SDL_Quit();
     }
-    
-    void add_on_update(std::function<void(CurrentScreenInputInfo&)> func) {
+
+    void add_on_update(std::function<void(CurrentScreenInputInfo&, VkCommandBuffer)> func) {
         display_loop_functions.push_back(func);
     }
-    
-    // Utility functions for window management
+
     void moveWindow(int x, int y) {
         SDL_SetWindowPosition(window, x, y);
     }
-    
+
     void resizeWindow(int width, int height) {
         SDL_SetWindowSize(window, width, height);
     }
@@ -606,22 +617,18 @@ public:
         current_screen_input_info.setFullscreen(fullscreen);
     }
 
-    // Get key code mapping (similar to pygame)
     static SDL_Keycode getKeyCode(const char* key_name) {
         return SDL_GetKeyFromName(key_name);
     }
 
-    // Check if specific key is pressed
     bool isKeyPressed(SDL_Keycode key) const {
         return current_screen_input_info.isKeyPressed(key);
     }
 
-    // Surface operations for compatibility
     struct Surface {
         int width;
         int height;
         std::vector<uint32_t> pixels;
-        
         Surface(int w, int h, uint32_t * px) : width(w), height(h), pixels(px, px + (w * h)) {}
         Surface(int w, int h) : width(w), height(h), pixels(w * h, 0) {}
     };
@@ -630,9 +637,7 @@ public:
         return Surface(w, h);
     }
 
-    // Font rendering placeholder (requires SDL_ttf)
     struct Font {
-        // Placeholder for font data
         int size;
         Font(int s) : size(s) {}
     };

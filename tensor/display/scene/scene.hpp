@@ -1,5 +1,5 @@
-#ifndef OPENGL_RENDERER_HPP
-#define OPENGL_RENDERER_HPP
+#ifndef VULKAN_RENDERER_HPP
+#define VULKAN_RENDERER_HPP
 
 #include <iostream>
 #include <vector>
@@ -9,7 +9,6 @@
 #include <cmath>
 #include "tensor.hpp"
 #include "vector/vectors.hpp"
-// #include "../vector/uint84.hpp"
 #include "file_loaders/gltf.hpp"
 #include "display/display.hpp"
 #include "ops/ops.hpp"
@@ -25,10 +24,9 @@ private:
     std::vector<sampler2D> render_textures;
     std::vector<Shader<BasicShader>> render_materials;
 
-    // Framebuffer for off-screen rendering
     int render_width, render_height;
 
-    OpenGLDisplay* current_display;
+    VulkanDisplay* current_display;
 public:
     float32x3 light_position = float32x3(2.0f, 2.0f, 2.0f);
     float32x3 light_color = float32x3(1.0f, 1.0f, 1.0f);
@@ -36,44 +34,52 @@ public:
     float object_alpha = 1.0f;
 
     Camera camera;
-    // Platform-specific transparency setup
     float time = 0.0f;
-    Scene(OpenGLDisplay* display) : current_display(display)
-    {
 
-        render_width = display->width;
-        render_height = display->height;
-        // Enable depth testing
-
-        // Create default shader program for the scene
-        if (!default_material.createShaderProgram())
-        {
-            std::cerr << "Failed to create default shader program!" << std::endl;
-            return;
-        }
-
-        std::cout << "OpenGL Renderer initialized successfully!" << std::endl;
-
-        current_display->add_on_update(
-            [this](CurrentScreenInputInfo &info) {
-                render();
+    ~Scene() {
+        // Prevent double-deallocate by nulling shared storage_pointers
+        try {
+            for (auto &m : render_materials) {
+                for (auto it = m.textures_ids.begin(); it != m.textures_ids.end(); ++it) {
+                    it->second.data = nullptr;
+                    it->second.storage_pointer = nullptr;
+                }
             }
-        );
-
+            for (auto it = default_material.textures_ids.begin(); it != default_material.textures_ids.end(); ++it) {
+                it->second.data = nullptr;
+                it->second.storage_pointer = nullptr;
+            }
+        } catch (...) {}
     }
 
-    
+    Scene(VulkanDisplay* display) : current_display(display)
+    {
+        render_width = display->width;
+        render_height = display->height;
+
+        // Don't create the default material's pipeline here — it has no textures
+        // or vertex layout yet. The pipeline will be created lazily in bind().
+        default_material.double_sided = true;
+
+        std::cout << "Vulkan Renderer initialized successfully!" << std::endl;
+
+        current_display->add_on_update(
+            [this](CurrentScreenInputInfo &info, VkCommandBuffer cmd) {
+                render(cmd);
+            }
+        );
+    }
 
     bool loadGLTF(const gltf &model)
     {
         std::cout << "Loading GLTF model with " << model.meshes.size() << " meshes" << std::endl;
 
-        // load textures
         for (const auto &texture : model.textures)
         {
-
-            render_textures.push_back(texture.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type, kOPENGLTEXTURE));
-            
+            // Allocate as kVULKANTEXTURE — the vulkan plugin creates a VkImage+VkImageView
+            // on the rendering device, and storage_pointer->data holds the VkImageView.
+            MemoryType memType = g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR;
+            render_textures.push_back(texture.to(memType, kVULKANTEXTURE));
         }
 
         for (const auto &material : model.materials)
@@ -81,14 +87,8 @@ public:
             Shader<BasicShader> render_material = Shader<BasicShader>();
             render_material.name = material.name;
             render_material.double_sided = material.doubleSided;
-            
-            // Create shader program for each material
-            if (!render_material.createShaderProgram())
-            {
-                std::cerr << "Failed to create shader program for material: " << material.name << std::endl;
-                continue;
-            }
-            
+
+            // Set textures BEFORE createShaderProgram() so the pipeline layout includes texture bindings
             if (material.baseColorTextureIndex >= 0 && material.baseColorTextureIndex < render_textures.size())
             {
                 render_material.textures_ids["texture1"] = render_textures[material.baseColorTextureIndex];
@@ -101,6 +101,9 @@ public:
             {
                 render_material.textures_ids["metallicMap"] = render_textures[material.metallicRoughnessTextureIndex];
             }
+            // Don't create the shader program here — vertex binding descriptions
+            // are set later in RenderStruct::bind(). The pipeline will be created
+            // lazily in bind() with both textures and vertex layout available.
             render_materials.push_back(render_material);
         }
 
@@ -110,7 +113,6 @@ public:
 
             for (auto &primitive : mesh.primitives)
             {
-
                 auto pos_it = primitive.attributes.find("POSITION");
                 Tensor<float32x3, 1> positions = pos_it->second;
                 auto norm_it = primitive.attributes.find("NORMAL");
@@ -124,15 +126,15 @@ public:
                 {
                     std::cout << "Attribute: " << attr.first << " Shape: " << attr.second.shape << std::endl;
                 }
+                MemoryType memType = g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR;
                 RenderStruct render_mesh(
                     model.skeletons[0],
                     primitive.indices,
-                    positions.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
-                    normals.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
-                    texcoords.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type),
-                    bone_ids.to(global_device_manager.get_compute_device(kOPENGL).default_memory_type));
+                    positions.to(memType),
+                    normals.to(memType),
+                    texcoords.to(memType),
+                    bone_ids.to(memType));
 
-                // Process material
                 if (primitive.materialIndex >= 0 && primitive.materialIndex < model.materials.size())
                 {
                     render_mesh.material = &render_materials[primitive.materialIndex];
@@ -140,11 +142,10 @@ public:
                 else
                 {
                     std::cerr << "Warning: Material index " << primitive.materialIndex << " out of range for mesh " << mesh.name << std::endl;
-                    render_mesh.material = &default_material; // Use default material
+                    render_mesh.material = &default_material;
                 }
 
-                render_mesh.primitive_type = primitive.type; // Default to triangles
-
+                render_mesh.primitive_type = primitive.type;
 
                 render_meshes.push_back(render_mesh);
                 std::cout << "Created render mesh with " << render_mesh.indices.shape << " indices" << std::endl;
@@ -161,11 +162,8 @@ public:
         camera.up = up;
     }
 
-    // Add method to control transparency dynamically
     void setTransparency(float alpha)
     {
-        // This will be used in the next render call
-        // You can store this as a member variable if needed
     }
 
     Camera &getCamera()
@@ -173,40 +171,48 @@ public:
         return camera;
     }
 
-    void render()
+    void render(VkCommandBuffer cmd)
     {
-
         camera.aspect = (float)render_width / (float)render_height;
 
-        glViewport(0, 0, render_width, render_height);
+        time += 0.01f;
 
-        time += 0.01f; // Increment time for animation
-        // Clear the screen
-
-
-
-        // Render all meshes
         for (auto &mesh : render_meshes)
         {
-            // Bind material's shader
-            mesh.bind();
-            mesh.material->bind();
+            // Set vertex layout on material and create buffers first
+            mesh.bind(cmd);
 
-
+            // Set all uniforms BEFORE bind() flushes them to the GPU
             camera.bind(*mesh.material);
+
+            // Set bone matrices — shader does bone_matrices[boneID] * model
+            auto& boneSetter = mesh.material->uniform_setters["bone_matrices"];
+            if (boneSetter.initialized && !mesh.bone_matrices.storage_pointer) {
+                // bone_matrices not set, fill with identity
+                static mat4 identity[100];
+                for (int i = 0; i < 100; i++) identity[i] = mat4::identity();
+                boneSetter.data.resize(sizeof(mat4) * 100);
+                memcpy(boneSetter.data.data(), identity, sizeof(mat4) * 100);
+                boneSetter.dirty = true;
+            } else if (boneSetter.initialized && mesh.bone_matrices.storage_pointer) {
+                size_t boneCount = mesh.bone_matrices.shape[0];
+                boneSetter.data.resize(sizeof(mat4) * 100);
+                memset(boneSetter.data.data(), 0, sizeof(mat4) * 100);
+                memcpy(boneSetter.data.data(), mesh.bone_matrices.storage_pointer->data,
+                       sizeof(mat4) * boneCount);
+                boneSetter.dirty = true;
+            }
 
             mesh.material->uniform_setters["lightPos"] = light_position;
             mesh.material->uniform_setters["lightColor"] = light_color;
             mesh.material->uniform_setters["objectColor"] = object_color;
             mesh.material->uniform_setters["objectAlpha"] = object_alpha;
-            // Draw mesh
-            mesh.draw();
+
+            // bind() creates pipeline if needed, flushes uniforms, binds pipeline + descriptor set
+            mesh.material->bind(cmd);
+
+            mesh.draw(cmd);
         }
-
-        glBindVertexArray(0);
-
-        // Render cube points with default material
-        
     }
 
     friend std::ostream &operator<<(std::ostream &os, const Scene &scene)
@@ -220,4 +226,4 @@ public:
     }
 };
 
-#endif // OPENGL_RENDERER_HPP
+#endif // VULKAN_RENDERER_HPP
