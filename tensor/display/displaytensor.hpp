@@ -38,6 +38,7 @@ class VectorDisplay: public Tensor<bufftype,2>
     VkImage        depthImage       = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
     VkImageView    depthView        = VK_NULL_HANDLE;
+    Tensor<float, 2> depthTensor;   // tensor-backed depth for offscreen rendering
     VkFramebuffer  framebuffer      = VK_NULL_HANDLE;
     VkRenderPass   offscreenRP      = VK_NULL_HANDLE;
     VkFormat       colorFormat      = VK_FORMAT_R8G8B8A8_UNORM;
@@ -104,12 +105,17 @@ class VectorDisplay: public Tensor<bufftype,2>
         }
 
         if (depthView == VK_NULL_HANDLE) {
-            g_vk_ctx->createImage(w, h, g_vk_ctx->depthFormat, VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                depthImage, depthImageMemory);
-            depthView = g_vk_ctx->createImageView(depthImage, g_vk_ctx->depthFormat,
-                VK_IMAGE_ASPECT_DEPTH_BIT);
+            // Allocate depth as a kVULKANTEXTURE tensor with kSURFACE flag
+            MemoryType renderMem = g_vk_ctx->getRenderingMemoryType();
+            auto depthMeta = AllocationMetadata::create<float>(
+                Shape<2>{(long)w, (long)h},
+                renderMem,
+                ComputeType::kVULKANTEXTURE,
+                1,  // format=1 → D32_SFLOAT
+                AllocationFlags::kSURFACE | AllocationFlags::kRW,
+                g_vk_ctx->getRenderingDeviceIndex());
+            depthTensor = Tensor<float, 2>(depthMeta);
+            depthView = (VkImageView)depthTensor.storage_pointer->data;
         }
         offscreenRP = g_vk_ctx->createOffscreenRenderPass(colorFormat);
         framebuffer = g_vk_ctx->createOffscreenFramebuffer(offscreenRP, colorView, depthView, w, h);

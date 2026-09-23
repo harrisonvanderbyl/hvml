@@ -11,7 +11,7 @@ SHADER_BUILD_DIR := shader-compiler/build
 SHADER_TOOL := $(SHADER_BUILD_DIR)/shader_tool
 
 CXXFLAGS := -std=c++20 -I./tensor -ggdb
-LDFLAGS  := -lSDL3 -lGL -lGLEW -lamdhip64 -lcudart -lvulkan \
+LDFLAGS  := -lSDL3 -lvulkan -lamdhip64 -lcudart \
             -L/usr/local/cuda/lib64
 
 NVCCFLAGS := -std=c++20 -I./tensor -Xcompiler -fPIC -Xcompiler -ggdb

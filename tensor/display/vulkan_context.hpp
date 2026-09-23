@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <array>
 
+#include "tensor.hpp"
+
 #define VK_CTX_CHECK(call)                                                     \
     do {                                                                       \
         VkResult _r = call;                                                    \
@@ -90,6 +92,16 @@ struct VulkanContext {
     VkImageView    depthView        = VK_NULL_HANDLE;
     VkFormat       depthFormat      = VK_FORMAT_D32_SFLOAT;
 
+    // Tensor-backed depth attachment — allocated via kVULKANTEXTURE with kSURFACE flag.
+    // storage_pointer->data is the VkImageView.  The underlying VkImage is owned by
+    // the tensor's BaseMemoryAllocation (but we keep the raw VkImage handle for layout transitions).
+    Tensor<float, 2> depthTensor;
+
+    // Tensor-backed color attachment for offscreen rendering.
+    // When rendering offscreen, this replaces the swapchain color image.
+    Tensor<uint8_t, 2> colorAttachmentTensor;
+    VkImageView colorAttachmentView = VK_NULL_HANDLE;
+
     // Render pass
     VkRenderPass renderPass = VK_NULL_HANDLE;
 
@@ -140,11 +152,20 @@ struct VulkanContext {
         createCommandPool();
         createSwapchain(window, width, height);
         createImageViews();
+        // createDepthResources(), createRenderPass(), createFramebuffers() are
+        // deferred to afterShareWithPlugin() because depth is now allocated as a
+        // tensor via the vulkan plugin, which needs shareWithPlugin() first.
+        createCommandBuffers();
+        createSyncObjects();
+    }
+
+    // Call this after shareWithPlugin() to allocate tensor-backed resources
+    // (depth attachment) that need the vulkan plugin to be initialized.
+    void afterShareWithPlugin() {
+        std::cerr << "[vulkan-ctx] afterShareWithPlugin: creating depth+renderpass+framebuffers" << std::endl;
         createDepthResources();
         createRenderPass();
         createFramebuffers();
-        createCommandBuffers();
-        createSyncObjects();
     }
 
     // Share this VkDevice with the vulkan plugin so all tensor allocations
@@ -162,6 +183,10 @@ struct VulkanContext {
         for (auto& fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         if (renderPass) vkDestroyRenderPass(device, renderPass, nullptr);
         destroyDepthResources();
+        // Clean up tensor-backed color attachment
+        colorAttachmentTensor.storage_pointer = nullptr;
+        colorAttachmentTensor.data.data = nullptr;
+        colorAttachmentView = VK_NULL_HANDLE;
         for (auto& v : swapchainViews) vkDestroyImageView(device, v, nullptr);
         if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
 
@@ -495,7 +520,7 @@ struct VulkanContext {
     }
 
     // ================================================================
-    //  Depth resources
+    //  Depth resources — allocated as a tensor with kSURFACE flag
     // ================================================================
 
     void createDepthResources() {
@@ -505,19 +530,41 @@ struct VulkanContext {
             depthFormat = VK_FORMAT_D16_UNORM;
         }
 
+        // Create the depth image directly via VulkanContext (uses the same VkDevice
+        // as the render pass and framebuffers, so the validation layer tracks it).
         createImage(swapchainExtent.width, swapchainExtent.height, depthFormat,
                     VK_IMAGE_TILING_OPTIMAL,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                     depthImage, depthImageMemory);
-
         depthView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+        // Wrap the depth VkImageView in a tensor so it's visible to the tensor system.
+        // The tensor doesn't own the allocation — VulkanContext owns the VkImage/VkMemory.
+        auto meta = AllocationMetadata::create<float>(
+            Shape<2>{(long)swapchainExtent.width, (long)swapchainExtent.height},
+            getRenderingMemoryType(),
+            ComputeType::kVULKANTEXTURE,
+            1,  // format=1 → D32_SFLOAT
+            AllocationFlags::kSURFACE | AllocationFlags::kRW,
+            getRenderingDeviceIndex());
+        depthTensor.storage_pointer = new BaseMemoryAllocation(meta, (void*)depthView);
+        depthTensor.shape = meta.shape;
+        depthTensor.bitsize = sizeof(float);
+        depthTensor.calculate_metadata();
     }
 
     void destroyDepthResources() {
+        // Clear the tensor wrapper (doesn't own the VkImage)
+        depthTensor.storage_pointer = nullptr;
+        depthTensor.data.data = nullptr;
+
         if (depthView)       vkDestroyImageView(device, depthView, nullptr);
         if (depthImage)      vkDestroyImage(device, depthImage, nullptr);
         if (depthImageMemory) vkFreeMemory(device, depthImageMemory, nullptr);
+        depthView = VK_NULL_HANDLE;
+        depthImage = VK_NULL_HANDLE;
+        depthImageMemory = VK_NULL_HANDLE;
     }
 
     // ================================================================
@@ -750,6 +797,25 @@ struct VulkanContext {
                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
         view = createImageView(image, format, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
+    // Allocate a color attachment as a kVULKANTEXTURE tensor with kSURFACE | kTEXTURE flags.
+    // Returns the VkImageView (also stored in colorAttachmentView).
+    // The tensor is accessible via colorAttachmentTensor for compute/readback.
+    VkImageView createColorAttachmentTensor(uint32_t w, uint32_t h) {
+        MemoryType renderMem = getRenderingMemoryType();
+        // type_size=4 → R8G8B8A8_UNORM, kSURFACE|kTEXTURE → render target + sampleable
+        auto meta = AllocationMetadata::create<uint8_t>(
+            Shape<2>{(long)w, (long)h},
+            renderMem,
+            ComputeType::kVULKANTEXTURE,
+            0,  // format=0 → R8G8B8A8_UNORM
+            AllocationFlags::kSURFACE | AllocationFlags::kTEXTURE | AllocationFlags::kRW,
+            getRenderingDeviceIndex());
+
+        colorAttachmentTensor = Tensor<uint8_t, 2>(meta);
+        colorAttachmentView = (VkImageView)colorAttachmentTensor.storage_pointer->data;
+        return colorAttachmentView;
     }
 
     // Create a render pass for offscreen rendering to a texture

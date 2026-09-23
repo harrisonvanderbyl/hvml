@@ -477,6 +477,41 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id) {
             uint32_t width = (uint32_t)metadata.shape.A;
             uint32_t height = (uint32_t)(metadata.shape.total_size() / std::max(1UL, (size_t)metadata.shape.A));
 
+            // Determine image usage from AllocationFlags
+            // kSURFACE → render target (color/depth attachment)
+            // kTEXTURE → sampleable by shaders
+            // kR       → transfer src (readback)
+            // kW       → transfer dst (upload/clear)
+            // kRW      → both transfer directions
+            bool isSurface = ((int)metadata.rwstatus & (int)AllocationFlags::kSURFACE) != 0;
+            bool isTexture = ((int)metadata.rwstatus & (int)AllocationFlags::kTEXTURE) != 0;
+            bool canRead   = ((int)metadata.rwstatus & (int)AllocationFlags::kR) != 0;
+            bool canWrite  = ((int)metadata.rwstatus & (int)AllocationFlags::kW) != 0;
+
+            std::cerr << "[vulkan-alloc] kVULKANTEXTURE: rwstatus=" << (int)metadata.rwstatus
+                      << " isSurface=" << isSurface << " isTexture=" << isTexture
+                      << " canRead=" << canRead << " canWrite=" << canWrite
+                      << " format=" << format << " (D32=" << VK_FORMAT_D32_SFLOAT << ")" << std::endl;
+
+            VkImageUsageFlags usage = 0;
+            if (isTexture)  usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+            if (isSurface && format == VK_FORMAT_D32_SFLOAT)
+                usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            else if (isSurface)
+                usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+            if (canRead)   usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            if (canWrite)  usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+            // Fallback: if no flags set, use the old default (everything)
+            if (usage == 0) {
+                usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                if (format == VK_FORMAT_D32_SFLOAT)
+                    usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            }
+
             VkImageCreateInfo imageCI{};
             imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
             imageCI.imageType = VK_IMAGE_TYPE_2D;
@@ -486,13 +521,7 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id) {
             imageCI.arrayLayers = 1;
             imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
             imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-            imageCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-            if (format == VK_FORMAT_D32_SFLOAT) {
-                imageCI.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-            }
+            imageCI.usage = usage;
             imageCI.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             imageCI.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -1176,6 +1205,10 @@ extern "C" void set_rendering_device(
                 VkDevice vk_device = g_rendering_device.device;
                 VkPhysicalDevice physical_device = g_rendering_device.physical_device;
 
+                std::cerr << "[vulkan-alloc-render] kVULKANTEXTURE on render_dev: rwstatus=" << (int)meta.rwstatus
+                          << " format=" << meta.format << " type_size=" << meta.type_size
+                          << " g_rendering_device.device=" << g_rendering_device.device << std::endl;
+
                 VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
                 if (meta.type_size == 8) format = VK_FORMAT_R16G16B16A16_SFLOAT;
                 else if (meta.type_size == 4) format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -1186,6 +1219,31 @@ extern "C" void set_rendering_device(
                 uint32_t width = (uint32_t)meta.shape.A;
                 uint32_t height = (uint32_t)(meta.shape.total_size() / std::max(1UL, (size_t)meta.shape.A));
 
+                // Determine image usage from AllocationFlags
+                bool isSurface = ((int)meta.rwstatus & (int)AllocationFlags::kSURFACE) != 0;
+                bool isTexture = ((int)meta.rwstatus & (int)AllocationFlags::kTEXTURE) != 0;
+                bool canRead   = ((int)meta.rwstatus & (int)AllocationFlags::kR) != 0;
+                bool canWrite  = ((int)meta.rwstatus & (int)AllocationFlags::kW) != 0;
+
+                VkImageUsageFlags usage = 0;
+                if (isTexture)  usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+                if (isSurface && format == VK_FORMAT_D32_SFLOAT)
+                    usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+                else if (isSurface)
+                    usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+                if (canRead)   usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                if (canWrite)  usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+                // Fallback: if no flags set, use the old default (everything)
+                if (usage == 0) {
+                    usage = VK_IMAGE_USAGE_SAMPLED_BIT |
+                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                    if (format == VK_FORMAT_D32_SFLOAT)
+                        usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+                }
+
                 VkImageCreateInfo imageCI{};
                 imageCI.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
                 imageCI.imageType = VK_IMAGE_TYPE_2D;
@@ -1195,13 +1253,16 @@ extern "C" void set_rendering_device(
                 imageCI.arrayLayers = 1;
                 imageCI.samples = VK_SAMPLE_COUNT_1_BIT;
                 imageCI.tiling = VK_IMAGE_TILING_OPTIMAL;
-                imageCI.usage = VK_IMAGE_USAGE_SAMPLED_BIT |
-                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                imageCI.usage = usage;
 
                 VkImage image;
-                VK_CHECK(vkCreateImage(vk_device, &imageCI, nullptr, &image));
+                VkResult imgRes = vkCreateImage(vk_device, &imageCI, nullptr, &image);
+                if (imgRes != VK_SUCCESS) {
+                    std::cerr << "[vulkan-alloc-render] vkCreateImage FAILED: " << imgRes
+                              << " format=" << format << " usage=" << usage << std::endl;
+                    return nullptr;
+                }
+                std::cerr << "[vulkan-alloc-render] vkCreateImage OK: image=" << image << std::endl;
 
                 VkMemoryRequirements memReqs;
                 vkGetImageMemoryRequirements(vk_device, image, &memReqs);
@@ -1228,7 +1289,12 @@ extern "C" void set_rendering_device(
                 viewCI.subresourceRange.layerCount = 1;
 
                 VkImageView view;
-                VK_CHECK(vkCreateImageView(vk_device, &viewCI, nullptr, &view));
+                VkResult viewRes = vkCreateImageView(vk_device, &viewCI, nullptr, &view);
+                if (viewRes != VK_SUCCESS) {
+                    std::cerr << "[vulkan-alloc-render] vkCreateImageView FAILED: " << viewRes << std::endl;
+                    return nullptr;
+                }
+                std::cerr << "[vulkan-alloc-render] vkCreateImageView OK: view=" << view << std::endl;
 
                 return new BaseMemoryAllocation(meta, reinterpret_cast<void*>(view));
             };

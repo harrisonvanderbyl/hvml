@@ -356,6 +356,9 @@ struct BasicDisplay
         // Trigger deferred Vulkan plugin init
         global_device_manager.init_plugin("vulkan");
 
+        // Now that the plugin is ready, allocate tensor-backed depth + render pass
+        vk_ctx.afterShareWithPlugin();
+
         // Set the rendering device's memory device to use kVULKANTEXTURE
         // as default compute type so tensor allocations don't try to convert
         int renderIdx = vk_ctx.getRenderingDeviceIndex();
