@@ -13,6 +13,7 @@ enum ComputeType
     kCUDA,
     kHIP,
     kVULKAN,
+    kVULKANTEXTURE,
     kOPENGL,
     kOPENGLTEXTURE,
     kFILE,
@@ -31,12 +32,20 @@ enum MemoryType
 
 enum AllocationFlags
 {
-    kR,//(1<<1),
-    kW,//(1<<2),
-    kRW,//(1<<1) | (1<<2),
-    kSURFACE,//(1<<3),
-    kTEXTURE//(1<<4),
+    kR       = (1<<1),
+    kW       = (1<<2),
+    kRW      = (1<<1) | (1<<2),
+    kSURFACE = (1<<3),
+    kTEXTURE = (1<<4),
 };
+
+inline AllocationFlags operator|(AllocationFlags a, AllocationFlags b) {
+    return (AllocationFlags)((int)a | (int)b);
+}
+
+inline AllocationFlags operator&(AllocationFlags a, AllocationFlags b) {
+    return (AllocationFlags)((int)a & (int)b);
+}
 
 enum AssignmentType {
     Direct,
@@ -50,6 +59,7 @@ NLOHMANN_JSON_SERIALIZE_ENUM(ComputeType, {
                                                 {kCUDA, "CUDA"},
                                                 {kHIP, "HIP"},
                                                 {kVULKAN, "Vulkan"},
+                                                {kVULKANTEXTURE, "VulkanTexture"},
                                                 {kOPENGL, "OpenGL"},
                                                 {kOPENGLTEXTURE, "OpenGLTexture"},
                                                 {kFILE, "File"},

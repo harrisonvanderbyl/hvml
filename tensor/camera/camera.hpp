@@ -21,7 +21,8 @@ struct Camera {
         float tanHalfFov = tan(fov * 0.5f * M_PI / 180.0f);
         
         result[0] = float32x4(1.0f / (aspect * tanHalfFov), 0, 0, 0);
-        result[1] = float32x4(0, 1.0f / tanHalfFov, 0, 0);
+        // Vulkan NDC Y is down — negate Y to flip the image right-side up
+        result[1] = float32x4(0, -1.0f / tanHalfFov, 0, 0);
         result[2] = float32x4(0, 0, -(far_plane + near_plane) / (far_plane - near_plane), -1);
         result[3] = float32x4(0, 0, -(2.0f * far_plane * near_plane) / (far_plane - near_plane), 0);
         
@@ -62,11 +63,11 @@ struct Camera {
 
     void bind(Material& material){
         // Set camera uniforms
-        material.uniform_setters["view"].set(getViewMatrix(), material.shader_program, "view");
-        material.uniform_setters["projection"].set(getProjectionMatrix(), material.shader_program, "projection");
-        material.uniform_setters["projectionview"].set(getViewMatrix() * getProjectionMatrix(), material.shader_program, "projectionview");
-        material.uniform_setters["inv_view"].set(getViewMatrix().inverse(), material.shader_program, "inv_view");
-        material.uniform_setters["inv_projection"].set(getProjectionMatrix().inverse(), material.shader_program, "inv_projection");
+        material.uniform_setters["view"] = getViewMatrix();
+        material.uniform_setters["projection"] = getProjectionMatrix();
+        material.uniform_setters["projectionview"] = getViewMatrix() * getProjectionMatrix();
+        material.uniform_setters["inv_view"] = getViewMatrix().inverse();
+        material.uniform_setters["inv_projection"] = getProjectionMatrix().inverse();
     }
         
 };

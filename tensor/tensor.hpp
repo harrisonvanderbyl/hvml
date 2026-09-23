@@ -593,15 +593,22 @@ public:
         AllocationMap& target_device = global_device_manager.get_device(device_type.memory_type, device_type.device_id);
 
         if(indexer != nullptr || strides != shape.calc_strides()){
+            // For Vulkan compute types, we can't use to_compute() (no kernel ops).
+            // Instead, make a contiguous copy on CPU first, then convert.
+            if (compute_type == ComputeType::kVULKAN || compute_type == ComputeType::kVULKANTEXTURE) {
+                Tensor<R,rank> contiguous = this->to(MemoryLocation(MemoryType::kDDR, 0), ComputeType::kCPU);
+                return contiguous.to(device_type, compute_type);
+            }
             std::cout << "Shape: " << shape << " Strides: " << strides << " Calculated strides: " << shape.calc_strides() << std::endl;
             Tensor output = {shape, device_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type};
             output = this->to_compute(compute_type);
             return output;
         }
         else{
+            // print what memory type this has
+            std::cout << "Current memory type for tensor: " << device->this_device_type << std::endl;
             result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
         
-
             return {
                 shape,
                 device_type.allocation_map->get_massaged_pointer<R>(
@@ -704,8 +711,8 @@ class Tensor<void, rank> {
     Tensor(Shape<rank> __a, MemoryType device_type = MemoryType::kDDR) = delete;
     Tensor(Shape<rank> __a, void *datain, MemoryType device_type = MemoryType::kDDR) = delete;
     friend std::ostream &operator<<(std::ostream &os, Tensor<void, rank> tensor) = delete;
-    template <typename T>
-    Tensor(const Tensor<T, rank>& other){
+    template <typename T, int orank = rank>
+    Tensor(const Tensor<T, orank>& other){
         this->device = other.device;
         this->shape = other.shape;
         this->strides = other.strides;
@@ -715,6 +722,10 @@ class Tensor<void, rank> {
         this->storage_pointer = other.storage_pointer;
         device->register_allocation(this->storage_pointer);
     }
+
+    Tensor(){
+
+    };
     // copy constructor
     Tensor(const Tensor<void, rank> &other)
     {

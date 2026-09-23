@@ -7,6 +7,15 @@
 #include <thrust/sort.h>
 #include <thrust/device_ptr.h>
 
+#define CUDA_ERROR_CHECK(call) \
+    do { \
+        cudaError_t err = call; \
+        if (err != cudaSuccess) { \
+            fprintf(stderr, "CUDA error at %s %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+            exit(err); \
+        } \
+    } while (0)
+
 void cuda_thrust_sort(float* keys, int* indices, size_t size) {
     thrust::device_ptr<float> keys_ptr(keys);
     thrust::device_ptr<int> indices_ptr(indices);

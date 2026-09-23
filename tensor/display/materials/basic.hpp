@@ -1,12 +1,14 @@
 
-#ifndef TENSOR_DISPLAY_MATERIALS_HPP
-#define TENSOR_DISPLAY_MATERIALS_HPP
+#ifndef TENSOR_DISPLAY_MATERIALS_BASIC_HPP
+#define TENSOR_DISPLAY_MATERIALS_BASIC_HPP
 #include "display/materials/shader.hpp"
 
 struct __shader BasicShader : public ShaderProgram
 {
     mat4 model;
     mat4 view;
+    mat4 inv_view;
+    mat4 inv_projection;
     mat4 projection;
     mat4 projectionview;
     mat4 bone_matrices[100]; // Array of bone matrices for skeletal animation
@@ -65,4 +67,4 @@ struct __shader BasicShader : public ShaderProgram
 };
 
 
-#endif // TENSOR_DISPLAY_MATERIALS_HPP
+#endif // TENSOR_DISPLAY_MATERIALS_BASIC_HPP
