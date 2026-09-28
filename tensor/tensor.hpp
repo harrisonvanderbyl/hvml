@@ -15,6 +15,8 @@ template <typename R = float, int rank = -1>
 class Tensor
 {
 public:
+    using value_type = R;
+    static constexpr int tensor_rank = rank;
     Shape<rank> shape;
     Shape<rank> strides;
     MassagedMemory<R> data;
@@ -100,6 +102,7 @@ public:
 
         this->device->register_allocation(this->storage_pointer);
     }
+    
 
     Tensor(Shape<rank> __a, MassagedMemory<R> datain, MemoryLocation memory_device, BaseMemoryAllocation *storage_pointer)
     {
@@ -133,8 +136,14 @@ public:
         return *this;
     }
 
+
+    Tensor<R, rank>& operator=(const Tensor<R, rank>& other){
+        tensor_copy(*this, other);
+        return *this;
+    };
+
     template <typename M, int V>
-    inline Tensor<R, rank> operator=(Tensor<M,V>& other)
+    Tensor<R, rank>& operator=(const Tensor<M,V>& other)
     {
         tensor_copy(*this, other);
         return *this;
@@ -362,6 +371,7 @@ public:
         }
         shape = a;
     };
+
 
     template <int v = rank>
     Tensor<R, 1> tensor_index(const Tensor<unsigned long, v>& index_tensor) const

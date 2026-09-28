@@ -123,7 +123,7 @@ public:
             if (tensors.contains(keyname)) {
                 // Load the module
                 IthType* mod = (IthType*)mods[I];
-                *mod = tensors.get(keyname);
+                *mod = tensors.get<IthType>(keyname);
                 // std::cout << "Loaded " << keyname << " from safetensors" << std::endl;
             }
             else{

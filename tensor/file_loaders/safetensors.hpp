@@ -98,9 +98,15 @@ using json = nlohmann::json;
                 
             }
 
-        template <typename T = void, int rank = -1>
+        // only if T is not a Tensor
+        template <typename T = void, int rank = -1, typename std::enable_if_t<!std::is_base_of_v<Tensor<typename T::value_type, T::rank>, T>, int> = 0>
          Tensor<T, rank> get(std::string name) const{
                 return get<T, rank>(name.c_str());
+         }
+
+         template <typename T>
+         T get(std::string name) const{
+                return get<typename T::value_type, T::tensor_rank>(name.c_str());
          }
 
          /**
