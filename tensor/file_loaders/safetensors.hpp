@@ -182,12 +182,12 @@ using json = nlohmann::json;
 
 
             safetensors(const char* filename): Tensor<char, 1>({1}, filename) {
-                std::cout << "Loading safetensors file: " << filename << "\n" << *this << "\n";
+                std::cout << "Loading safetensors file: " << filename << "\n" << "\n";
                 init();
             }
 
             safetensors(const std::string& filename): Tensor<char, 1>({1}, filename) {
-                std::cout << "Loading safetensors file: " << filename << "\n" << *this << "\n";
+                std::cout << "Loading safetensors file: " << filename << "\n" << "\n";
                 init();
             }
 
