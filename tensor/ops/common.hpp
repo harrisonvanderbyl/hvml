@@ -112,25 +112,22 @@ struct Parameter {
 
         for (size_t i = 1; i < a.ndim()+1; i++)
         {
-            if(shape.ndim() > i && a[-i%a.ndim()] != shape[-i%shape.ndim()] && shape[-i%shape.ndim()] != 1){
-                std::cerr << "Incompatible shapes for broadcast" << std::endl;
-                std::cerr << i << "\n";
-                std::cerr << "Shape: " << shape << " Broadcast shape: " << a << std::endl;
-                std::cerr << "Shape: " << shape[-i%shape.ndim()] << " Broadcast shape: " << a[-i%a.ndim()] << std::endl;
-                throw std::runtime_error("Incompatible shapes for broadcast");
-            }
-            if (shape.ndim() < i || shape[-i] == 1)
+            if (i <= (size_t)shape.ndim())
             {
-                b.strides[-i] = 0;
-                if(i < shape.ndim()){
-                    for (int j = i+1; j < a.ndim()+1; j++)
-                    {
-                        // b.strides[-j] = b.strides[-j]/ shape[-i];
-                        // std::cout << "Adjusting stride at dimension " << -j << " from " << b.strides[-j];
-                        b.strides[-j] = b.strides[-j] / strides[-j];
-                        // std::cout << " to " << b.strides[-j] << std::endl;
-                    }
+                // Input has this dim: extents must match, or input extent is 1 (broadcast)
+                if (a[-i] != shape[-i] && shape[-i] != 1){
+                    std::cerr << "Incompatible shapes for broadcast" << std::endl;
+                    std::cerr << i << "\n";
+                    std::cerr << "Shape: " << shape << " Broadcast shape: " << a << std::endl;
+                    std::cerr << "Shape: " << shape[-i] << " Broadcast shape: " << a[-i] << std::endl;
+                    throw std::runtime_error("Incompatible shapes for broadcast");
                 }
+                b.strides[-i] = (shape[-i] == 1) ? 0 : strides[-i];
+            }
+            else
+            {
+                // Input dim absent: broadcast along this dim
+                b.strides[-i] = 0;
             }
         }
         // std::cout << "broadcasted parameter strides: " << b.strides << std::endl;

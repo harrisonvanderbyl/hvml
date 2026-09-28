@@ -138,7 +138,24 @@ public:
 
 
     Tensor<R, rank>& operator=(const Tensor<R, rank>& other){
-        tensor_copy(*this, other);
+        if (this->storage_pointer == nullptr){
+            this->device = other.device;
+            this->shape = other.shape;
+            this->strides = other.strides;
+            this->bitsize = other.bitsize;
+            this->total_size = other.total_size;
+            this->total_bytes = other.total_bytes;
+            this->storage_pointer = other.storage_pointer;
+            if (other.storage_pointer != nullptr){
+                this->device->register_allocation(this->storage_pointer);
+            }
+
+            this->data = other.data;
+            calculate_metadata();
+            this->indexer = other.indexer;
+        }else{
+            tensor_copy(*this, other);
+        }
         return *this;
     };
 
