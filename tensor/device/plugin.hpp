@@ -51,16 +51,11 @@ using PluginRegisterFn = void (*)(DeviceManager*);
 using PluginInitFn     = void (*)(DeviceManager*);
 
 // ---------------------------------------------------------------------------
-//  VulkanBufferHandle — stored in BaseMemoryAllocation::data for kVULKAN
-//  buffers allocated by the vulkan plugin.  The HIP plugin reads this struct
-//  to import the VkBuffer's memory into HIP via hipImportExternalMemory.
-//  Defined here (in the shared plugin header) so both plugins agree on layout.
+//  VulkanBufferHandle / VulkanResource — stored in BaseMemoryAllocation::data
+//  for kVULKAN and kVULKANTEXTURE allocations made by the vulkan plugin.  The
+//  HIP and CUDA plugins read `buffer`, `fd` and `alloc_size` to import the
+//  memory via hip/cudaImportExternalMemory.  See vulkan_resource.hpp.
 // ---------------------------------------------------------------------------
-struct VulkanBufferHandle {
-    void*           buffer;      // VkBuffer (opaque to non-Vulkan code)
-    void*           memory;      // VkDeviceMemory (opaque)
-    int             fd;          // exported fd for HIP interop (-1 = not exported)
-    unsigned long long alloc_size;  // actual VkDeviceMemory allocation size
-};
+#include "vulkan_resource.hpp"
 
 #endif // DEVICE_MANAGER_PLUGIN_HPP

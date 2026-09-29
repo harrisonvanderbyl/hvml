@@ -57,23 +57,17 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             return;
         }
 
-        // When allocated with kVULKAN, storage_pointer->data is a VulkanBufferHandle*
-        // (first field is VkBuffer) created by the vulkan plugin's kVULKAN allocator.
-        if (this->storage_pointer && this->storage_pointer->data) {
-            vertexBuffer = *(VkBuffer*)this->storage_pointer->data;
-        }
-
-        // Index buffer — also allocated with kVULKAN
-        if (indices.storage_pointer && indices.storage_pointer->data) {
-            indexBuffer = *(VkBuffer*)indices.storage_pointer->data;
-        }
+        // Vertex and index data are kVULKAN tensors: their VulkanResource
+        // carries the VkBuffer.
+        if (VulkanResource* r = vk_resource(*this)) vertexBuffer = (VkBuffer)r->buffer;
+        if (VulkanResource* r = vk_resource(indices)) indexBuffer = (VkBuffer)r->buffer;
 
         buffersCreated = true;
     }
 
     RenderStruct(Tensor<vertex_types, 1>... tensors) : Tensor<mytuple<vertex_types...>, 1>(
         std::get<0>(std::make_tuple(tensors...)).shape,
-        g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+        vk_render_memory(),
         kVULKAN)
     {
         CopyDataHelper<vertex_types...>::run(tensors.to(*this->device)..., this->to_compute(this->device->default_compute_type));
@@ -81,30 +75,30 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
 
     RenderStruct(Shape<1> shape) : Tensor<mytuple<vertex_types...>, 1>(
             shape,
-            g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+            vk_render_memory(),
             kVULKAN)
     {
     }
 
     RenderStruct(Shape<1> shape, Tensor<int, 1> inindices) : Tensor<mytuple<vertex_types...>, 1>(
             shape,
-            g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR,
+            vk_render_memory(),
             kVULKAN),
-        indices(inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN))
+        indices(inindices.to(vk_render_memory(), kVULKAN))
     {
     }
 
     RenderStruct(Skeleton bones, Tensor<int, 1> inindices, Tensor<vertex_types, 1>... inputs) : Tensor<mytuple<vertex_types...>, 1>(
-        std::get<0>(std::make_tuple(inputs.shape...)), g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN), bone_matrices(bones)
+        std::get<0>(std::make_tuple(inputs.shape...)), vk_render_memory(), kVULKAN), bone_matrices(bones)
     {
-        indices = inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN);
+        indices = inindices.to(vk_render_memory(), kVULKAN);
         this->device->synchronize_function();
 
         CopyDataHelper<vertex_types...>::run(inputs.to(*this->device)..., this->to_compute(this->device->default_compute_type));
         this->primitive_type = VK_TOPOLOGY_TRIANGLES;
     }
 
-    RenderStruct(const RenderStruct<vertex_types...>& other, Tensor<int, 1> inindices) : Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(inindices.to(g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR, kVULKAN))
+    RenderStruct(const RenderStruct<vertex_types...>& other, Tensor<int, 1> inindices) : Tensor<mytuple<vertex_types...>, 1>(other), primitive_type(other.primitive_type), model_matrix(other.model_matrix), material(other.material), bone_matrices(other.bone_matrices), indices(inindices.to(vk_render_memory(), kVULKAN))
     {
     }
 
@@ -171,6 +165,7 @@ struct RenderStruct : Tensor<mytuple<vertex_types...>, 1>
             }
         }
 
+        material->topology = getTopology();
         material->bind(cmd);
         material->uniform_setters["model"] = model_matrix;
     }

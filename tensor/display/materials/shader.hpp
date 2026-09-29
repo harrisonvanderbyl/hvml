@@ -12,21 +12,13 @@
 #include <cstring>
 #include <array>
 
-// ---------------------------------------------------------------------------
-//  Global Vulkan context pointer — set by VulkanDisplay before any Material
-//  or RenderStruct is used.
-// ---------------------------------------------------------------------------
-
-__weak VulkanContext* g_vk_ctx = nullptr;
+// g_vk_ctx (the shared VulkanContext) is defined in display/vulkan_context.hpp.
 
 // Pipeline cache: keyed by shader source hash
 __weak std::map<std::string, VkPipeline> g_pipeline_cache;
 __weak std::map<std::string, VkPipelineLayout> g_pipeline_layout_cache;
 __weak std::map<std::string, VkDescriptorSetLayout> g_desc_set_layout_cache;
 
-// Override render pass for offscreen rendering.  When non-null, pipelines are
-// created against this render pass instead of the swapchain render pass.
-__weak VkRenderPass g_override_render_pass = VK_NULL_HANDLE;
 
 // ---------------------------------------------------------------------------
 //  UniformSetter — stores uniform values into a staging buffer that gets
@@ -150,72 +142,133 @@ struct Material
     VkDescriptorSet   descriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool  descriptorPool = VK_NULL_HANDLE;
 
-    // Uniform buffer
+    // What the current `pipeline` was built for.  A material drawn into a
+    // different render target (window vs. render texture) or with another
+    // topology picks up the matching pipeline from the cache.
+    VkRenderPass        pipelineRenderPass = VK_NULL_HANDLE;
+    VkPrimitiveTopology pipelineTopology   = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
+
+    // Uniform block — a kVULKAN tensor in host-visible memory (kDDR), so
+    // uniforms are written straight into the buffer the shader reads.
+    Tensor<uint8_t, 1> uniforms;
     VkBuffer       uniformBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory uniformBufferMemory = VK_NULL_HANDLE;
     void*          uniformBufferMapped = nullptr;
     size_t         uniformBufferSize = 0;
     bool           uniformBufferDirty = true;
 
+    // Fixed-function state
     std::string name;
     bool double_sided = false;
     bool transparent = false;
+    bool depth_test = true;
+    bool depth_write = true;
+    bool sampler_nearest = false;      // nearest filtering + clamp for all sampler2D bindings
+    VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    // Textures / buffers bound by GLSL name.  Assign any Vulkan tensor: the
+    // descriptor type comes from the shader's declaration, and the tensor is
+    // converted in place to the matching view (sampler2D ← kTEXTURE view,
+    // samplerBuffer ← kTEXELBUFFER view, image2D ← kSTORAGE view, ...).
     std::map<std::string, Tensor<void,-1>> textures_ids;
-    std::map<std::string, uint32_t> texture_types;  // 0=2D, 1=buffer
+    std::map<std::string, uint32_t> texture_types;  // legacy override: 0=2D, 1=buffer
     UniformManager uniform_setters;
 
     std::map<std::string, uint32_t> texture_binding_map;
+    std::map<std::string, VkDescriptorType> texture_descriptor_types;  // parsed from GLSL
     uint32_t next_texture_binding = 0;
+    bool descriptorsDirty = false;
 
     std::map<std::string, size_t> uniform_offsets;
     size_t next_uniform_offset = 0;
 
-    // Parse sampler binding numbers from GLSL source so texture_binding_map
-    // matches the shader's layout(set=0, binding=N) declarations, not the
-    // alphabetical order of std::map.
+    // Bind (or re-bind) a texture/buffer by its GLSL name.
+    template <typename T, int R>
+    void setTexture(const std::string& texname, const Tensor<T, R>& tensor) {
+        textures_ids[texname] = Tensor<void, -1>(tensor);
+        descriptorsDirty = true;
+    }
+
+    // Parse sampler/image bindings from GLSL source so texture_binding_map
+    // matches the shader's layout(set=0, binding=N) declarations and each
+    // name gets the descriptor type the shader expects.
     void buildTextureBindingMapFromShaders() {
         texture_binding_map.clear();
+        texture_descriptor_types.clear();
         auto parseSource = [&](const char* src) {
             if (!src) return;
             std::string s(src);
-            // Match: layout(set = 0, binding = N) uniform sampler2D name;
-            // or:   layout(set = 0, binding = N) uniform samplerBuffer name;
             size_t pos = 0;
             while (pos < s.size()) {
-                size_t layoutPos = s.find("layout(", pos);
+                size_t layoutPos = s.find("layout", pos);
                 if (layoutPos == std::string::npos) break;
                 size_t semi = s.find(';', layoutPos);
                 if (semi == std::string::npos) break;
                 std::string stmt = s.substr(layoutPos, semi - layoutPos);
                 pos = semi + 1;
 
-                if (stmt.find("sampler2D") == std::string::npos &&
-                    stmt.find("samplerBuffer") == std::string::npos) continue;
+                VkDescriptorType type;
+                if (stmt.find("samplerBuffer") != std::string::npos)      type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+                else if (stmt.find("sampler2D") != std::string::npos)     type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                else if (stmt.find("imageBuffer") != std::string::npos)   type = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+                else if (stmt.find("image2D") != std::string::npos)       type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                else continue;
                 if (stmt.find("binding") == std::string::npos) continue;
 
-                // Extract binding number
                 size_t bPos = stmt.find("binding");
                 size_t eqPos = stmt.find('=', bPos);
                 if (eqPos == std::string::npos) continue;
-                // Parse the number after =
                 uint32_t binding = 0;
                 int consumed = 0;
                 if (sscanf(stmt.c_str() + eqPos + 1, " %u%n", &binding, &consumed) < 1) continue;
 
-                // Extract sampler name — last identifier before ';'
+                // Sampler name — last identifier before ';'
                 size_t nameEnd = stmt.size();
-                // Skip trailing whitespace
                 while (nameEnd > 0 && isspace((unsigned char)stmt[nameEnd-1])) nameEnd--;
                 size_t nameStart = nameEnd;
                 while (nameStart > 0 && (isalnum((unsigned char)stmt[nameStart-1]) || stmt[nameStart-1] == '_')) nameStart--;
                 if (nameStart >= nameEnd) continue;
-                std::string name = stmt.substr(nameStart, nameEnd - nameStart);
+                std::string texname = stmt.substr(nameStart, nameEnd - nameStart);
 
-                texture_binding_map[name] = binding;
+                texture_binding_map[texname] = binding;
+                texture_descriptor_types[texname] = type;
             }
         };
         parseSource(getVertexShaderSource());
         parseSource(getFragmentShaderSource());
+        parseSource(getGeometryShaderSource());
+    }
+
+    VkDescriptorType descriptorTypeFor(const std::string& texname) {
+        auto it = texture_descriptor_types.find(texname);
+        if (it != texture_descriptor_types.end()) return it->second;
+        auto legacy = texture_types.find(texname);
+        if (legacy != texture_types.end() && legacy->second == 1) return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+        return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    }
+
+    // The VulkanResource a bound tensor must be seen through for `type`,
+    // creating the in-place view if the allocation doesn't have one yet.
+    static VulkanResource* resolveBinding(Tensor<void,-1>& tex, VkDescriptorType type) {
+        VulkanResource* r = vk_resource(tex);
+        if (!r) return nullptr;
+
+        bool wantImage   = type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        bool wantStorage = type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE || type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+        uint32_t neededUsage = type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ? VK_IMAGE_USAGE_STORAGE_BIT : VK_IMAGE_USAGE_SAMPLED_BIT;
+
+        if (wantImage && r->image_view && (r->image_usage & neededUsage)) return r;
+        if (!wantImage && r->buffer_view) return r;
+
+        // Convert in place (cached on the allocation, like Tensor::to_compute).
+        if (!tex.storage_pointer) return nullptr;
+        AllocationMetadata meta = tex.storage_pointer->metadata;
+        meta.compute_device = wantImage ? ComputeType::kVULKANTEXTURE : ComputeType::kVULKAN;
+        meta.rwstatus = AllocationFlags::kRW |
+            (wantImage ? (wantStorage ? AllocationFlags::kSTORAGE : AllocationFlags::kTEXTURE)
+                       : (AllocationFlags::kTEXELBUFFER | (wantStorage ? AllocationFlags::kSTORAGE : AllocationFlags::kRW)));
+        meta.format = 0;
+        auto view = tex.device->template get_massaged_pointer<uint8_t>(tex.storage_pointer, meta);
+        return vk_find_resource(view.data);
     }
 
     // Vertex input layout (set by RenderStruct before pipeline creation)
@@ -224,10 +277,18 @@ struct Material
 
     bool createShaderProgram()
     {
-        if (pipeline != VK_NULL_HANDLE) return true;
         if (!g_vk_ctx) {
-            std::cerr << "[vulkan] No Vulkan context set! Call VulkanDisplay first." << std::endl;
+            std::cerr << "[vulkan] No Vulkan context — create a Window or DisplayTensor first." << std::endl;
             return false;
+        }
+        VkRenderPass renderPass = g_vk_ctx->currentRenderPass;
+        if (renderPass == VK_NULL_HANDLE) {
+            std::cerr << "[vulkan] Material bound outside a render target — bind inside a window frame "
+                         "or between begin_render()/end_render()." << std::endl;
+            return false;
+        }
+        if (pipeline != VK_NULL_HANDLE && pipelineRenderPass == renderPass && pipelineTopology == topology) {
+            return true;
         }
 
         const char* vertex_shader_source = getVertexShaderSource();
@@ -245,32 +306,29 @@ struct Material
 
         std::string shader_key = std::string(vertex_shader_source) + std::string(fragment_shader_source);
         if (geometry_shader_source) shader_key += geometry_shader_source;
-        // Include vertex layout in cache key so different vertex layouts get different pipelines
         for (auto &b : vertexBindingDescs) shader_key += ":" + std::to_string(b.stride);
         for (auto &a : vertexAttrDescs) shader_key += "," + std::to_string(a.location) + ":" + std::to_string(a.format) + ":" + std::to_string(a.offset);
-        // Include texture bindings in cache key so different texture layouts get different pipelines
-        for (auto& [name, tex] : textures_ids) shader_key += "#" + name;
-        for (auto& [name, type] : texture_types) shader_key += "^" + name + std::to_string(type);
-        // Include double_sided so cull mode changes get separate pipelines
+        for (auto& [texname, tex] : textures_ids) shader_key += "#" + texname;
+        for (auto& [texname, type] : texture_types) shader_key += "^" + texname + std::to_string(type);
         shader_key += "&ds=" + std::to_string(double_sided ? 1 : 0);
-        // Include render pass in cache key so offscreen vs swapchain get different pipelines
-        shader_key += "@rp=" + std::to_string((size_t)(g_override_render_pass ? g_override_render_pass : g_vk_ctx->renderPass));
+        shader_key += "&tr=" + std::to_string(transparent ? 1 : 0);
+        shader_key += "&dt=" + std::to_string(depth_test ? 1 : 0) + std::to_string(depth_write ? 1 : 0);
+        shader_key += "&tp=" + std::to_string((int)topology);
+        shader_key += "@rp=" + std::to_string((size_t)renderPass);
 
         if (g_pipeline_cache.find(shader_key) != g_pipeline_cache.end()) {
             pipeline = g_pipeline_cache[shader_key];
             pipelineLayout = g_pipeline_layout_cache[shader_key];
             descSetLayout = g_desc_set_layout_cache[shader_key];
-            // Rebuild texture_binding_map from shader source so createDescriptorSet()
-            // binds textures to the correct bindings matching the GLSL declarations.
+            pipelineRenderPass = renderPass;
+            pipelineTopology = topology;
             buildTextureBindingMapFromShaders();
-            uniform_setters = UniformManager(true);
+            uniform_setters.initialized = true;
             return true;
         }
 
-        // Compile shaders to SPIR-V
         std::vector<uint8_t> vertSpv = g_vk_ctx->compileGLSL(vertex_shader_source, "vert");
         std::vector<uint8_t> fragSpv = g_vk_ctx->compileGLSL(fragment_shader_source, "frag");
-
         if (vertSpv.empty() || fragSpv.empty()) {
             std::cerr << "[vulkan] Failed to compile shaders" << std::endl;
             return false;
@@ -282,11 +340,10 @@ struct Material
         VkShaderModule geomModule = VK_NULL_HANDLE;
         if (geometry_shader_source) {
             std::vector<uint8_t> geomSpv = g_vk_ctx->compileGLSL(geometry_shader_source, "geom");
-            if (!geomSpv.empty()) {
-                geomModule = g_vk_ctx->createShaderModule(geomSpv);
-            }
+            if (!geomSpv.empty()) geomModule = g_vk_ctx->createShaderModule(geomSpv);
         }
 
+        descSetLayout = VK_NULL_HANDLE;
         createDescriptorSetLayout();
 
         VkPipelineLayoutCreateInfo layoutCI{};
@@ -296,28 +353,17 @@ struct Material
         VK_CTX_CHECK(vkCreatePipelineLayout(g_vk_ctx->device, &layoutCI, nullptr, &pipelineLayout));
 
         std::vector<VkPipelineShaderStageCreateInfo> stages;
-        VkPipelineShaderStageCreateInfo vertStage{};
-        vertStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertStage.module = vertModule;
-        vertStage.pName = "main";
-        stages.push_back(vertStage);
-
-        VkPipelineShaderStageCreateInfo fragStage{};
-        fragStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragStage.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragStage.module = fragModule;
-        fragStage.pName = "main";
-        stages.push_back(fragStage);
-
-        if (geomModule) {
-            VkPipelineShaderStageCreateInfo geomStage{};
-            geomStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-            geomStage.stage = VK_SHADER_STAGE_GEOMETRY_BIT;
-            geomStage.module = geomModule;
-            geomStage.pName = "main";
-            stages.push_back(geomStage);
-        }
+        auto addStage = [&](VkShaderStageFlagBits stage, VkShaderModule module) {
+            VkPipelineShaderStageCreateInfo s{};
+            s.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            s.stage = stage;
+            s.module = module;
+            s.pName = "main";
+            stages.push_back(s);
+        };
+        addStage(VK_SHADER_STAGE_VERTEX_BIT, vertModule);
+        addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fragModule);
+        if (geomModule) addStage(VK_SHADER_STAGE_GEOMETRY_BIT, geomModule);
 
         VkPipelineVertexInputStateCreateInfo vertexInputState{};
         vertexInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -328,20 +374,13 @@ struct Material
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.topology = topology;
         inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-        VkViewport viewport{};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = (float)g_vk_ctx->swapchainExtent.width;
-        viewport.height = (float)g_vk_ctx->swapchainExtent.height;
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-
-        VkRect2D scissor{};
-        scissor.offset = {0, 0};
-        scissor.extent = g_vk_ctx->swapchainExtent;
+        // Viewport and scissor are dynamic; these are placeholders.
+        VkViewport viewport{0.0f, 0.0f, (float)g_vk_ctx->currentExtent.width,
+                            (float)g_vk_ctx->currentExtent.height, 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, g_vk_ctx->currentExtent};
 
         VkPipelineViewportStateCreateInfo viewportState{};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
@@ -367,8 +406,8 @@ struct Material
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthTestEnable = depth_test ? VK_TRUE : VK_FALSE;
+        depthStencil.depthWriteEnable = depth_write ? VK_TRUE : VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
         depthStencil.depthBoundsTestEnable = VK_FALSE;
         depthStencil.stencilTestEnable = VK_FALSE;
@@ -412,7 +451,7 @@ struct Material
         pipelineCI.pColorBlendState = &colorBlending;
         pipelineCI.pDynamicState = &dynamicState;
         pipelineCI.layout = pipelineLayout;
-        pipelineCI.renderPass = g_override_render_pass ? g_override_render_pass : g_vk_ctx->renderPass;
+        pipelineCI.renderPass = renderPass;
         pipelineCI.subpass = 0;
 
         VK_CTX_CHECK(vkCreateGraphicsPipelines(g_vk_ctx->device, VK_NULL_HANDLE,
@@ -425,8 +464,10 @@ struct Material
         g_pipeline_cache[shader_key] = pipeline;
         g_pipeline_layout_cache[shader_key] = pipelineLayout;
         g_desc_set_layout_cache[shader_key] = descSetLayout;
+        pipelineRenderPass = renderPass;
+        pipelineTopology = topology;
 
-        uniform_setters = UniformManager(true);
+        uniform_setters.initialized = true;
         return true;
     }
 
@@ -437,26 +478,21 @@ struct Material
         uboBinding.binding = 0;
         uboBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         uboBinding.descriptorCount = 1;
-        uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        uboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT |
+            (getGeometryShaderSource() ? VK_SHADER_STAGE_GEOMETRY_BIT : 0);
         bindings.push_back(uboBinding);
 
-        // Parse sampler bindings from shader source so they match the GLSL declarations
         buildTextureBindingMapFromShaders();
 
-        for (auto& [name, tex] : textures_ids) {
-            auto bindIt = texture_binding_map.find(name);
-            uint32_t binding = (bindIt != texture_binding_map.end()) ? bindIt->second : 1;
+        for (auto& [texname, tex] : textures_ids) {
+            auto bindIt = texture_binding_map.find(texname);
+            if (bindIt == texture_binding_map.end()) continue;   // not used by the shader
 
             VkDescriptorSetLayoutBinding texBindingDesc{};
-            texBindingDesc.binding = binding;
-            auto typeIt = texture_types.find(name);
-            if (typeIt != texture_types.end() && typeIt->second == 1) {
-                texBindingDesc.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-            } else {
-                texBindingDesc.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            }
+            texBindingDesc.binding = bindIt->second;
+            texBindingDesc.descriptorType = descriptorTypeFor(texname);
             texBindingDesc.descriptorCount = 1;
-            texBindingDesc.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            texBindingDesc.stageFlags = uboBinding.stageFlags;
             bindings.push_back(texBindingDesc);
         }
 
@@ -475,20 +511,20 @@ struct Material
         auto order = getUniformOrder();
         auto sizes = getUniformSizes();
         if (order.empty()) {
-            for (auto& [name, setter] : uniform_setters.uniform_setters) {
-                uniform_offsets[name] = next_uniform_offset;
+            for (auto& [uname, setter] : uniform_setters.uniform_setters) {
+                uniform_offsets[uname] = next_uniform_offset;
                 size_t dataSize = setter.data.size();
                 if (dataSize == 0) dataSize = 64;
                 next_uniform_offset += ((dataSize + 15) / 16) * 16;
             }
         } else {
             for (size_t i = 0; i < order.size(); i++) {
-                const auto& name = order[i];
-                uniform_offsets[name] = next_uniform_offset;
+                const auto& uname = order[i];
+                uniform_offsets[uname] = next_uniform_offset;
                 size_t dataSize = 0;
                 if (i < sizes.size()) dataSize = sizes[i];
                 if (dataSize == 0) {
-                    auto it = uniform_setters.uniform_setters.find(name);
+                    auto it = uniform_setters.uniform_setters.find(uname);
                     dataSize = (it != uniform_setters.uniform_setters.end()) ? it->second.data.size() : 0;
                 }
                 if (dataSize == 0) dataSize = 64;
@@ -499,90 +535,57 @@ struct Material
 
         if (uniformBuffer != VK_NULL_HANDLE) return;
 
-        g_vk_ctx->createBuffer(uniformBufferSize,
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            uniformBuffer, uniformBufferMemory);
-
-        vkMapMemory(g_vk_ctx->device, uniformBufferMemory, 0, uniformBufferSize, 0, &uniformBufferMapped);
+        uniforms = Tensor<uint8_t, 1>(Shape<1>{(long)uniformBufferSize}, MemoryLocation(MemoryType::kDDR),
+                                      ComputeType::kVULKAN);
+        uniformBufferMapped = (void*)uniforms.to_compute(ComputeType::kCPU).data.data;
+        VulkanResource* r = vk_resource(uniforms);
+        uniformBuffer = r ? (VkBuffer)r->buffer : VK_NULL_HANDLE;
+        if (!uniformBuffer || !uniformBufferMapped || uniformBufferMapped == (void*)r) {
+            throw std::runtime_error("[vulkan] could not allocate a host-visible uniform buffer");
+        }
+        memset(uniformBufferMapped, 0, uniformBufferSize);
     }
 
     void flushUniforms() {
         if (uniformBuffer == VK_NULL_HANDLE) createUniformBuffer();
 
-        for (auto& [name, setter] : uniform_setters.uniform_setters) {
+        for (auto& [uname, setter] : uniform_setters.uniform_setters) {
             if (!setter.dirty || setter.data.empty()) continue;
-            auto it = uniform_offsets.find(name);
+            auto it = uniform_offsets.find(uname);
             if (it == uniform_offsets.end()) continue;
+            if (it->second + setter.data.size() > uniformBufferSize) continue;
             memcpy((uint8_t*)uniformBufferMapped + it->second, setter.data.data(), setter.data.size());
             setter.dirty = false;
         }
         uniformBufferDirty = false;
     }
 
+    // Drop the descriptor set so the next bind() rebuilds it (after textures
+    // were changed with setTexture()).
+    void releaseDescriptors() {
+        if (!g_vk_ctx) return;
+        if (descriptorPool) {
+            vkDeviceWaitIdle(g_vk_ctx->device);   // the set may be in flight
+            vkDestroyDescriptorPool(g_vk_ctx->device, descriptorPool, nullptr);
+        }
+        descriptorPool = VK_NULL_HANDLE;
+        descriptorSet = VK_NULL_HANDLE;
+        descriptorsDirty = false;
+    }
+
     void createDescriptorSet() {
         if (descriptorSet != VK_NULL_HANDLE) return;
-
-        // Recreate descriptor set layout if textures have been added since
-        // createShaderProgram() created the initial layout
-        if (descSetLayout != VK_NULL_HANDLE) {
-            uint32_t expectedBindings = 1 + (uint32_t)textures_ids.size();
-            // Check if the current layout has enough bindings
-            // (simple heuristic: if texture_binding_map size != textures_ids size, rebuild)
-            if (texture_binding_map.size() != textures_ids.size()) {
-                if (descSetLayout) vkDestroyDescriptorSetLayout(g_vk_ctx->device, descSetLayout, nullptr);
-                if (pipelineLayout) vkDestroyPipelineLayout(g_vk_ctx->device, pipelineLayout, nullptr);
-                descSetLayout = VK_NULL_HANDLE;
-                pipelineLayout = VK_NULL_HANDLE;
-                texture_binding_map.clear();
-                // Destroy old pipeline since it references the old layout
-                if (pipeline) vkDestroyPipeline(g_vk_ctx->device, pipeline, nullptr);
-                pipeline = VK_NULL_HANDLE;
-            }
-        }
-
-        if (descSetLayout == VK_NULL_HANDLE) {
-            createDescriptorSetLayout();
-
-            // Recreate pipeline layout
-            VkPipelineLayoutCreateInfo layoutCI{};
-            layoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-            layoutCI.setLayoutCount = 1;
-            layoutCI.pSetLayouts = &descSetLayout;
-            VK_CTX_CHECK(vkCreatePipelineLayout(g_vk_ctx->device, &layoutCI, nullptr, &pipelineLayout));
-        }
-
-        if (descSetLayout == VK_NULL_HANDLE) return;
         if (descSetLayout == VK_NULL_HANDLE) return;
 
-        // Count buffer vs image textures
-        size_t numImageTextures = 0;
-        size_t numBufferTextures = 0;
-        for (auto& [name, tex] : textures_ids) {
-            auto typeIt = texture_types.find(name);
-            if (typeIt != texture_types.end() && typeIt->second == 1)
-                numBufferTextures++;
-            else
-                numImageTextures++;
+        // Count descriptors of each type the shader uses
+        std::map<VkDescriptorType, uint32_t> counts;
+        counts[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = 1;
+        for (auto& [texname, tex] : textures_ids) {
+            if (texture_binding_map.find(texname) == texture_binding_map.end()) continue;
+            counts[descriptorTypeFor(texname)]++;
         }
-
         std::vector<VkDescriptorPoolSize> poolSizes;
-        VkDescriptorPoolSize uboPool{};
-        uboPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        uboPool.descriptorCount = 1;
-        poolSizes.push_back(uboPool);
-        if (numImageTextures > 0) {
-            VkDescriptorPoolSize imgPool{};
-            imgPool.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            imgPool.descriptorCount = numImageTextures;
-            poolSizes.push_back(imgPool);
-        }
-        if (numBufferTextures > 0) {
-            VkDescriptorPoolSize bufPool{};
-            bufPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-            bufPool.descriptorCount = numBufferTextures;
-            poolSizes.push_back(bufPool);
-        }
+        for (auto& [type, n] : counts) poolSizes.push_back({type, n});
 
         VkDescriptorPoolCreateInfo poolCI{};
         poolCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -600,90 +603,64 @@ struct Material
 
         if (uniformBuffer == VK_NULL_HANDLE) createUniformBuffer();
 
-        VkDescriptorBufferInfo uboInfo{};
-        uboInfo.buffer = uniformBuffer;
-        uboInfo.offset = 0;
-        uboInfo.range = uniformBufferSize;
-
+        VkDescriptorBufferInfo uboInfo{uniformBuffer, 0, uniformBufferSize};
         VkWriteDescriptorSet uboWrite{};
         uboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         uboWrite.dstSet = descriptorSet;
         uboWrite.dstBinding = 0;
-        uboWrite.dstArrayElement = 0;
         uboWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         uboWrite.descriptorCount = 1;
         uboWrite.pBufferInfo = &uboInfo;
 
         std::vector<VkWriteDescriptorSet> writes = {uboWrite};
+        // Reserved so the pImageInfo / pTexelBufferView pointers stay valid.
         std::vector<VkDescriptorImageInfo> imageInfos;
-        std::vector<VkSampler> samplers;
         std::vector<VkBufferView> bufferViews;
-        // Reserve to prevent reallocation — pImageInfo/pTexelBufferView pointers
-        // in writes would dangle if the vectors grow.
         imageInfos.reserve(textures_ids.size());
         bufferViews.reserve(textures_ids.size());
 
-        for (auto& [name, tex] : textures_ids) {
-            auto bindIt = texture_binding_map.find(name);
+        for (auto& [texname, tex] : textures_ids) {
+            auto bindIt = texture_binding_map.find(texname);
             if (bindIt == texture_binding_map.end()) continue;
+            VkDescriptorType type = descriptorTypeFor(texname);
+            bool isImage = type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
-            auto typeIt = texture_types.find(name);
-            bool isBuffer = (typeIt != texture_types.end() && typeIt->second == 1);
-
-            if (isBuffer) {
-                // Buffer texture (samplerBuffer) — use VkBufferView
-                VkBufferView bufView = (VkBufferView)(size_t)tex.storage_pointer->data;
-                if (bufView == VK_NULL_HANDLE) continue;
-                bufferViews.push_back(bufView);
-
-                VkWriteDescriptorSet texWrite{};
-                texWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                texWrite.dstSet = descriptorSet;
-                texWrite.dstBinding = bindIt->second;
-                texWrite.dstArrayElement = 0;
-                texWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
-                texWrite.descriptorCount = 1;
-                texWrite.pTexelBufferView = &bufferViews.back();
-                writes.push_back(texWrite);
-            } else {
-                // Image texture (sampler2D) — use VkImageView + sampler
-                VkImageView imageView = (VkImageView)(size_t)tex.storage_pointer->data;
-                if (imageView == VK_NULL_HANDLE) continue;
-
-                VkSampler sampler = VK_NULL_HANDLE;
-                VkSamplerCreateInfo sci{};
-                sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-                sci.magFilter = VK_FILTER_LINEAR;
-                sci.minFilter = VK_FILTER_LINEAR;
-                sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-                sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-                sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-                sci.anisotropyEnable = VK_TRUE;
-                sci.maxAnisotropy = 16;
-                sci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-                sci.unnormalizedCoordinates = VK_FALSE;
-                sci.compareEnable = VK_FALSE;
-                sci.compareOp = VK_COMPARE_OP_ALWAYS;
-                sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-                VK_CTX_CHECK(vkCreateSampler(g_vk_ctx->device, &sci, nullptr, &sampler));
-                samplers.push_back(sampler);
-
-                VkDescriptorImageInfo imgInfo{};
-                imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                imgInfo.imageView = imageView;
-                imgInfo.sampler = sampler;
-                imageInfos.push_back(imgInfo);
-
-                VkWriteDescriptorSet texWrite{};
-                texWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                texWrite.dstSet = descriptorSet;
-                texWrite.dstBinding = bindIt->second;
-                texWrite.dstArrayElement = 0;
-                texWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                texWrite.descriptorCount = 1;
-                texWrite.pImageInfo = &imageInfos.back();
-                writes.push_back(texWrite);
+            VulkanResource* r = nullptr;
+            try {
+                r = resolveBinding(tex, type);
+            } catch (const std::exception& e) {
+                std::cerr << "[vulkan] cannot bind '" << texname << "': " << e.what() << std::endl;
+                continue;
             }
+
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = descriptorSet;
+            w.dstBinding = bindIt->second;
+            w.descriptorType = type;
+            w.descriptorCount = 1;
+
+            if (isImage) {
+                // Legacy: a raw VkImageView wrapped in the allocation's data
+                VkImageView view = r ? (VkImageView)r->image_view
+                                     : (tex.storage_pointer ? (VkImageView)tex.storage_pointer->data : VK_NULL_HANDLE);
+                if (view == VK_NULL_HANDLE) continue;
+                VkDescriptorImageInfo info{};
+                info.imageView = view;
+                info.imageLayout = r ? (VkImageLayout)r->layout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                if (type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                    info.sampler = g_vk_ctx->sampler(sampler_nearest, !sampler_nearest);
+                }
+                imageInfos.push_back(info);
+                w.pImageInfo = &imageInfos.back();
+            } else {
+                VkBufferView view = r ? (VkBufferView)r->buffer_view
+                                      : (tex.storage_pointer ? (VkBufferView)tex.storage_pointer->data : VK_NULL_HANDLE);
+                if (view == VK_NULL_HANDLE) continue;
+                bufferViews.push_back(view);
+                w.pTexelBufferView = &bufferViews.back();
+            }
+            writes.push_back(w);
         }
 
         vkUpdateDescriptorSets(g_vk_ctx->device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
@@ -691,9 +668,12 @@ struct Material
 
     void bind(VkCommandBuffer cmd = VK_NULL_HANDLE)
     {
-        if (pipeline == VK_NULL_HANDLE) {
-            if (!createShaderProgram()) return;
+        if (descriptorsDirty) {
+            // Textures changed: rebuild the layout/pipeline and the set.
+            releaseDescriptors();
+            pipeline = VK_NULL_HANDLE;
         }
+        if (!createShaderProgram()) return;
 
         if (uniformBuffer == VK_NULL_HANDLE) createUniformBuffer();
         if (descriptorSet == VK_NULL_HANDLE) createDescriptorSet();
@@ -707,8 +687,6 @@ struct Material
         }
     }
 };
-
-
 
 template <typename T>
 struct VertexAttribute

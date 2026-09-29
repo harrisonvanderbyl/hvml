@@ -655,7 +655,12 @@ public:
         };
     };
 
-    Tensor<R,rank> to_compute(ComputeType compute_type) const{
+    // In-place view conversion: returns a tensor over the *same* allocation,
+    // seen through `compute_type`.  `flags` selects the kind of view for
+    // backends that have several (e.g. Vulkan: kTEXTURE, kSURFACE,
+    // kTEXELBUFFER, kSTORAGE).  Views are created once and cached on the
+    // allocation; they are released together with it.
+    Tensor<R,rank> to_compute(ComputeType compute_type, AllocationFlags flags = AllocationFlags::kRW) const{
         
         if(!this->device->supports_compute_device[compute_type]){
             std::cerr << "Compute type " << compute_type << " not supported on device type " << this->device->this_device_type << std::endl;
@@ -678,7 +683,7 @@ public:
             compute_device_id = this->device->device_id;
         }
 
-        auto result = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type, 0, AllocationFlags::kRW, compute_device_id));
+        auto result = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(shape,device->this_device_type,compute_type, 0, flags, compute_device_id));
         return Tensor<R,rank>{
             shape,
             result + offset,
@@ -764,6 +769,24 @@ class Tensor<void, rank> {
         this->dtype = other.dtype;
         this->storage_pointer = other.storage_pointer;
         device->register_allocation(this->storage_pointer);
+    }
+
+    // copy assignment — shares the allocation and keeps the reference count
+    // balanced (the implicit one copied the pointer without registering it,
+    // so `map[name] = tensor` freed the allocation one reference too early)
+    Tensor<void, rank>& operator=(const Tensor<void, rank>& other)
+    {
+        if (this == &other) return *this;
+        if (other.storage_pointer != nullptr) other.device->register_allocation(other.storage_pointer);
+        if (this->data != NULL && this->storage_pointer != nullptr) device->deallocate(this->storage_pointer);
+        this->device = other.device;
+        this->shape = other.shape;
+        this->strides = other.strides;
+        this->bitsize = other.bitsize;
+        this->data = other.data;
+        this->dtype = other.dtype;
+        this->storage_pointer = other.storage_pointer;
+        return *this;
     }
 
     template <typename T>

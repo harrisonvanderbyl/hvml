@@ -236,7 +236,14 @@ struct AllocationMap {
 
         ComputeType target_type = meta.compute_device;
 
-        if (target_type == ptr->metadata.compute_device) {
+        // Asking for the allocation's own compute type returns the raw data —
+        // unless the request adds view flags the allocation was not created
+        // with (e.g. a kVULKAN buffer viewed as kVULKAN|kTEXELBUFFER).  Those
+        // go through the {type, type} converter so the backend can build the
+        // extra view in place.
+        bool wants_new_view = ((int)meta.rwstatus & ~(int)ptr->metadata.rwstatus & kVIEW_FLAGS) != 0;
+
+        if (target_type == ptr->metadata.compute_device && !wants_new_view) {
             return MassagedMemory<T>(meta, (T*)ptr->data, ptr);
         } else {
             auto key = std::make_tuple(ptr->metadata.compute_device, target_type);

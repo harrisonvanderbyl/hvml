@@ -119,8 +119,9 @@ static AllocationMap* create_cuda_mapper(int device_id) {
             // nothing
         } else if (original->metadata.compute_device == ComputeType::kOPENGLTEXTURE) {
             // nothing
-        } else if (original->metadata.compute_device == ComputeType::kVULKAN) {
-            // No-op — memory owned by VulkanBufferHandle
+        } else if (original->metadata.compute_device == ComputeType::kVULKAN ||
+                   original->metadata.compute_device == ComputeType::kVULKANTEXTURE) {
+            // No-op — memory owned by the VulkanResource
         } else {
             throw std::runtime_error("No CUDA mapping deallocator found for original compute device");
         }

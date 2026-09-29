@@ -30,14 +30,51 @@ enum MemoryType
     kUnknown_MEM
 };
 
+// ---------------------------------------------------------------------------
+//  AllocationFlags — access flags plus "what can this memory be used as".
+//
+//  kR / kW are host/transfer access.  The remaining bits are *view* flags:
+//  they tell a graphics allocator (the Vulkan plugin) which kinds of GPU
+//  objects to create for the allocation, and — when passed to
+//  Tensor::to_compute(ct, flags) — which kind of in-place view to create
+//  over an existing allocation.
+//
+//      kSURFACE      render target: colour attachment (or depth attachment
+//                    for depth formats) — can be rendered into
+//      kTEXTURE      sampled image — bind as `sampler2D`
+//      kTEXELBUFFER  buffer read through a VkBufferView — bind as
+//                    `samplerBuffer` (texelFetch)
+//      kSTORAGE      storage image / storage texel buffer (`image2D`,
+//                    `imageBuffer`)
+//      kDEPTH        depth format (D32_SFLOAT)
+//      kLINEAR       image memory is plain row-major and shared with a
+//                    VkBuffer, so the same allocation can be viewed in place
+//                    as a buffer, a texel buffer, a texture, a render target,
+//                    or a HIP/CUDA pointer.  This is the default for colour
+//                    images whenever the device supports it.
+//      kOPTIMAL      opt out of kLINEAR: GPU-only tiled image (fastest to
+//                    sample / render; can't be viewed as a buffer)
+//
+//  Images get every usage their format supports (a surface can always be
+//  sampled, a texture can always be rendered into), so the flags you
+//  allocate with don't limit the views you can take later.
+// ---------------------------------------------------------------------------
 enum AllocationFlags
 {
-    kR       = (1<<1),
-    kW       = (1<<2),
-    kRW      = (1<<1) | (1<<2),
-    kSURFACE = (1<<3),
-    kTEXTURE = (1<<4),
+    kR           = (1<<1),
+    kW           = (1<<2),
+    kRW          = (1<<1) | (1<<2),
+    kSURFACE     = (1<<3),
+    kTEXTURE     = (1<<4),
+    kTEXELBUFFER = (1<<5),
+    kSTORAGE     = (1<<6),
+    kDEPTH       = (1<<7),
+    kLINEAR      = (1<<8),
+    kOPTIMAL     = (1<<9),
 };
+
+// Bits that select a *kind of view* (as opposed to host read/write access).
+constexpr int kVIEW_FLAGS = kSURFACE | kTEXTURE | kTEXELBUFFER | kSTORAGE | kDEPTH | kLINEAR | kOPTIMAL;
 
 inline AllocationFlags operator|(AllocationFlags a, AllocationFlags b) {
     return (AllocationFlags)((int)a | (int)b);
@@ -45,6 +82,10 @@ inline AllocationFlags operator|(AllocationFlags a, AllocationFlags b) {
 
 inline AllocationFlags operator&(AllocationFlags a, AllocationFlags b) {
     return (AllocationFlags)((int)a & (int)b);
+}
+
+inline bool has_flag(AllocationFlags flags, AllocationFlags bit) {
+    return ((int)flags & (int)bit) != 0;
 }
 
 enum AssignmentType {

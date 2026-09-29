@@ -78,7 +78,7 @@ public:
         {
             // Allocate as kVULKANTEXTURE — the vulkan plugin creates a VkImage+VkImageView
             // on the rendering device, and storage_pointer->data holds the VkImageView.
-            MemoryType memType = g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR;
+            MemoryType memType = vk_render_memory();
             render_textures.push_back(texture.to(memType, kVULKANTEXTURE));
         }
 
@@ -126,7 +126,7 @@ public:
                 {
                     std::cout << "Attribute: " << attr.first << " Shape: " << attr.second.shape << std::endl;
                 }
-                MemoryType memType = g_vk_ctx ? g_vk_ctx->getRenderingMemoryType() : MemoryType::kDDR;
+                MemoryType memType = vk_render_memory();
                 RenderStruct render_mesh(
                     model.skeletons[0],
                     primitive.indices,
