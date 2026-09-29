@@ -55,8 +55,32 @@ __global__ void OPKERNEL_HIP(
     int loopsize, 
     Parameter<OutputType> output, 
     Parameter<Args>... params) {
-    int idx = blockIdx.x * blockDim.x * loopsize + threadIdx.x * loopsize;
-    
+    unsigned long idx = ((unsigned long)blockIdx.x * blockDim.x + threadIdx.x) * loopsize;
+
+    if constexpr (!std::is_same<OutputType, void>::value && OP::assignment_type == AssignmentType::InplaceAdd) {
+        // Reduction: this thread's elements are consecutive, so most of them
+        // add into the same output.  Sum those locally and issue one atomic
+        // add per output instead of one per element.
+        OutputType* target = nullptr;
+        OutputType acc{};
+        for (int i = 0; i < loopsize; i++)
+        {
+            unsigned long global_idx = idx + i;
+            if (global_idx >= total_size) break;
+            OutputType value = OP::apply(params.get_index(global_idx)...);
+            OutputType* dest = &output.get_index(global_idx);
+            if (dest == target) {
+                acc += value;
+            } else {
+                if (target) AssignmentHelper<AssignmentType::InplaceAdd,kHIP>::assignOperation(*target, acc);
+                target = dest;
+                acc = value;
+            }
+        }
+        if (target) AssignmentHelper<AssignmentType::InplaceAdd,kHIP>::assignOperation(*target, acc);
+        return;
+    }
+
     for (int i = 0; i < loopsize; i++)
     {
         unsigned long global_idx = idx + i;

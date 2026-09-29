@@ -59,10 +59,31 @@ using json = nlohmann::json;
                 void* data_begin = const_cast<char*>(storage) + meta.data_offsets.first;
                 // char* data_end = const_cast<char*>(storage.data()) + meta.data_offsets.second;
 
-                if (typeid(T)!=typeid(void)){
+                if constexpr (!std::is_same_v<T, void>){
                     if (meta.dtype != get_dtype<T>()){
-                        std::cerr << "Data type mismatch, tensor data type is " << meta.dtype << " but requested type is " << get_dtype<T>() << std::endl;
-                        exit(0);
+                        // float formats convert (into host memory); anything else is an error
+                        auto as_float = [&](size_t i) -> float {
+                            switch (meta.dtype) {
+                                case DataType::kFLOAT_32: return ((const float*)data_begin)[i];
+                                case DataType::kBFLOAT_16: return float(((const bfloat16*)data_begin)[i]);
+                                case DataType::kFLOAT_16: return float(((const float16*)data_begin)[i]);
+                                default: throw std::runtime_error("unconvertible dtype");
+                            }
+                        };
+                        bool convertible = (meta.dtype == DataType::kFLOAT_32 || meta.dtype == DataType::kBFLOAT_16 ||
+                                            meta.dtype == DataType::kFLOAT_16) &&
+                                           (std::is_same_v<T, float> || std::is_same_v<T, bfloat16> || std::is_same_v<T, float16>);
+                        if (!convertible) {
+                            std::cerr << "Data type mismatch for " << name << ": tensor data type is " << meta.dtype
+                                      << " but requested type is " << get_dtype<T>() << std::endl;
+                            throw std::runtime_error("safetensors: data type mismatch");
+                        }
+                        if constexpr (std::is_same_v<T, float> || std::is_same_v<T, bfloat16> || std::is_same_v<T, float16>) {
+                            Tensor<T, rank> out(Shape<rank>(meta.shape), MemoryLocation(MemoryType::kDDR), ComputeType::kCPU);
+                            size_t n = out.shape.total_size();
+                            for (size_t i = 0; i < n; i++) out.data.data[i] = T(as_float(i));
+                            return out;
+                        }
                     }
                 }
                 

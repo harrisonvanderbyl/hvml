@@ -2,6 +2,7 @@
 #pragma once
 #include "tensor.hpp"
 #include "kernels/interface.hpp"
+#include <tuple>
 
 struct ExampleNoScalarType {
     int x;
@@ -16,6 +17,8 @@ struct Parameter {
     Shape<-1> shape ;
     Shape<-1> strides;
     unsigned long* indexer = nullptr;
+    long indexer_stride = 1;   // see Tensor::tensor_index
+    long indexer_tail = 0;
     bool istensor = true;
     // if T has a constexpr member NoScalarType, then do not define data_scalar, define it as deleted
     // this is to prevent accidentally using the scalar version of a type that should not have one
@@ -33,6 +36,8 @@ struct Parameter {
         ndim = tensor.shape.ndim();
         strides = tensor.strides;
         indexer = tensor.indexer;
+        indexer_stride = tensor.indexer_stride;
+        indexer_tail = tensor.indexer_tail;
         istensor = true;
     }
 
@@ -63,15 +68,25 @@ struct Parameter {
 
         long rem = index_flat;
         long offset = 0;
+        if(indexer == nullptr){
+            for (long adim = ndim - 1; adim >= 0; adim--) {
+                long coord = rem % shape[adim];
+                rem /= shape[adim];
+                offset += coord * strides[adim];
+            }
+            return data[offset];
+        }
+        // tensor_index view: leading dims walk the index array, which gives
+        // the row; trailing dims step within that row
+        long index_offset = 0;
+        long index_dims = (long)ndim - indexer_tail;
         for (long adim = ndim - 1; adim >= 0; adim--) {
             long coord = rem % shape[adim];
             rem /= shape[adim];
-            offset += coord * strides[adim];
+            if (adim < index_dims) index_offset += coord * strides[adim];
+            else offset += coord * strides[adim];
         }
-        if(indexer != nullptr){
-            offset = indexer[offset];
-        }
-        return data[offset];
+        return data[offset + (long)indexer[index_offset] * indexer_stride];
 
     };
 
@@ -88,6 +103,8 @@ struct Parameter {
         Tensor<T, Z> tensor{shape, data};
         tensor.strides = strides;
         tensor.indexer = indexer;
+        tensor.indexer_stride = indexer_stride;
+        tensor.indexer_tail = indexer_tail;
         tensor.total_size = shape.total_size();
         return tensor;
     }
@@ -100,6 +117,8 @@ struct Parameter {
         b.shape = a;
         b.strides = a.calc_strides();
         b.indexer = indexer;
+        b.indexer_stride = indexer_stride;
+        b.indexer_tail = indexer_tail;
         b.data_scalar = data_scalar;
         b.istensor = istensor;
         b.ndim = a.ndim();
@@ -316,6 +335,23 @@ public:
 };
 
 
+// Element `r` along a reduced dim, starting from flat index `base` (CPU).
+template <typename T>
+struct ReductionCursor {
+    Parameter<T>& param;
+    T* ptr = nullptr;
+    long step = 0;
+    long base, inner;
+
+    ReductionCursor(Parameter<T>& p, long base, long inner, long dim) : param(p), base(base), inner(inner) {
+        if (p.istensor && p.indexer == nullptr) {
+            ptr = &p.get_index(base);
+            step = p.strides[(int)dim];
+        }
+    }
+    T& operator()(long r) { return ptr ? ptr[r * step] : param.get_index(base + r * inner); }
+};
+
 template <typename OP, typename... Args>
 struct BinaryKernel<ComputeType::kCPU, OP, Args...>
     : public Kernel<ComputeType::kCPU, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
@@ -329,9 +365,53 @@ public:
         Parameter<Args>... params
     ) override 
     {
-        // get first argument and use .get_total_size() to get total size
+        using Out = typename OutputTypeSelector<OP, Args...>::type;
+        if constexpr (!std::is_same<Out, void>::value && OP::assignment_type == AssignmentType::InplaceAdd) {
+            // Reduction: each output element sums its own run along the
+            // reduced dim (output stride 0 there), so output elements are
+            // independent and split across threads with -fopenmp.
+            long nd = output.ndim;
+            if (total_size == 0 || nd == 0) return;
+            long d = ((long)OP::AlignDim + nd) % nd;
+            long len = output.shape[d];
+            long inner = 1;
+            for (long i = d + 1; i < nd; i++) inner *= output.shape[i];
+            long outer_total = (long)total_size / len;
+            #pragma omp parallel for schedule(static) if(outer_total > 16)
+            for (long o = 0; o < outer_total; o++) {
+                long base = (o / inner) * len * inner + (o % inner);
+                // Walking the reduced dim only changes that one coordinate,
+                // so plain tensors step a pointer by their stride there.
+                std::tuple<ReductionCursor<Args>...> cursors{ReductionCursor<Args>(params, base, inner, d)...};
+                bool direct = std::apply([](auto&... c) { return (... && (c.ptr != nullptr)); }, cursors);
+                Out acc = std::apply([&](auto&... c) { return OP::apply(c(0)...); }, cursors);
+                if (direct) {
+                    // four running sums hide the add latency
+                    std::apply([&](auto&... c) {
+                        Out a1{}, a2{}, a3{};
+                        long r = 1;
+                        for (; r + 3 < len; r += 4) {
+                            acc += OP::apply(c.ptr[r * c.step]...);
+                            a1 += OP::apply(c.ptr[(r + 1) * c.step]...);
+                            a2 += OP::apply(c.ptr[(r + 2) * c.step]...);
+                            a3 += OP::apply(c.ptr[(r + 3) * c.step]...);
+                        }
+                        for (; r < len; r++) acc += OP::apply(c.ptr[r * c.step]...);
+                        acc += a1 + a2 + a3;
+                    }, cursors);
+                } else {
+                    for (long r = 1; r < len; r++)
+                        acc += std::apply([&](auto&... c) { return OP::apply(c(r)...); }, cursors);
+                }
+                output.get_index(base) += acc;
+            }
+            return;
+        }
 
-        for (long linear_idx = 0; linear_idx < total_size; linear_idx++) {  
+        // Element-wise: every output element is independent, so the loop is
+        // split across threads when built with -fopenmp.
+        #pragma omp parallel for schedule(static) if(total_size > 1024)
+        for (long linear_idx = 0; linear_idx < (long)total_size; linear_idx++) {  
             if constexpr (std::is_same<typename OutputTypeSelector<OP, Args...>::type, void>::value) {
                 OP::apply(
                     params.get_index(linear_idx)...
@@ -669,9 +749,11 @@ struct ReduceSum: public ReductionOperation<ReduceSum<dim>,dim> {
 
 template <int dim = -1>
 struct DotProduct: public ReductionOperation<DotProduct<dim>,dim> {
-    template <typename A>
+    // A may differ from B (float activations · bfloat16 weights): put the
+    // wider type first, the product takes its type.
+    template <typename A, typename B>
     __host__ __device__ static inline
-    auto apply(const A& a, const A& b) {
+    auto apply(const A& a, const B& b) {
         return a * b;
     }
 };

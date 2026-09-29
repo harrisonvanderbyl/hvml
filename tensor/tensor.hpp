@@ -26,7 +26,22 @@ public:
     size_t total_size = 0;
     size_t total_bytes = 0;
     AllocationMap* device = &global_device_manager.get_device(MemoryType::kDDR,0);
+    // Row gather (see tensor_index): the leading `ndim - indexer_tail` dims
+    // walk `indexer` (a device array of row numbers) and the row found is
+    // multiplied by `indexer_stride`; the trailing `indexer_tail` dims use
+    // `strides` as usual.  indexer_tail = 0, indexer_stride = 1 is a plain
+    // per-element index map.
     unsigned long* indexer = nullptr;
+    long indexer_stride = 1;
+    int indexer_tail = 0;
+
+    template <typename T, int orank>
+    void copy_indexer(const Tensor<T, orank>& other)
+    {
+        indexer = other.indexer;
+        indexer_stride = other.indexer_stride;
+        indexer_tail = other.indexer_tail;
+    }
 
     void calculate_metadata()
     {
@@ -152,7 +167,8 @@ public:
 
             this->data = other.data;
             calculate_metadata();
-            this->indexer = other.indexer;
+            this->strides = other.strides;
+            copy_indexer(other);
         }else{
             tensor_copy(*this, other);
         }
@@ -191,17 +207,23 @@ public:
         // }
         MassagedMemory<R> startingpointer = data;//(R*)device->get_massaged_pointer((R *)data, device->default_compute_type);
         int ndim = shape.ndim();
+        // dims before `index_dims` of a tensor_index view move through the
+        // index array instead of the data
+        int index_dims = indexer ? ndim - indexer_tail : 0;
+        unsigned long* index_start = indexer;
         int ii = 1;
         for (; ii <= ndim ; ii++)
         {
             long shapeofset = shape[-ii];
             long start = (static_cast<long>(inp[ndim-ii].start) + shapeofset) % shapeofset;
-            startingpointer += start * strides[-ii];
+            if (ndim - ii < index_dims) index_start += start * strides[-ii];
+            else startingpointer += start * strides[-ii];
         }
         
         if constexpr (newrank == 0)
         {
             // should only return cpu editable scalar if possible
+            if (indexer) return *(startingpointer.data + (*index_start) * indexer_stride);
             return *(startingpointer.data);
         }
         else{
@@ -224,15 +246,18 @@ public:
                 }
                 else
                 {
-                    long spot = (static_cast<long>(inp[i].end) - static_cast<long>(inp[i].start) + shape[i]) % shape[i];
+                    // negative indices count from the end; `end == shape` is a
+                    // full slice (the old modulo turned it into length 0)
+                    long st = static_cast<long>(inp[i].start);
+                    long en = static_cast<long>(inp[i].end);
+                    if (st < 0) st += shape[i];
+                    if (en < 0) en += shape[i];
+                    long spot = en - st;
                     if(inp[i].end.is_default){
-                        spot = shape[i] - (inp[i].start);
-                        // newshape[j] = spot / inp[i].step; this doesnt work, eg {1::2} on a shape of 5 should give 2 not 3/2
-                        newshape[j] = spot / inp[i].step + (spot % inp[i].step != 0);
-                    }else{
-
-                        newshape[j] = (spot) / inp[i].step;
+                        spot = shape[i] - st;
                     }
+                    // ceil(spot / step): {1::2} on a shape of 5 gives 2, {0,5,2} gives 3
+                    newshape[j] = spot / inp[i].step + (spot % inp[i].step != 0);
                     newstrides[j] = this->strides[i] * inp[i].step;
                     // std::cout << "not implemented" << std::endl;
                 }
@@ -253,6 +278,13 @@ public:
         Tensor<R, newrank> b = {newshape, startingpointer, *device, storage_pointer};
         
         b.strides = newstrides;
+        if (indexer) {
+            int tail = 0;
+            for (int d = index_dims; d < ndim; d++) tail += inp[d].is_slice;
+            b.indexer = index_start;
+            b.indexer_stride = indexer_stride;
+            b.indexer_tail = tail;
+        }
         
         // // std::cout << (i.end - i.start) / i.step << std::endl;
         // // std::cout << "Start: " << i.start << " End: " << i.end << " Step: " << i.step << std::endl;
@@ -316,7 +348,23 @@ public:
         return a;
     }
 
-    inline Tensor contiguous()
+    // Swap any two dimensions (a view; negative dims count from the end).
+    inline Tensor transpose(int a, int b) const
+    {
+        int ndim = shape.ndim();
+        if (a < 0) a += ndim;
+        if (b < 0) b += ndim;
+        if (indexer && ((a < ndim - indexer_tail) != (b < ndim - indexer_tail)))
+            throw std::runtime_error("transpose: cannot swap an indexed dim with a row dim of a tensor_index view");
+        Tensor t = *this;
+        t.shape[a] = shape[b];
+        t.shape[b] = shape[a];
+        t.strides[a] = strides[b];
+        t.strides[b] = strides[a];
+        return t;
+    }
+
+    inline Tensor contiguous() const
     {
         Tensor a = Tensor{shape, *device};
         a = *this;
@@ -348,6 +396,8 @@ public:
         }
         Tensor<R,(rank == -1 ? -1 : rank+1)> b{newshape, data, *device, storage_pointer,};
         b.strides = newstrides;
+        b.copy_indexer(*this);
+        if (indexer && dim > ndim - indexer_tail) b.indexer_tail++;
         return b;
     }
 
@@ -365,7 +415,7 @@ public:
 
         Tensor<R, v> b{a, data, *device, storage_pointer};
 
-        b.indexer = indexer;
+        b.copy_indexer(*this);
 
         b._broadcast(a);
         return b;
@@ -390,14 +440,35 @@ public:
     };
 
 
-    template <int v = rank>
-    Tensor<R, 1> tensor_index(const Tensor<unsigned long, v>& index_tensor) const
+    // Rows of this tensor picked by an index tensor (64-bit ints), as a view:
+    //   weight [V, D].tensor_index(ids [T]) → [T, D],  row t = weight[ids[t]]
+    //   ids [B, T] → [B, T, D]
+    // Nothing is copied: any operation reading the view gathers the rows
+    // (e.g. `Tensor<float, 2> x(...); x = weight.tensor_index(ids);`).  The
+    // view keeps a pointer to `index_tensor`'s data, so keep it alive (and on
+    // the same device) while the view is used.
+    template <typename I, int v = rank>
+    Tensor<R, ((v < 0 || rank < 0) ? -1 : v + rank - 1)> tensor_index(const Tensor<I, v>& index_tensor) const
     {
-        // Tensor<R, newrank> b{index_tensor.shape, device_type};
-        Tensor<R, 1> b{{index_tensor.shape[0]}, data, *device, storage_pointer};
-        
-        b.indexer = index_tensor.data;
-
+        static_assert(std::is_integral_v<I> && sizeof(I) == sizeof(unsigned long),
+                      "tensor_index: index tensor must hold 64-bit integers (unsigned long / long)");
+        constexpr int newrank = (v < 0 || rank < 0) ? -1 : v + rank - 1;
+        int ni = index_tensor.shape.ndim(), nd = shape.ndim();
+        Shape<newrank> newshape;
+        Shape<newrank> newstrides;
+        for (int i = 0; i < ni; i++) {
+            newshape[i] = index_tensor.shape[i];
+            newstrides[i] = index_tensor.strides[i];
+        }
+        for (int i = 1; i < nd; i++) {
+            newshape[ni + i - 1] = shape[i];
+            newstrides[ni + i - 1] = strides[i];
+        }
+        Tensor<R, newrank> b{newshape, data, *device, storage_pointer};
+        b.strides = newstrides;
+        b.indexer = (unsigned long*)index_tensor.data.data;
+        b.indexer_stride = strides[0];
+        b.indexer_tail = nd - 1;
         return b;
     }
 
@@ -488,16 +559,19 @@ public:
         }
         else{
             unsigned long *ptr = indexer;
-            for (int j = 1; j < shape.ndim()+1; j++)
+            R *row = (R *)data;
+            int ndim = shape.ndim();
+            for (int j = 1; j < ndim+1; j++)
             {
-                int cstride = strides[-j];
-                int cshape = shape[-j];
-                int index = ((i%cshape) * cstride);
+                long cstride = strides[-j];
+                long cshape = shape[-j];
+                long index = ((i%cshape) * cstride);
 
                 i = i / cshape;
-                ptr += index;       
+                if (ndim - j < ndim - indexer_tail) ptr += index;
+                else row += index;
             }
-            return *(data.data + *ptr);
+            return *(row + (*ptr) * indexer_stride);
         }
         
     }
@@ -632,8 +706,6 @@ public:
             return output;
         }
         else{
-            // print what memory type this has
-            std::cout << "Current memory type for tensor: " << device->this_device_type << std::endl;
             result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
         
             return {
@@ -713,7 +785,27 @@ public:
         this->strides = other.strides;
         this->bitsize = other.bitsize;
         this->data = other.data;
-        this->indexer = other.indexer;
+        copy_indexer(other);
+        this->total_size = other.total_size;
+        this->total_bytes = other.total_bytes;
+        this->storage_pointer = other.storage_pointer;
+        if(this->storage_pointer != nullptr){
+            this->device->register_allocation(this->storage_pointer);
+        }
+    }
+
+    // Between a dynamic-rank tensor (-1) and a fixed rank, e.g. the result of
+    // an operation into `Tensor<float, 2>`.  Shares the data; the number of
+    // dimensions is checked at runtime.
+    template <int orank, typename = std::enable_if_t<orank != rank && (orank == -1 || rank == -1)>>
+    Tensor(const Tensor<R, orank>& other)
+    {
+        this->device = other.device;
+        this->shape = Shape<rank>(other.shape);
+        this->strides = Shape<rank>(other.strides);
+        this->bitsize = other.bitsize;
+        this->data = other.data;
+        copy_indexer(other);
         this->total_size = other.total_size;
         this->total_bytes = other.total_bytes;
         this->storage_pointer = other.storage_pointer;

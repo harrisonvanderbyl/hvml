@@ -83,3 +83,25 @@ int main() {
     return 0;
 }
 ```
+### Layer lists and devices
+
+`ModuleList<T>` holds numbered submodules, loaded from `name.0.`, `name.1.`,
+…  The items are heap-allocated because a module keeps pointers to its own
+members:
+
+```cpp
+ModuleList<DecoderLayer> layers(28, [&](size_t i) { return new DecoderLayer(config); });
+```
+
+`move_to(MemoryLocation)` moves every tensor of a module (recursively) to a
+device, e.g. after loading weights from disk:
+
+```cpp
+model.load_from_safetensors(safetensors("model.safetensors"));
+model.move_to(MemoryType::kHIP_VRAM);
+```
+
+Reusable modules: `Linear<W, has_bias>` (`module/linear`), `LayerNorm<W>`,
+`RMSNorm<W>`, `Embedding<W>` and `Conv2d<W>`. `W` is the weight dtype as
+stored (e.g. `bfloat16`); activations are `float`. See `docs/kernel.md` for
+the operations they are built on, and `docs/qwen3asr.md` for a complete model.

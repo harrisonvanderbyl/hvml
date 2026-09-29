@@ -127,6 +127,15 @@ static AllocationMap* create_disk_mapper(int device_id) {
         std::cerr << "Disk plugin: CPU device not available for converter registration" << std::endl;
     }
 
+    // Disk → host memory: the tensor data is already mmapped host memory,
+    // so copying it into a fresh host allocation is a plain memcpy.
+    mapper->memory_type_converters[MemoryType::kDDR] = [](void* data, AllocationMetadata metadata) {
+        AllocationMap& kddr = global_device_manager.get_device(MemoryType::kDDR, 0);
+        metadata.storage_device = MemoryType::kDDR;
+        metadata.compute_device = ComputeType::kCPU;
+        return kddr.allocate(metadata, data);
+    };
+
     mapper->this_device_type = MemoryType::kDISK;
     return mapper;
 }
