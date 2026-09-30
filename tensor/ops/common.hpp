@@ -3,6 +3,7 @@
 #include "tensor.hpp"
 #include "kernels/interface.hpp"
 #include <tuple>
+#include <cmath>
 
 struct ExampleNoScalarType {
     int x;
@@ -19,6 +20,7 @@ struct Parameter {
     unsigned long* indexer = nullptr;
     long indexer_stride = 1;   // see Tensor::tensor_index
     long indexer_tail = 0;
+    bool small_index = false;   // every extent fits in 32 bits
     bool istensor = true;
     // if T has a constexpr member NoScalarType, then do not define data_scalar, define it as deleted
     // this is to prevent accidentally using the scalar version of a type that should not have one
@@ -39,9 +41,15 @@ struct Parameter {
         indexer_stride = tensor.indexer_stride;
         indexer_tail = tensor.indexer_tail;
         istensor = true;
+        update_small_index();
     }
 
     
+    void update_small_index() {
+        small_index = true;
+        for (unsigned long i = 0; i < ndim; i++) small_index = small_index && shape[i] <= 0xFFFFFFFFl;
+    }
+
     Parameter(const T& indata) {
         static_assert(!NoScalar, "This type cannot be used as a scalar");
         ndim = 1;
@@ -69,6 +77,17 @@ struct Parameter {
         long rem = index_flat;
         long offset = 0;
         if(indexer == nullptr){
+            if (small_index && index_flat <= 0xFFFFFFFFl) {
+                // 32-bit division is several times cheaper, above all on GPUs
+                unsigned int r32 = (unsigned int)index_flat;
+                for (long adim = ndim - 1; adim >= 0; adim--) {
+                    unsigned int extent = (unsigned int)shape[adim];
+                    unsigned int q = r32 / extent;
+                    offset += (long)(r32 - q * extent) * strides[adim];
+                    r32 = q;
+                }
+                return data[offset];
+            }
             for (long adim = ndim - 1; adim >= 0; adim--) {
                 long coord = rem % shape[adim];
                 rem /= shape[adim];
@@ -122,6 +141,7 @@ struct Parameter {
         b.data_scalar = data_scalar;
         b.istensor = istensor;
         b.ndim = a.ndim();
+        b.update_small_index();
         // std::cout << "From shape: " << shape << " to broadcast shape: " << a << std::endl;
         if (shape == a)
         {
@@ -335,21 +355,50 @@ public:
 };
 
 
-// Element `r` along a reduced dim, starting from flat index `base` (CPU).
+// Geometry of a reduction over the broadcast output shape: `outer` output
+// elements, each summing `len` inputs spaced `inner` apart in flat index.
+struct ReductionShape {
+    long outer = 0, len = 1, inner = 1;
+    int dim = 0;
+};
+
+template <typename OP, typename Out>
+inline ReductionShape reduction_shape(const Parameter<Out>& output, unsigned long total_size) {
+    ReductionShape r;
+    long nd = output.ndim;
+    if (total_size == 0 || nd == 0) return r;
+    r.dim = (int)(((long)OP::AlignDim + nd) % nd);
+    r.len = output.shape[r.dim];
+    for (long i = r.dim + 1; i < nd; i++) r.inner *= output.shape[i];
+    r.outer = (long)total_size / r.len;
+    return r;
+}
+
+// Threads that cooperate on one output (a power of two ≤ 32).
+inline int reduction_lanes(long len) {
+    int lanes = 1;
+    while (lanes < 32 && lanes < len) lanes *= 2;
+    return lanes;
+}
+
+// Element `r` along a reduced dim, starting from flat index `base`.  Plain
+// tensors step a pointer by their stride along that dim; broadcast scalars
+// and tensor_index views go through get_index.
 template <typename T>
 struct ReductionCursor {
-    Parameter<T>& param;
+    Parameter<T>* param;
     T* ptr = nullptr;
     long step = 0;
     long base, inner;
 
-    ReductionCursor(Parameter<T>& p, long base, long inner, long dim) : param(p), base(base), inner(inner) {
+    __host__ __device__ ReductionCursor(Parameter<T>& p, long base, long inner, long dim)
+        : param(&p), base(base), inner(inner) {
         if (p.istensor && p.indexer == nullptr) {
             ptr = &p.get_index(base);
             step = p.strides[(int)dim];
         }
     }
-    T& operator()(long r) { return ptr ? ptr[r * step] : param.get_index(base + r * inner); }
+    __host__ __device__ T& operator()(long r) const { return ptr ? ptr[r * step] : param->get_index(base + r * inner); }
 };
 
 template <typename OP, typename... Args>
@@ -370,13 +419,8 @@ public:
             // Reduction: each output element sums its own run along the
             // reduced dim (output stride 0 there), so output elements are
             // independent and split across threads with -fopenmp.
-            long nd = output.ndim;
-            if (total_size == 0 || nd == 0) return;
-            long d = ((long)OP::AlignDim + nd) % nd;
-            long len = output.shape[d];
-            long inner = 1;
-            for (long i = d + 1; i < nd; i++) inner *= output.shape[i];
-            long outer_total = (long)total_size / len;
+            ReductionShape rs = reduction_shape<OP>(output, total_size);
+            long d = rs.dim, len = rs.len, inner = rs.inner, outer_total = rs.outer;
             #pragma omp parallel for schedule(static) if(outer_total > 16)
             for (long o = 0; o < outer_total; o++) {
                 long base = (o / inner) * len * inner + (o % inner);
@@ -388,41 +432,37 @@ public:
                 if (direct) {
                     // four running sums hide the add latency
                     std::apply([&](auto&... c) {
-                        Out a1{}, a2{}, a3{};
+                        Out a1 = OP::template identity<Out>(), a2 = a1, a3 = a1;
                         long r = 1;
                         for (; r + 3 < len; r += 4) {
-                            acc += OP::apply(c.ptr[r * c.step]...);
-                            a1 += OP::apply(c.ptr[(r + 1) * c.step]...);
-                            a2 += OP::apply(c.ptr[(r + 2) * c.step]...);
-                            a3 += OP::apply(c.ptr[(r + 3) * c.step]...);
+                            OP::combine(acc, OP::apply(c.ptr[r * c.step]...));
+                            OP::combine(a1, OP::apply(c.ptr[(r + 1) * c.step]...));
+                            OP::combine(a2, OP::apply(c.ptr[(r + 2) * c.step]...));
+                            OP::combine(a3, OP::apply(c.ptr[(r + 3) * c.step]...));
                         }
-                        for (; r < len; r++) acc += OP::apply(c.ptr[r * c.step]...);
-                        acc += a1 + a2 + a3;
+                        for (; r < len; r++) OP::combine(acc, OP::apply(c.ptr[r * c.step]...));
+                        OP::combine(a1, a2);
+                        OP::combine(a1, a3);
+                        OP::combine(acc, a1);
                     }, cursors);
                 } else {
                     for (long r = 1; r < len; r++)
-                        acc += std::apply([&](auto&... c) { return OP::apply(c(r)...); }, cursors);
+                        OP::combine(acc, std::apply([&](auto&... c) { return OP::apply(c(r)...); }, cursors));
                 }
-                output.get_index(base) += acc;
+                output.get_index(base) = acc;
             }
-            return;
-        }
-
-        // Element-wise: every output element is independent, so the loop is
-        // split across threads when built with -fopenmp.
-        #pragma omp parallel for schedule(static) if(total_size > 1024)
-        for (long linear_idx = 0; linear_idx < (long)total_size; linear_idx++) {  
-            if constexpr (std::is_same<typename OutputTypeSelector<OP, Args...>::type, void>::value) {
-                OP::apply(
-                    params.get_index(linear_idx)...
-                );
-                continue;
-            }
-            else{ 
-                
-                AssignmentHelper<OP::assignment_type,kCPU>::assignOperation(output.get_index(linear_idx) , OP::apply(
+        } else {
+            // Element-wise: every output element is independent, so the loop
+            // is split across threads when built with -fopenmp.
+            #pragma omp parallel for schedule(static) if(total_size > 1024)
+            for (long linear_idx = 0; linear_idx < (long)total_size; linear_idx++) {
+                if constexpr (std::is_same<Out, void>::value) {
+                    OP::apply(params.get_index(linear_idx)...);
+                } else {
+                    AssignmentHelper<OP::assignment_type,kCPU>::assignOperation(output.get_index(linear_idx), OP::apply(
                         params.get_index(linear_idx)...
-                ));
+                    ));
+                }
             }
         }
     }
@@ -539,7 +579,13 @@ public:
 
             auto out_param = Tensor<Out, -1>({allocate_size}, MemoryLocation(target_device.storage_device->this_device_type, target_device.storage_device->device_id), device);
             // if out has an assignment operator that can handle = 0
-            out_param.template view<uint8_t,1>({-1}) = 0; // set to zero for operations that require it, like inplace add
+            // accumulating operations (reductions) add into the output, so
+            // start it at zero; element-wise operations write every element
+            // Reductions write each output once, except non-arithmetic
+            // outputs on GPUs, which fall back to atomic adds from zero.
+            if constexpr (OP::assignment_type == AssignmentType::InplaceAdd && !std::is_arithmetic<Out>::value) {
+                out_param.template view<uint8_t,1>({-1}) = 0;
+            }
             
 
             out_param.shape = out_shape;
@@ -569,6 +615,11 @@ public:
     }
 };
 
+// Number of operations run so far (for profiling).
+struct OperationStats {
+    static inline unsigned long launches = 0;
+};
+
 template <typename OP, int alignDim = -1>
 struct OperationSelector {
     constexpr static int AlignDim = alignDim;
@@ -580,6 +631,7 @@ struct OperationSelector {
     template <int AD, typename A, typename... B>                     
     inline static auto run(const Tensor<A, AD>& a, const B&... b)           
     {                                   
+        OperationStats::launches++;
         // OPERATION is the current class calling this operator(), including its decendents, so if a decendent calls this function, it will use its own apply function                                               
         const auto target_device = resolve_kernel_device(a, b...);
         ComputeType compute_type = target_device.compute_type;
@@ -698,6 +750,13 @@ struct ReductionOperation: public OperationSelector<OP, reductionDim> {
 
     static constexpr AssignmentType assignment_type = AssignmentType::InplaceAdd;
 
+    // How values along the reduced dim combine (a sum unless the operation
+    // overrides these, e.g. ReduceMax).
+    template <typename T>
+    __host__ __device__ static inline T identity() { return T{}; }
+    template <typename T>
+    __host__ __device__ static inline void combine(T& acc, const T& value) { acc += value; }
+
     static inline auto broadcast_output_strides(Shape<-1> output_shape){
         auto newStrides = output_shape.calc_strides();
         int fixedi = (reductionDim + int(output_shape.ndim()))%output_shape.ndim();
@@ -745,6 +804,20 @@ struct ReduceSum: public ReductionOperation<ReduceSum<dim>,dim> {
     auto apply(const A& a) {
         return a;
     }
+};
+
+// Largest value along `dim` (arithmetic types).
+template <int dim = -1>
+struct ReduceMax: public ReductionOperation<ReduceMax<dim>,dim> {
+    template <typename A>
+    __host__ __device__ static inline
+    auto apply(const A& a) {
+        return a;
+    }
+    template <typename T>
+    __host__ __device__ static inline T identity() { return -INFINITY; }
+    template <typename T>
+    __host__ __device__ static inline void combine(T& acc, const T& value) { if (value > acc) acc = value; }
 };
 
 template <int dim = -1>

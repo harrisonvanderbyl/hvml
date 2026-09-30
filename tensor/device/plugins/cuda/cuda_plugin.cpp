@@ -45,19 +45,35 @@ static AllocationMap* create_cuda_mapper(int device_id) {
     mapper->default_allocator_type = ComputeType::kCUDA;
     mapper->supports_compute_device[ComputeType::kCUDA] = true;
 
-    mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id](AllocationMetadata metadata, void* existing_data) {
+    // Stream-ordered pool allocation when the device supports it: cudaFree
+    // synchronises the whole device, and every temporary tensor ends in a
+    // free, so a pool keeps kernels queued back to back.  Freed blocks stay
+    // in the pool for reuse.
+    int pools_supported = 0;
+    cudaDeviceGetAttribute(&pools_supported, cudaDevAttrMemoryPoolsSupported, device_id);
+    bool use_pool = pools_supported != 0;
+    if (use_pool) {
+        cudaMemPool_t pool;
+        CUDA_CHECK(cudaDeviceGetDefaultMemPool(&pool, device_id));
+        uint64_t keep = UINT64_MAX;
+        CUDA_CHECK(cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &keep));
+    }
+
+    mapper->compute_device_allocators[ComputeType::kCUDA] = [device_id, use_pool](AllocationMetadata metadata, void* existing_data) {
         void* ptr;
         CUDA_CHECK(cudaSetDevice(device_id));
-        CUDA_CHECK(cudaMalloc(&ptr, metadata.byte_size));
+        if (use_pool) CUDA_CHECK(cudaMallocAsync(&ptr, metadata.byte_size, 0));
+        else CUDA_CHECK(cudaMalloc(&ptr, metadata.byte_size));
         if (existing_data) {
             CUDA_CHECK(cudaMemcpy(ptr, existing_data, metadata.byte_size, cudaMemcpyHostToDevice));
         }
         return new BaseMemoryAllocation(metadata, ptr);
     };
 
-    mapper->compute_device_deallocators[ComputeType::kCUDA] = [device_id](void* ptr) {
+    mapper->compute_device_deallocators[ComputeType::kCUDA] = [device_id, use_pool](void* ptr) {
         CUDA_CHECK(cudaSetDevice(device_id));
-        CUDA_CHECK(cudaFree(ptr));
+        if (use_pool) CUDA_CHECK(cudaFreeAsync(ptr, 0));
+        else CUDA_CHECK(cudaFree(ptr));
     };
 
     mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, AllocationMetadata meta) {

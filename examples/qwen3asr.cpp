@@ -16,6 +16,7 @@
 //   --max-tokens <n>        generation limit (default 512)
 //   --full-attention        encoder attends over the whole clip instead of
 //                           n_window_infer windows (matches transformers' sdpa path)
+//   --profile               print time and operation count per stage
 
 #include "models/qwen3asr/qwen3asr.hpp"
 #include "file_loaders/wav.hpp"
@@ -24,7 +25,7 @@
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "usage: " << argv[0] << " <model_dir> <audio.wav> [--device cpu|cuda|hip] "
-                     "[--language L] [--context text] [--max-tokens n] [--full-attention]\n";
+                     "[--language L] [--context text] [--max-tokens n] [--full-attention] [--profile]\n";
         return 1;
     }
     std::string model_dir = argv[1], audio_path = argv[2], device = "cpu";
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         else if (a == "--context") opt.context = next();
         else if (a == "--max-tokens") opt.max_new_tokens = std::stol(next());
         else if (a == "--full-attention") full_attention = true;
+        else if (a == "--profile") opt.profile = true;
     }
 
     MemoryType mem = device == "cuda" ? MemoryType::kCUDA_VRAM

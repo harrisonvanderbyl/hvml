@@ -37,19 +37,33 @@ static AllocationMap* create_hip_mapper(int device_id) {
     mapper->default_allocator_type = ComputeType::kHIP;
     mapper->supports_compute_device[ComputeType::kHIP] = true;
 
-    mapper->compute_device_allocators[ComputeType::kHIP] = [device_id](AllocationMetadata meta, void* existing_data) {
+    // Stream-ordered pool allocation when the device supports it (hipFree
+    // synchronises the device on every temporary tensor).
+    int pools_supported = 0;
+    hipDeviceGetAttribute(&pools_supported, hipDeviceAttributeMemoryPoolsSupported, device_id);
+    bool use_pool = pools_supported != 0;
+    if (use_pool) {
+        hipMemPool_t pool;
+        HIP_CHECK(hipDeviceGetDefaultMemPool(&pool, device_id));
+        uint64_t keep = UINT64_MAX;
+        HIP_CHECK(hipMemPoolSetAttribute(pool, hipMemPoolAttrReleaseThreshold, &keep));
+    }
+
+    mapper->compute_device_allocators[ComputeType::kHIP] = [device_id, use_pool](AllocationMetadata meta, void* existing_data) {
         void* ptr;
         HIP_CHECK(hipSetDevice(device_id));
-        HIP_CHECK(hipMalloc(&ptr, meta.byte_size));
+        if (use_pool) HIP_CHECK(hipMallocAsync(&ptr, meta.byte_size, 0));
+        else HIP_CHECK(hipMalloc(&ptr, meta.byte_size));
         if (existing_data) {
             HIP_CHECK(hipMemcpy(ptr, existing_data, meta.byte_size, hipMemcpyHostToDevice));
         }
         return new BaseMemoryAllocation(meta, ptr);
     };
 
-    mapper->compute_device_deallocators[ComputeType::kHIP] = [device_id](void* ptr) {
+    mapper->compute_device_deallocators[ComputeType::kHIP] = [device_id, use_pool](void* ptr) {
         HIP_CHECK(hipSetDevice(device_id));
-        HIP_CHECK(hipFree(ptr));
+        if (use_pool) HIP_CHECK(hipFreeAsync(ptr, 0));
+        else HIP_CHECK(hipFree(ptr));
     };
 
     mapper->memory_type_converters[MemoryType::kDDR] = [device_id](void* ptr, AllocationMetadata meta) {

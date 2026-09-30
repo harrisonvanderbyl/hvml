@@ -26,7 +26,8 @@ struct Conv2d : public Module<Tensor<W, 4>, Tensor<W, 1>>
 
     long out_size(long in, int dim) const { return (in + 2 * padding - weight.shape[dim]) / stride + 1; }
 
-    Tensor<float, 4> forward(const Tensor<float, 4>& x) const {
+    // optionally followed by GELU (fused with the bias add)
+    Tensor<float, 4> forward(const Tensor<float, 4>& x, bool with_gelu = false) const {
         MemoryLocation loc = working_location(weight.device);
         long B = x.shape[0], Ci = x.shape[1], H = x.shape[2], Wd = x.shape[3], Co = weight.shape[0];
         long Ho = out_size(H, 2), Wo = out_size(Wd, 3);
@@ -63,7 +64,9 @@ struct Conv2d : public Module<Tensor<W, 4>, Tensor<W, 1>>
                                                      w2.unsqueeze(0).unsqueeze(0).unsqueeze(0));
             out[{{b0, b1}}] = y.transpose(2, 3).transpose(1, 2);
         }
-        out += bias.unsqueeze(0).unsqueeze(2).unsqueeze(3);
+        auto b4 = bias.unsqueeze(0).unsqueeze(2).unsqueeze(3);
+        if (with_gelu) return ChainOperations<OperationAdd, OpGelu>::run(out, b4);
+        out += b4;
         return out;
     }
     Tensor<float, 4> operator()(const Tensor<float, 4>& x) const { return forward(x); }

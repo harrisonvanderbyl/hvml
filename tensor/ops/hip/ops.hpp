@@ -49,41 +49,23 @@ __host__ __device__ void atomicAddCuda(A* a, const B& b){
     atomicAdd(a,b);
 }
 
+
+// ================================================================
+// Element-wise kernel (HIP): block b covers elements [b·blockDim·loopsize, ...);
+// in each of the `loopsize` steps the block's threads take consecutive
+// elements, so a warp reads and writes contiguous memory.
+// ================================================================
 template <typename OP, typename OutputType, typename... Args>
 __global__ void OPKERNEL_HIP(
     unsigned long total_size,
     int loopsize, 
     Parameter<OutputType> output, 
     Parameter<Args>... params) {
-    unsigned long idx = ((unsigned long)blockIdx.x * blockDim.x + threadIdx.x) * loopsize;
-
-    if constexpr (!std::is_same<OutputType, void>::value && OP::assignment_type == AssignmentType::InplaceAdd) {
-        // Reduction: this thread's elements are consecutive, so most of them
-        // add into the same output.  Sum those locally and issue one atomic
-        // add per output instead of one per element.
-        OutputType* target = nullptr;
-        OutputType acc{};
-        for (int i = 0; i < loopsize; i++)
-        {
-            unsigned long global_idx = idx + i;
-            if (global_idx >= total_size) break;
-            OutputType value = OP::apply(params.get_index(global_idx)...);
-            OutputType* dest = &output.get_index(global_idx);
-            if (dest == target) {
-                acc += value;
-            } else {
-                if (target) AssignmentHelper<AssignmentType::InplaceAdd,kHIP>::assignOperation(*target, acc);
-                target = dest;
-                acc = value;
-            }
-        }
-        if (target) AssignmentHelper<AssignmentType::InplaceAdd,kHIP>::assignOperation(*target, acc);
-        return;
-    }
+    unsigned long start = (unsigned long)blockIdx.x * blockDim.x * loopsize + threadIdx.x;
 
     for (int i = 0; i < loopsize; i++)
     {
-        unsigned long global_idx = idx + i;
+        unsigned long global_idx = start + (unsigned long)i * blockDim.x;
         if (global_idx >= total_size) return;
 
         if constexpr (std::is_same<OutputType, void>::value) {
@@ -92,11 +74,49 @@ __global__ void OPKERNEL_HIP(
             );
         }
         else {
-          
            AssignmentHelper<OP::assignment_type,kHIP>::assignOperation(output.get_index(global_idx) , OP::apply(
                 params.get_index(global_idx)...
             ));
         }
+    }
+}
+
+// ================================================================
+// Reduction kernel: a group of `lanes` threads (≤ a warp) computes one
+// output.  Lane l sums inputs l, l + lanes, ... along the reduced dim
+// (contiguous in memory when that dim has stride 1), then the group adds
+// its partial sums with warp shuffles.  No atomics.
+// ================================================================
+template <typename OP, typename Out, typename... C>
+__device__ inline Out reduce_lane(int lane, int lanes, long len, C... c) {
+    Out acc = OP::template identity<Out>();
+    for (long r = lane; r < len; r += lanes) OP::combine(acc, OP::apply(c(r)...));
+    return acc;
+}
+
+template <typename OP, typename Out, typename... Args>
+__global__ void REDUCEKERNEL_HIP(
+    long outer, long len, long inner, int dim, int lanes,
+    Parameter<Out> output,
+    Parameter<Args>... params) {
+    long thread = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long o = thread / lanes;
+    int lane = (int)(thread % lanes);
+    bool valid = o < outer;          // every thread stays for the shuffles
+    long base = valid ? (o / inner) * len * inner + (o % inner) : 0;
+
+    Out acc = OP::template identity<Out>();
+    if (valid) acc = reduce_lane<OP, Out>(lane, lanes, len, ReductionCursor<Args>(params, base, inner, dim)...);
+
+    if constexpr (std::is_arithmetic<Out>::value) {
+        for (int off = lanes / 2; off > 0; off >>= 1) {
+            Out other = __shfl_down(acc, off, lanes);
+            OP::combine(acc, other);
+        }
+        if (valid && lane == 0) output.get_index(base) = acc;
+    } else {
+        // (sums only) each lane adds its part atomically into the zeroed output
+        if (valid) AssignmentHelper<AssignmentType::InplaceAdd,kHIP>::assignOperation(output.get_index(base), acc);
     }
 }
 
@@ -111,9 +131,23 @@ void call_hip(
 
         HIP_ERROR_CHECK(hipSetDevice(device_id));
 
+        using Out = typename OutputTypeSelector<OP,Args...>::type;
+        if constexpr (!std::is_same<Out, void>::value && OP::assignment_type == AssignmentType::InplaceAdd) {
+            ReductionShape rs = reduction_shape<OP>(output, total_size);
+            if (rs.outer == 0) return;
+            int lanes = reduction_lanes(rs.len);    // ≤ 32, so it fits wave32 and wave64
+            int threads = 256;
+            int blocks = (int)((rs.outer * lanes + threads - 1) / threads);
+            REDUCEKERNEL_HIP<OP, Out, Args...><<<dim3(blocks), dim3(threads)>>>(
+                rs.outer, rs.len, rs.inner, rs.dim, lanes, output, params...);
+            return;
+        }
+
         int threadsPerBlock = 256;
         auto firstParamShape = std::get<0>(std::tuple<Parameter<Args>...>(params...)).shape;
-        int loopsize = 256;//(firstParamShape[-1]+32-1)/32; // adjust loopsize for performance/memory tradeoff, 32 threads
+        // elements per thread: up to 256, but keep ~1024+ blocks so every SM has work
+    long per_thread = (long)total_size / ((long)threadsPerBlock * 1024);
+    int loopsize = (int)std::max(1L, std::min(256L, per_thread));
         
         int numBlocks = (total_size + (threadsPerBlock*loopsize) - 1) / (threadsPerBlock*loopsize);
 

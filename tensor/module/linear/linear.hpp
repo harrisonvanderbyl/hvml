@@ -19,8 +19,11 @@ struct Linear<W, false> : public Module<Tensor<W, 2>>
     Linear(size_t in_features, size_t out_features, MemoryLocation loc = MemoryType::kDDR)
         : Module<Tensor<W, 2>>({weight, "weight"}), weight(Shape<2>{(long)out_features, (long)in_features}, loc) {}
 
-    // x [rows, in] → [rows, out]
-    Tensor<float, 2> forward(const Tensor<float, 2>& x) const { return linear(x, weight); }
+    // x [rows, in] → [rows, out], optionally followed by GELU
+    Tensor<float, 2> forward(const Tensor<float, 2>& x, bool with_gelu = false) const {
+        Tensor<float, 2> y = linear(x, weight);
+        return with_gelu ? gelu(y) : y;
+    }
     Tensor<float, 2> operator()(const Tensor<float, 2>& x) const { return forward(x); }
 };
 
@@ -37,8 +40,11 @@ struct Linear<W, true> : public Module<Tensor<W, 2>, Tensor<W, 1>>
           weight(Shape<2>{(long)out_features, (long)in_features}, loc),
           bias(Shape<1>{(long)out_features}, loc) {}
 
-    Tensor<float, 2> forward(const Tensor<float, 2>& x) const {
+    // x [rows, in] → [rows, out], optionally followed by GELU (fused with
+    // the bias add into one kernel)
+    Tensor<float, 2> forward(const Tensor<float, 2>& x, bool with_gelu = false) const {
         Tensor<float, 2> y = linear(x, weight);
+        if (with_gelu) return ChainOperations<OperationAdd, OpGelu>::run(y, bias.unsqueeze(0));
         y += bias.unsqueeze(0);
         return y;
     }

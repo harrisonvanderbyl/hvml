@@ -33,6 +33,7 @@ DEVICE_PLUGIN_DIR=tensor/device/plugins ./qwen3asr Qwen3-ASR-0.6B speech.wav --d
 #   --context "…"        system-prompt context (names, terms)
 #   --max-tokens 512
 #   --full-attention     encoder attends over the whole clip (see below)
+#   --profile            time and operation count per stage (log-mel, encoder, prefill, decode)
 ```
 
 From code:

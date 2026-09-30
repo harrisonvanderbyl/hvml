@@ -27,6 +27,9 @@
 #include <memory>
 #include <set>
 #include <algorithm>
+#include <chrono>
+#include <optional>
+#include <cstdio>
 
 #include "tensor.hpp"
 #include "ops/nn.hpp"
@@ -177,7 +180,7 @@ struct AudioEncoderLayer : public Module<AudioAttention, LayerNorm<WeightType>, 
 
     Tensor<float, 2> forward(const Tensor<float, 2>& x, long window) const {
         Tensor<float, 2> h = x + self_attn.forward(self_attn_layer_norm(x), window);
-        return h + fc2(gelu(fc1(final_layer_norm(h))));
+        return h + fc2(fc1.forward(final_layer_norm(h), /*gelu=*/true));
     }
 };
 
@@ -228,7 +231,9 @@ struct AudioEncoder : public Module<Conv2d<WeightType>, Conv2d<WeightType>, Conv
         padded[{{0, F}}] = mel;
         Tensor<float, 4> images = padded.view(Shape<3>{nC, chunk, nmel}).transpose(1, 2).unsqueeze(1);
 
-        Tensor<float, 4> c = gelu(conv2d3(gelu(conv2d2(gelu(conv2d1(images))))));    // [nC, C, H3, W3]
+        Tensor<float, 4> c1 = conv2d1.forward(images, /*gelu=*/true);
+        Tensor<float, 4> c2 = conv2d2.forward(c1, true);
+        Tensor<float, 4> c = conv2d3.forward(c2, true);                                // [nC, C, H3, W3]
         long H3 = c.shape[2], W3 = c.shape[3];
 
         // One token per output column: [nC, W3, C, H3] (the reference's
@@ -242,13 +247,15 @@ struct AudioEncoder : public Module<Conv2d<WeightType>, Conv2d<WeightType>, Conv
 
         // Only the last chunk can be partial, so the valid tokens are a prefix.
         long N = Config::audio_tokens(F);
-        Tensor<float, 2> h = x[{{0, N}}];
+        // (optional::emplace rebinds h to each layer's output; Tensor's
+        // operator= would copy into the previous buffer instead)
+        std::optional<Tensor<float, 2>> h(x[{{0, N}}]);
 
         // Attention in blocks of W3 · (n_window_infer / chunk) tokens
         long window = cfg.windowed_encoder_attention ? W3 * (cfg.n_window_infer / chunk) : 0;
-        for (size_t i = 0; i < layers.size(); i++) h = layers[i].forward(h, window);
+        for (size_t i = 0; i < layers.size(); i++) h.emplace(layers[i].forward(*h, window));
 
-        return proj2(gelu(proj1(ln_post(h))));
+        return proj2(proj1.forward(ln_post(*h), /*gelu=*/true));
     }
 };
 
@@ -359,10 +366,10 @@ struct TextModel : public Module<Embedding<WeightType>, ModuleList<TextDecoderLa
         for (long t = 0; t < T; t++) positions[t] = pos0 + t;
         RopeTables rotary = rope_tables(positions, cfg.head_dim, cfg.rope_theta, location());
 
-        Tensor<float, 2> h = embeds.contiguous();
-        for (size_t i = 0; i < layers.size(); i++) h = layers[i].forward(h, rotary, pos0, cache.k[i], cache.v[i]);
+        std::optional<Tensor<float, 2>> h(embeds);
+        for (size_t i = 0; i < layers.size(); i++) h.emplace(layers[i].forward(*h, rotary, pos0, cache.k[i], cache.v[i]));
         cache.length += T;
-        return norm(h[{{T - 1, T}}]);
+        return norm((*h)[{{T - 1, T}}]);
     }
 };
 
@@ -391,6 +398,7 @@ struct TranscribeOptions {
     std::string language;          // force a language, e.g. "English" (optional)
     long max_new_tokens = 512;
     bool verbose = false;
+    bool profile = false;          // print per-stage times and operation counts (synchronises the device)
     std::function<void(const std::string&)> on_text;   // streaming callback (decoded so far)
 };
 
@@ -465,9 +473,30 @@ struct Qwen3ASR : public Module<Thinker> {
 
     // Greedy decoding from 16 kHz mono samples.
     Transcription transcribe(const std::vector<float>& samples, const TranscribeOptions& opt = {}) {
+        // Profiling: wait for the device at stage boundaries and report the
+        // wall time and number of operations of each stage.
+        auto clock = std::chrono::steady_clock::now();
+        unsigned long ops = OperationStats::launches;
+        auto stage = [&](const char* name, long steps = 1) {
+            if (!opt.profile) return;
+            thinker.model.embed_tokens.weight.device->synchronize_function();
+            auto now = std::chrono::steady_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(now - clock).count();
+            unsigned long n = OperationStats::launches - ops;
+            if (steps > 1)
+                fprintf(stderr, "[profile] %-8s %8.1f ms  %6lu ops  (%ld steps: %.2f ms, %lu ops each)\n", name, ms, n,
+                        steps, ms / steps, n / steps);
+            else
+                fprintf(stderr, "[profile] %-8s %8.1f ms  %6lu ops\n", name, ms, n);
+            clock = now;
+            ops = OperationStats::launches;
+        };
+
         auto features = mel.compute(samples);
+        stage("log-mel");
         auto audio = encode_audio(features);
         long n_audio = audio.shape[0];
+        stage("encoder");
 
         auto ids = prompt_ids(n_audio, opt);
         long audio_at = std::find(ids.begin(), ids.end(), cfg.audio_pad_id) - ids.begin();
@@ -476,16 +505,20 @@ struct Qwen3ASR : public Module<Thinker> {
 
         KVCache cache = thinker.model.make_cache((long)ids.size() + opt.max_new_tokens + 1);
         Transcription result;
-        Tensor<float, 2> h = thinker.model.forward(embeds, cache);
+        std::optional<Tensor<float, 2>> h(thinker.model.forward(embeds, cache));
+        stage("prefill");
+        long steps = 0;
         for (long step = 0; step < opt.max_new_tokens; step++) {
-            std::vector<float> logits = tensor_to_host(thinker.logits(h));
+            std::vector<float> logits = tensor_to_host(thinker.logits(*h));
             int tok = (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+            steps++;
             if (tok == cfg.im_end_id || tok == cfg.endoftext_id) break;
             result.tokens.push_back(tok);
             if (opt.on_text) opt.on_text(tokenizer.decode(result.tokens));
             if (step + 1 == opt.max_new_tokens) break;
-            h = thinker.model.forward(thinker.model.embed({tok}), cache);
+            h.emplace(thinker.model.forward(thinker.model.embed({tok}), cache));
         }
+        stage("decode", steps);
 
         result.raw = tokenizer.decode(result.tokens);
         parse_output(result, opt.language);

@@ -40,39 +40,35 @@ struct OpSiluMul : public HardamardOperation<OpSiluMul> {
     }
 };
 
-// a = max(a, b)
-struct OpMaxEq : public HardamardOperation<OpMaxEq> {
-    __host__ __device__ static inline void apply(float& a, const float& b) {
-        if (b > a) a = b;
-    }
-};
-
-// s = exp(s - m)
+// s = exp((s - m) · scale)
 struct OpExpSubEq : public HardamardOperation<OpExpSubEq> {
-    __host__ __device__ static inline void apply(float& s, const float& m) { s = expf(s - m); }
-};
-
-// 1 / sqrt(sum · inv_n + eps)
-struct OpRsqrtMean : public HardamardOperation<OpRsqrtMean> {
-    __host__ __device__ static inline float apply(const float& sum, const float& inv_n, const float& eps) {
-        return 1.0f / sqrtf(sum * inv_n + eps);
+    __host__ __device__ static inline void apply(float& s, const float& m, const float& scale) {
+        s = expf((s - m) * scale);
     }
 };
 
-// (x - mean) · rstd · w + b
+// x - sum · inv_n   (subtract the mean)
+struct OpCenter : public HardamardOperation<OpCenter> {
+    __host__ __device__ static inline float apply(const float& x, const float& sum, const float& inv_n) {
+        return x - sum * inv_n;
+    }
+};
+
+// LayerNorm from centred x and Σ(x - mean)²:  xc / sqrt(var + eps) · w + b
 struct OpLayerNormApply : public HardamardOperation<OpLayerNormApply> {
     template <typename W, typename B>
-    __host__ __device__ static inline float apply(const float& x, const float& mean, const float& rstd, const W& w,
-                                                  const B& b) {
-        return (x - mean) * rstd * float(w) + float(b);
+    __host__ __device__ static inline float apply(const float& xc, const float& sq_sum, const W& w, const B& b,
+                                                  const float& inv_n, const float& eps) {
+        return xc / sqrtf(sq_sum * inv_n + eps) * float(w) + float(b);
     }
 };
 
-// x · rstd · w
+// RMSNorm from x and Σx²:  x / sqrt(mean(x²) + eps) · w
 struct OpRMSNormApply : public HardamardOperation<OpRMSNormApply> {
     template <typename W>
-    __host__ __device__ static inline float apply(const float& x, const float& rstd, const W& w) {
-        return x * rstd * float(w);
+    __host__ __device__ static inline float apply(const float& x, const float& sq_sum, const W& w,
+                                                  const float& inv_n, const float& eps) {
+        return x / sqrtf(sq_sum * inv_n + eps) * float(w);
     }
 };
 
@@ -146,7 +142,8 @@ inline Tensor<T, R> tensor_from_host(Shape<R> shape, const T* src, MemoryLocatio
 // Copy a tensor (any device, any strides) to a host vector.
 template <typename T, int R>
 inline std::vector<T> tensor_to_host(const Tensor<T, R>& t) {
-    Tensor<T, R> h = t.contiguous().to(MemoryLocation(MemoryType::kDDR), ComputeType::kCPU);
+    bool packed = t.indexer == nullptr && t.strides == t.shape.calc_strides();
+    Tensor<T, R> h = (packed ? t : t.contiguous()).to(MemoryLocation(MemoryType::kDDR), ComputeType::kCPU);
     h.device->synchronize_function();
     std::vector<T> out(t.shape.total_size());
     memcpy((void*)out.data(), (const void*)h.data.data, out.size() * sizeof(T));
@@ -168,30 +165,23 @@ inline Tensor<float, R> gelu(const Tensor<float, R>& x) {
     return OpGelu::run(x);
 }
 
-// Largest value of each row of x [M, S] → [M, 1], by folding the upper half
-// of the row onto the lower half until one column is left.
+// Largest value of each row of x [M, S] → [M, 1]
 inline Tensor<float, 2> row_max(const Tensor<float, 2>& x) {
-    Tensor<float, 2> m = x.contiguous();
-    long n = m.shape[1];
-    while (n > 1) {
-        long h = n / 2;
-        OpMaxEq::run(m[{{}, {0, h}}], m[{{}, {n - h, n}}]);
-        n -= h;
-    }
-    return m[{{}, {0, 1}}];
+    return ReduceMax<-1>::run(x).unsqueeze(1);
 }
 
-// Softmax over each row of x [M, S], in place.
-inline void softmax_rows(Tensor<float, 2> x) {
-    OpExpSubEq::run(x, row_max(x));
+// Softmax of each row of x · scale, in place: x [M, S].  (scale > 0, so
+// the row max of x is also the max of x · scale.)
+inline void softmax_rows(Tensor<float, 2> x, float scale = 1.0f) {
+    OpExpSubEq::run(x, row_max(x), scale);
     x /= ReduceSum<-1>::run(x).unsqueeze(1);
 }
 
 // RMSNorm over rows: x [M, K], w [K]
 template <typename W>
 inline Tensor<float, 2> rms_norm(const Tensor<float, 2>& x, const Tensor<W, 1>& w, float eps) {
-    auto rstd = OpRsqrtMean::run(DotProduct<-1>::run(x, x), 1.0f / x.shape[1], eps);
-    return OpRMSNormApply::run(x, rstd.unsqueeze(1), w.unsqueeze(0));
+    auto sq_sum = DotProduct<-1>::run(x, x);
+    return OpRMSNormApply::run(x, sq_sum.unsqueeze(1), w.unsqueeze(0), 1.0f / x.shape[1], eps);
 }
 
 // LayerNorm over rows: x [M, K], w and b [K]
@@ -199,10 +189,9 @@ template <typename W, typename B>
 inline Tensor<float, 2> layer_norm(const Tensor<float, 2>& x, const Tensor<W, 1>& w, const Tensor<B, 1>& b,
                                    float eps) {
     float inv_k = 1.0f / x.shape[1];
-    auto mean = (ReduceSum<-1>::run(x) * inv_k).unsqueeze(1);
-    auto centered = x - mean;
-    auto rstd = OpRsqrtMean::run(DotProduct<-1>::run(centered, centered), inv_k, eps);
-    return OpLayerNormApply::run(x, mean, rstd.unsqueeze(1), w.unsqueeze(0), b.unsqueeze(0));
+    auto centered = OpCenter::run(x, ReduceSum<-1>::run(x).unsqueeze(1), inv_k);
+    auto sq_sum = DotProduct<-1>::run(centered, centered);
+    return OpLayerNormApply::run(centered, sq_sum.unsqueeze(1), w.unsqueeze(0), b.unsqueeze(0), inv_k, eps);
 }
 
 // cos / sin tables for rotary embeddings at `positions`: [T, dim/2] each
@@ -240,8 +229,6 @@ inline Tensor<float, 2> attention(Tensor<float, 3> q, const Tensor<float, 3>& k,
     Tensor<float, 4> qg = q.view(Shape<4>{T, Hk, G, D});
     Tensor<float, 4> scores = DotProduct<-1>::run(qg.transpose(0, 1).transpose(1, 2).unsqueeze(3),   // [Hk,G,T,1,D]
                                                   k.unsqueeze(1).unsqueeze(2));                          // [Hk,1,1,S,D]
-    scores *= scale;
-
     if (causal) {
         std::vector<long> qp(T), kp(S);
         for (long t = 0; t < T; t++) qp[t] = q_offset + t;
@@ -250,7 +237,7 @@ inline Tensor<float, 2> attention(Tensor<float, 3> q, const Tensor<float, 3>& k,
         auto kpos = tensor_from_host(Shape<4>{1, 1, 1, S}, kp.data(), loc);
         OpCausalMask::run(scores, qpos, kpos);
     }
-    softmax_rows(scores.view(Shape<2>{Hk * G * T, S}));
+    softmax_rows(scores.view(Shape<2>{Hk * G * T, S}), scale);
 
     // out[t, hk, g, d] = Σ_s p[hk, g, t, s] · v[hk, s, d]
     Tensor<float, 4> out = DotProduct<-1>::run(scores.transpose(1, 2).transpose(0, 1).unsqueeze(3),   // [T,Hk,G,1,S]
