@@ -53,7 +53,23 @@ struct float16
 
     __host__ __device__ operator float() const
     {
-        uint32_t x = ((fvalue & 0x8000) << 16) | (((fvalue & 0x7c00) + 0x1C000) << 13) | ((fvalue & 0x03FF) << 13);
+        uint32_t sign = (uint32_t)(fvalue & 0x8000) << 16;
+        int32_t exp = (fvalue >> 10) & 0x1F;
+        uint32_t mantissa = fvalue & 0x03FF;
+        uint32_t x;
+        if (exp == 0x1F) {
+            x = sign | 0x7F800000u | (mantissa << 13);            // inf / NaN
+        } else if (exp != 0) {
+            x = sign | ((uint32_t)(exp + 112) << 23) | (mantissa << 13);   // normal (127 - 15 = 112)
+        } else if (mantissa == 0) {
+            x = sign;                                               // ±0
+        } else {
+            // denormal: mantissa · 2^-24, renormalised
+            exp = 1;
+            while ((mantissa & 0x0400) == 0) { mantissa <<= 1; exp--; }
+            mantissa &= 0x03FF;
+            x = sign | ((uint32_t)(exp + 112) << 23) | (mantissa << 13);
+        }
         return *((float *)&x);
     }
 

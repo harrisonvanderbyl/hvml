@@ -802,7 +802,7 @@ struct ReductionOperation: public OperationSelector<OP, reductionDim> {
 
     template <typename T, typename TT>
     __host__ __device__ static void assignOperation(T& output, const TT& input){
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__VULKCC_DEVICE__)
         atomicAdd(&output, input);
         #else
         output += input;

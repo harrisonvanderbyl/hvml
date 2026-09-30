@@ -45,6 +45,12 @@ struct dim3 {
 };
 
 #if defined(__VULKCC_ANALYSIS__)
+// Device code being compiled for Vulkan — the vulkcc counterpart of
+// __CUDA_ARCH__ / __HIP_DEVICE_COMPILE__.  Kernels are translated from this
+// parse only (the host build does not define it), so code that picks a
+// device path with `#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)`
+// adds `|| defined(__VULKCC_DEVICE__)` to use it for Vulkan too.
+#define __VULKCC_DEVICE__ 1
 #define __global__ __attribute__((global))
 #define __device__ __attribute__((device))
 #define __host__ __attribute__((host))
@@ -87,15 +93,20 @@ __host__ __device__ inline void __syncwarp(unsigned int = 0xffffffffu) {}
 __host__ __device__ inline void __threadfence() {}
 __host__ __device__ inline void __threadfence_block() {}
 
-template <typename T> __host__ __device__ inline T atomicAdd(T* p, T v) { T o = *p; *p = o + v; return o; }
-template <typename T> __host__ __device__ inline T atomicSub(T* p, T v) { T o = *p; *p = o - v; return o; }
-template <typename T> __host__ __device__ inline T atomicExch(T* p, T v) { T o = *p; *p = v; return o; }
-template <typename T> __host__ __device__ inline T atomicMin(T* p, T v) { T o = *p; *p = v < o ? v : o; return o; }
-template <typename T> __host__ __device__ inline T atomicMax(T* p, T v) { T o = *p; *p = v > o ? v : o; return o; }
-template <typename T> __host__ __device__ inline T atomicAnd(T* p, T v) { T o = *p; *p = o & v; return o; }
-template <typename T> __host__ __device__ inline T atomicOr(T* p, T v) { T o = *p; *p = o | v; return o; }
-template <typename T> __host__ __device__ inline T atomicXor(T* p, T v) { T o = *p; *p = o ^ v; return o; }
-template <typename T> __host__ __device__ inline T atomicCAS(T* p, T compare, T v) { T o = *p; if (o == compare) *p = v; return o; }
+// The type comes from the pointer only; values convert to it, as with CUDA's
+// overloads (atomicExch((unsigned long long*)p, 0)).
+template <typename T> struct vulkcc_same { using type = T; };
+template <typename T> using vulkcc_value = typename vulkcc_same<T>::type;
+
+template <typename T> __host__ __device__ inline T atomicAdd(T* p, vulkcc_value<T> v) { T o = *p; *p = o + v; return o; }
+template <typename T> __host__ __device__ inline T atomicSub(T* p, vulkcc_value<T> v) { T o = *p; *p = o - v; return o; }
+template <typename T> __host__ __device__ inline T atomicExch(T* p, vulkcc_value<T> v) { T o = *p; *p = v; return o; }
+template <typename T> __host__ __device__ inline T atomicMin(T* p, vulkcc_value<T> v) { T o = *p; *p = v < o ? v : o; return o; }
+template <typename T> __host__ __device__ inline T atomicMax(T* p, vulkcc_value<T> v) { T o = *p; *p = v > o ? v : o; return o; }
+template <typename T> __host__ __device__ inline T atomicAnd(T* p, vulkcc_value<T> v) { T o = *p; *p = o & v; return o; }
+template <typename T> __host__ __device__ inline T atomicOr(T* p, vulkcc_value<T> v) { T o = *p; *p = o | v; return o; }
+template <typename T> __host__ __device__ inline T atomicXor(T* p, vulkcc_value<T> v) { T o = *p; *p = o ^ v; return o; }
+template <typename T> __host__ __device__ inline T atomicCAS(T* p, vulkcc_value<T> compare, vulkcc_value<T> v) { T o = *p; if (o == compare) *p = v; return o; }
 
 template <typename T> __host__ __device__ inline T __shfl_sync(unsigned int, T v, int, int = 32) { return v; }
 template <typename T> __host__ __device__ inline T __shfl_up_sync(unsigned int, T v, unsigned int, int = 32) { return v; }

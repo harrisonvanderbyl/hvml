@@ -1,4 +1,11 @@
 #!/bin/bash
+# hvcc — build an hvml program for every backend at once:
+#   nvidia.o  (nvcc)    CUDA kernels
+#   hip.o     (hipcc)   HIP kernels
+#   vulkan.o  (vulkcc)  display shaders + Vulkan compute kernels
+# Each object is the whole program (main is __weak); they are linked together.
+#
+#   ./hvcc program.cpp [output]
 basefile=$1
 outputfile=$2
 compiler="clang++-19"
@@ -7,28 +14,34 @@ if [ -z "$outputfile" ]; then
     outputfile="a.out"
 fi
 
+# rebuild the shader tool (vulkcc's translator) if its sources changed
 cd ./shader-compiler/build
 cmake .. ..
 make -j8
 cd ../..
 
-cat $basefile  > "tmp.cu"
 
-./shader-compiler/build/shader_tool $basefile -- -std=c++20 -I./tensor  --gcc-toolchain=/usr   -isystem /usr/lib/gcc/x86_64-redhat-linux/16/include -DSTBI_NO_SIMD 
+# flags for parsing the program only (the shader tool's clang)
+analysis=(-Xanalysis --gcc-toolchain=/usr -Xanalysis -isystem -Xanalysis /usr/lib/gcc/x86_64-redhat-linux/16/include -Xanalysis -DSTBI_NO_SIMD)
 
-$compiler "shad.cpp" -c -o shaders.o -I./tensor -std=c++20 -O3 -march=native &
-# clang
 hipcc $basefile -o hip.o -c -I./tensor -std=c++20 -O3 -march=native &
-nvcc -ccbin=$compiler tmp.cu  -c -o nvidia.o -arch=native -I./tensor -std=c++20 -Xcompiler -fPIC -Xcompiler -O3 -Xcompiler -march=native
+hip_pid=$!
+nvcc -ccbin=$compiler -x cu $basefile  -c -o nvidia.o -arch=native -I./tensor -std=c++20 -Xcompiler -fPIC -Xcompiler -O3 -Xcompiler -march=native &
+nvidia_pid=$!
+# display shaders and the Vulkan compute kernels of every operation the program runs
+./vulkcc $basefile -ccbin=$compiler -c -o vulkan.o -I./tensor -std=c++20 -O3 -march=native "${analysis[@]}" &
+vulkan_pid=$!
 
-# wait until both compilations are done
-wait
-# include libraries for SDL3, OpenGL, GLEW, HIP, CUDA and vulkan
-$compiler shaders.o hip.o nvidia.o -o $outputfile -lSDL3 -lGL -lGLEW -std=c++20 -lamdhip64 -lcudart -L/usr/local/cuda/lib64 -I./tensor -lvulkan -O3 -march=native
-# include libraries for SDL3, OpenGL, GLEW, HIP, CUDA and vulkan
+failed=0
+wait $hip_pid || { echo "hvcc: hipcc failed" >&2; failed=1; }
+wait $nvidia_pid || { echo "hvcc: nvcc failed" >&2; failed=1; }
+wait $vulkan_pid || { echo "hvcc: vulkcc failed" >&2; failed=1; }
 
-rm "tmp.cu";
-rm hip.o
-rm shad.cpp
-rm shaders.o
-rm nvidia.o
+# SDL3, OpenGL, GLEW, HIP, CUDA and Vulkan
+if [ $failed = 0 ]; then
+    $compiler hip.o nvidia.o vulkan.o -o $outputfile -lSDL3 -lGL -lGLEW -std=c++20 -lamdhip64 -lcudart -L/usr/local/cuda/lib64 -I./tensor -lvulkan -O3 -march=native
+    failed=$?
+fi
+
+rm -f hip.o nvidia.o vulkan.o
+exit $failed

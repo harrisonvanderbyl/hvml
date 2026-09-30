@@ -18,7 +18,7 @@ struct ChunkOfSpace{
     
     // ChunkOfSpace* neighboringChunks[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
      __device__ __host__ Particle* addFilled(Particle* increment = nullptr, bool onlyifzero = false){
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__VULKCC_DEVICE__)
         if (!onlyifzero){
             return (Particle*)(void*)atomicExch((unsigned long long*)&this->occupant, (unsigned long long)increment);
         }
@@ -44,7 +44,7 @@ struct ChunkOfSpace{
     __device__ __host__ float32x4 swap0(){
         // swap with zero, using copy elision
         // 64 bit atomic swap
-        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+        #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || defined(__VULKCC_DEVICE__)
         // bfloat16x4 is equivalent to uint64_t for atomic operations
         // auto oldvelocity = this->velocity;
         // this->velocity = bfloat16x4(0.0f, 0.0f, 0.0f, 0.0f);

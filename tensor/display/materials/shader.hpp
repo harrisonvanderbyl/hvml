@@ -834,9 +834,13 @@ template <typename... vertex_types>
 struct CopyDataHelper : HardamardOperation<CopyDataHelper<vertex_types...>>
 {
 
+    // Writes each attribute straight into the output vertex (same bytes as
+    // building a VertexLayout and copying it, without a temporary: kernels
+    // compiled by vulkcc can't take pointers into local memory).
     __host__ __device__ static inline void apply(const vertex_types &...vals, mytuple<vertex_types...> &out)
     {
-        out = VertexLayout<vertex_types...>({vals...});
+        size_t offset = 0;
+        ((*(vertex_types *)(out.data + offset) = vals, offset += sizeof(vertex_types)), ...);
     }
 };
 

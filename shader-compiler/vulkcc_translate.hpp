@@ -73,6 +73,7 @@ struct LV {
     std::string text;      // Reg/Shared: GLSL lvalue;  Mem: uint64_t address expression
     QualType type;         // C++ type of the object
     bool u8bool = false;   // a bool stored as uint8_t (struct fields)
+    bool readonly = false; // a copy standing in for a reinterpreted local (writes would be lost)
 };
 
 class Kernel {
@@ -125,9 +126,26 @@ private:
         LV self;
         bool has_self = false;
         bool returns_address = false;
+        bool returns_self = false;             // every return is *this (see returns_this)
         QualType return_type;
+        // tail self-calls become a loop over the body (GLSL has no recursion)
+        const FunctionDecl* decl = nullptr;
+        std::string binding;
+        std::vector<std::string> slots;        // parameter declarations, in binding order
+        bool tail_loop = false;
     };
     Fn* fn = nullptr;
+
+    // Lambdas: a local closure variable is not materialised; its captures
+    // are bound when it is made (by-copy ones snapshotted into locals) and
+    // passed to its call operator's function ahead of the arguments.
+    struct Lambda {
+        const LambdaExpr* expr = nullptr;
+        const Fn* made_in = nullptr;          // captures are that function's locals
+        std::vector<LV> captures;             // one per le->captures(), in order
+    };
+    std::map<const CXXRecordDecl*, Lambda> lambdas;
+    const Lambda* lambda_for_function = nullptr;   // set while function() builds a call operator
 
     std::string fresh(const std::string& base) { return "v" + std::to_string(counter++) + "_" + sanitize(base); }
 
@@ -341,10 +359,16 @@ private:
         return ref;
     }
 
+    std::string writable_place(const LV& lv) {
+        if (lv.readonly) throw Unsupported("passing a reinterpreted local value by non-const reference");
+        return place(lv);
+    }
+
     // GLSL lvalue text to assign / pass as inout
     std::string place(const LV& lv) { return lv.kind == LV::Mem ? mem_ref(lv) : lv.text; }
 
     std::string store(const LV& lv, const std::string& value) {
+        if (lv.readonly) throw Unsupported("writing through a reinterpreted local value (e.g. local.xyz() = ...); write the elements");
         bool as_u8 = (lv.kind == LV::Mem && bare(lv.type)->isBooleanType()) || lv.u8bool;
         if (as_u8) return place(lv) + " = ((" + value + ") ? uint8_t(1) : uint8_t(0))";
         return place(lv) + " = " + value;
@@ -361,6 +385,7 @@ private:
         LV r;
         r.type = ftype;
         r.kind = base.kind;
+        r.readonly = base.readonly;
         if (base.kind == LV::Mem) {
             r.text = offset ? "(" + base.text + " + " + std::to_string(offset) + "ul)" : base.text;
         } else {
@@ -445,9 +470,17 @@ private:
                     LV arr = lvalue_or_temp(ic->getSubExpr());
                     LV r;
                     r.kind = arr.kind;
+                    r.readonly = arr.readonly;
                     r.type = elem;
                     if (arr.kind == LV::Mem) r.text = "(" + arr.text + " + uint64_t(int64_t(" + idx + ")) * " + std::to_string(size_of(elem)) + "ul)";
-                    else { r.text = arr.text + "[" + idx + "]"; r.u8bool = arr.u8bool; }
+                    else {
+                        // GLSL indexes arrays with 32-bit ints only (size_t loop
+                        // counters, uint8_t swizzle components...).
+                        QualType it = as->getIdx()->getType().getCanonicalType();
+                        bool is_int32 = it->isIntegerType() && Ctx.getTypeSize(it) == 32;
+                        r.text = arr.text + "[" + (is_int32 ? idx : "int(" + idx + ")") + "]";
+                        r.u8bool = arr.u8bool;
+                    }
                     return r;
                 }
             }
@@ -460,6 +493,16 @@ private:
         if (const auto* uo = dyn_cast<UnaryOperator>(e)) {
             if (uo->getOpcode() == UO_Deref) {
                 if (isa<CXXThisExpr>(uo->getSubExpr()->IgnoreParenImpCasts())) return self();
+                std::string punned;
+                if (pun(uo, punned)) {                 // *(T*)&local, read as T
+                    LV t;
+                    t.kind = LV::Reg;
+                    t.text = fresh("pun");
+                    t.type = e->getType();
+                    t.readonly = true;
+                    emit_pending(decl(e->getType(), t.text) + " = " + punned + ";");
+                    return t;
+                }
                 LV r;
                 r.kind = LV::Mem;
                 r.text = rvalue(uo->getSubExpr());
@@ -514,6 +557,25 @@ private:
             }
             QualType rt = ce->getCallReturnType(Ctx);
             if (rt->isLValueReferenceType() && !rt.getNonReferenceType().isConstQualified()) {
+                LV inlined;
+                if (inline_accessor(ce, inlined)) return inlined;
+                if (const FunctionDecl* callee = ce->getDirectCallee(); callee && returns_this(callee)) {
+                    unsigned first = 0;
+                    const Expr* obj = call_object(ce, llvm::cast<CXXMethodDecl>(callee), first);
+                    if (obj) {
+                        emit_pending(call(ce) + ";");
+                        obj = obj->IgnoreParens();
+                        if (isa<CXXThisExpr>(obj->IgnoreParenImpCasts())) return retype(self(), e->getType());
+                        if (obj->getType()->isPointerType()) {
+                            LV r;
+                            r.kind = LV::Mem;
+                            r.text = rvalue(obj);
+                            r.type = e->getType();
+                            return r;
+                        }
+                        return retype(lvalue(obj), e->getType());
+                    }
+                }
                 LV r;
                 r.kind = LV::Mem;
                 r.text = call(ce);
@@ -524,6 +586,91 @@ private:
         }
         if (e->isPRValue()) return temporary(e);
         throw Unsupported(std::string("lvalue ") + e->getStmtClassName());
+    }
+
+    // A call to a function whose body is just `return <lvalue>;` — accessors
+    // such as operator[] or a swizzle's x() returning T& — evaluated in the
+    // caller: the object and reference arguments bind to their lvalues, value
+    // arguments to temporaries, and the returned lvalue is built from those.
+    // A GLSL function can only return an address, which a local object does
+    // not have; in place, `local[i]` and `local.x()` work like memory ones.
+    bool inline_accessor(const CallExpr* ce, LV& out) {
+        const FunctionDecl* callee = ce->getDirectCallee();
+        const FunctionDecl* def = nullptr;
+        if (!callee || !callee->hasBody(def) || !def) return false;
+        const auto* body = dyn_cast_or_null<CompoundStmt>(def->getBody());
+        if (!body || body->size() != 1) return false;
+        const auto* rs = dyn_cast<ReturnStmt>(body->body_front());
+        if (!rs || !rs->getRetValue()) return false;
+
+        const auto* md = dyn_cast<CXXMethodDecl>(def);
+        bool member = md && md->isInstance();
+        Fn inner;
+        unsigned first = 0;
+        if (member) {
+            const Expr* obj = nullptr;
+            if (const auto* mc = dyn_cast<CXXMemberCallExpr>(ce)) obj = mc->getImplicitObjectArgument();
+            else if (isa<CXXOperatorCallExpr>(ce)) { obj = ce->getArg(0); first = 1; }
+            if (!obj) return false;
+            obj = obj->IgnoreParens();
+            if (isa<CXXThisExpr>(obj->IgnoreParenImpCasts())) {
+                inner.self = self();
+            } else if (obj->getType()->isPointerType()) {        // p->f()
+                inner.self.kind = LV::Mem;
+                inner.self.text = rvalue(obj);
+                inner.self.type = obj->getType()->getPointeeType();
+            } else {
+                inner.self = lvalue_or_temp(obj);
+            }
+            inner.has_self = true;
+        }
+        if (ce->getNumArgs() - first != def->getNumParams()) return false;
+        for (unsigned i = 0; i < def->getNumParams(); i++) {
+            const ParmVarDecl* p = def->getParamDecl(i);
+            const Expr* arg = ce->getArg(first + i);
+            if (p->getType()->isReferenceType()) {
+                inner.vars[p] = lvalue_or_temp(arg);
+            } else {
+                LV t = temporary(arg);
+                t.type = p->getType();
+                inner.vars[p] = t;
+            }
+        }
+        inner.return_type = def->getReturnType();
+
+        Fn* caller = fn;
+        fn = &inner;
+        try {
+            out = lvalue(rs->getRetValue());
+        } catch (...) {
+            fn = caller;
+            throw;
+        }
+        fn = caller;
+        out.type = ce->getType();
+        return true;
+    }
+
+    // `dst = src` for C++ arrays (GLSL arrays are values: a local source is
+    // assigned whole; one in memory is loaded element by element).
+    std::string copy_array(const LV& dst, const LV& src, QualType array_type) {
+        const auto* at = Ctx.getAsConstantArrayType(bare(array_type));
+        if (!at) throw Unsupported("array copy of a non-array");
+        if (dst.kind != LV::Mem && src.kind != LV::Mem) return place(dst) + " = " + place(src);
+        QualType elem = at->getElementType();
+        uint64_t n = at->getSize().getZExtValue();
+        std::string k = fresh("k");
+        auto element = [&](const LV& a) {
+            LV e;
+            e.kind = a.kind;
+            e.type = elem;
+            if (a.kind == LV::Mem) e.text = "(" + a.text + " + uint64_t(" + k + ") * " + std::to_string(size_of(elem)) + "ul)";
+            else { e.text = a.text + "[" + k + "]"; e.u8bool = a.u8bool; }
+            return e;
+        };
+        LV de = element(dst), se = element(src);
+        std::string inner = Ctx.getAsConstantArrayType(bare(elem)) ? copy_array(de, se, elem) : store(de, load(se));
+        return "for (int " + k + " = 0; " + k + " < " + std::to_string(n) + "; " + k + "++) { " + inner + "; }";
     }
 
     LV retype(LV lv, QualType t) {
@@ -701,12 +848,180 @@ private:
             if (ce->getCastKind() != CK_BitCast && ce->getCastKind() != CK_NoOp) break;
             p = ce->getSubExpr()->IgnoreParens();
         }
-        const auto* addr = dyn_cast<UnaryOperator>(p);
-        if (!addr || addr->getOpcode() != UO_AddrOf) return false;
-        LV src = lvalue(addr->getSubExpr());
+        LV src;
+        QualType from_t;
+        if (isa<CXXThisExpr>(p)) {                       // *(U*)this
+            if (!fn->has_self) return false;
+            src = fn->self;
+            from_t = bare(src.type);
+        } else {
+            const auto* addr = dyn_cast<UnaryOperator>(p);
+            if (!addr || addr->getOpcode() != UO_AddrOf) return false;
+            src = lvalue(addr->getSubExpr());
+            from_t = bare(addr->getSubExpr()->getType());
+        }
         if (src.kind == LV::Mem) return false;   // real memory: a typed load works
-        out = bitcast(load(src), type(addr->getSubExpr()->getType()), type(uo->getType()));
+        QualType to_t = bare(uo->getType());
+        if (from_t == to_t) { out = load(src); return true; }
+        if (is_scalar_value(from_t) && is_scalar_value(to_t)) {
+            out = bitcast(load(src), type(from_t), type(to_t));
+            return true;
+        }
+        // a view of the leading part (Hvec swizzles: *(Hvec<T, 3, s>*)this on
+        // an Hvec<T, 4>): built from the source's fields at the same offsets
+        {
+            std::string sv = fresh("src");
+            std::vector<Leaf> leaves;
+            flatten(from_t, sv, 0, src.u8bool, leaves);
+            std::string built;
+            if (build_from_leaves(to_t, 0, false, leaves, built)) {
+                emit_pending(decl(from_t, sv) + " = " + load(src) + ";");
+                out = built;
+                return true;
+            }
+        }
+        // structs / arrays of up to 64 bits: pack the source into a uint64_t
+        // at its fields' byte offsets, unpack the target from it
+        long n = size_of(from_t);
+        if (n != size_of(to_t) || n > 8) throw Unsupported("reinterpreting a local value of " + std::to_string(n) + " bytes");
+        std::string bits = fresh("bits");
+        emit_pending("uint64_t " + bits + " = " + pack_bits(load(src), from_t, 0) + ";");
+        out = unpack_bits(bits, to_t, 0, false);
         return true;
+    }
+
+    struct Leaf {
+        long offset;
+        QualType type;
+        std::string expr;
+        bool u8;
+    };
+
+    void flatten(QualType t, const std::string& e, long offset, bool u8, std::vector<Leaf>& out) {
+        t = bare(t);
+        if (const auto* at = Ctx.getAsConstantArrayType(t)) {
+            long es = size_of(at->getElementType());
+            for (uint64_t i = 0; i < at->getSize().getZExtValue(); i++)
+                flatten(at->getElementType(), e + "[" + std::to_string(i) + "]", offset + (long)i * es, false, out);
+            return;
+        }
+        if (const auto* rt = t->getAs<RecordType>()) {
+            for (auto& f : record_fields(rt->getDecl()->getDefinition()))
+                flatten(f.type, e + "." + f.name, offset + f.offset, f.in_memory_bool, out);
+            return;
+        }
+        out.push_back({offset, t, e, u8});
+    }
+
+    bool build_from_leaves(QualType t, long offset, bool u8, const std::vector<Leaf>& leaves, std::string& out) {
+        t = bare(t);
+        if (const auto* at = Ctx.getAsConstantArrayType(t)) {
+            std::string r = type(bare(at->getElementType())) + "[" + std::to_string(at->getSize().getZExtValue()) + "](";
+            long es = size_of(at->getElementType());
+            for (uint64_t i = 0; i < at->getSize().getZExtValue(); i++) {
+                std::string v;
+                if (!build_from_leaves(at->getElementType(), offset + (long)i * es, false, leaves, v)) return false;
+                r += (i ? ", " : "") + v;
+            }
+            out = r + ")";
+            return true;
+        }
+        if (const auto* rt = t->getAs<RecordType>()) {
+            const RecordDecl* rd = rt->getDecl()->getDefinition();
+            const auto& fields = record_fields(rd);
+            std::string r = record(rd) + "(";
+            for (size_t i = 0; i < fields.size(); i++) {
+                std::string v;
+                if (!build_from_leaves(fields[i].type, offset + fields[i].offset, fields[i].in_memory_bool, leaves, v)) return false;
+                r += (i ? ", " : "") + v;
+            }
+            if (fields.empty()) r += "uint8_t(0)";
+            out = r + ")";
+            return true;
+        }
+        for (const Leaf& l : leaves) {
+            if (l.offset == offset && bare(l.type) == t && l.u8 == u8) { out = l.expr; return true; }
+        }
+        return false;
+    }
+
+    bool is_scalar_value(QualType t) {
+        t = bare(t);
+        return t->isScalarType() && !t->isMemberPointerType();
+    }
+
+    // Bits of a scalar as uint64_t (low `size` bytes).
+    std::string scalar_bits(const std::string& v, QualType t, bool as_u8) {
+        t = bare(t);
+        if (as_u8) return "uint64_t(uint8_t(" + v + "))";
+        std::string g = type(t);
+        if (g == "bool") return "uint64_t((" + v + ") ? 1u : 0u)";
+        if (g == "float") return "uint64_t(floatBitsToUint(" + v + "))";
+        if (g == "float16_t") return "uint64_t(float16BitsToUint16(" + v + "))";
+        if (g == "double") return "doubleBitsToUint64(" + v + ")";
+        if (g == "int8_t") return "uint64_t(uint8_t(" + v + "))";
+        if (g == "int16_t") return "uint64_t(uint16_t(" + v + "))";
+        if (g == "int") return "uint64_t(uint(" + v + "))";
+        if (g == "int64_t") return "uint64_t(" + v + ")";
+        return "uint64_t(" + v + ")";   // unsigned types, pointers
+    }
+
+    std::string scalar_from_bits(const std::string& bits, QualType t, bool as_u8) {
+        t = bare(t);
+        if (as_u8) return "uint8_t(" + bits + ")";
+        std::string g = type(t);
+        if (g == "bool") return "(uint8_t(" + bits + ") != uint8_t(0))";
+        if (g == "float") return "uintBitsToFloat(uint(" + bits + "))";
+        if (g == "float16_t") return "uint16BitsToFloat16(uint16_t(" + bits + "))";
+        if (g == "double") return "uint64BitsToDouble(" + bits + ")";
+        if (g == "int8_t") return "int8_t(uint8_t(" + bits + "))";
+        if (g == "int16_t") return "int16_t(uint16_t(" + bits + "))";
+        if (g == "int") return "int(uint(" + bits + "))";
+        return g + "(" + bits + ")";
+    }
+
+    std::string shifted(const std::string& bits, long offset) {
+        return offset ? "(" + bits + " << " + std::to_string(offset * 8) + ")" : bits;
+    }
+
+    std::string pack_bits(const std::string& v, QualType t, long offset, bool as_u8 = false) {
+        t = bare(t);
+        if (const auto* at = Ctx.getAsConstantArrayType(t)) {
+            std::string out;
+            long es = size_of(at->getElementType());
+            for (uint64_t i = 0; i < at->getSize().getZExtValue(); i++)
+                out += (i ? " | " : "") + pack_bits(v + "[" + std::to_string(i) + "]", at->getElementType(), offset + (long)i * es);
+            return out.empty() ? "0ul" : "(" + out + ")";
+        }
+        if (const auto* rt = t->getAs<RecordType>()) {
+            std::string out;
+            for (auto& f : record_fields(rt->getDecl()->getDefinition()))
+                out += (out.empty() ? "" : " | ") + pack_bits(v + "." + f.name, f.type, offset + f.offset, f.in_memory_bool);
+            return out.empty() ? "0ul" : "(" + out + ")";
+        }
+        return shifted(scalar_bits(v, t, as_u8), offset);
+    }
+
+    std::string unpack_bits(const std::string& bits, QualType t, long offset, bool as_u8) {
+        t = bare(t);
+        std::string at_offset = offset ? "(" + bits + " >> " + std::to_string(offset * 8) + ")" : bits;
+        if (const auto* at = Ctx.getAsConstantArrayType(t)) {
+            std::string out = type(bare(at->getElementType())) + "[" + std::to_string(at->getSize().getZExtValue()) + "](";
+            long es = size_of(at->getElementType());
+            for (uint64_t i = 0; i < at->getSize().getZExtValue(); i++)
+                out += (i ? ", " : "") + unpack_bits(bits, at->getElementType(), offset + (long)i * es, false);
+            return out + ")";
+        }
+        if (const auto* rt = t->getAs<RecordType>()) {
+            const RecordDecl* rd = rt->getDecl()->getDefinition();
+            std::string out = record(rd) + "(";
+            const auto& fields = record_fields(rd);
+            for (size_t i = 0; i < fields.size(); i++)
+                out += (i ? ", " : "") + unpack_bits(bits, fields[i].type, offset + fields[i].offset, fields[i].in_memory_bool);
+            if (fields.empty()) out += "uint8_t(0)";
+            return out + ")";
+        }
+        return scalar_from_bits(at_offset, t, as_u8);
     }
 
     // threadIdx.x & co: a pseudo-object whose result calls __fetch_builtin_<c>()
@@ -734,9 +1049,18 @@ private:
     std::string rvalue(const Expr* e) {
         std::string c;
         if ((isa<IntegerLiteral>(e) || isa<FloatingLiteral>(e) || isa<UnaryExprOrTypeTraitExpr>(e) ||
-             isa<ConstantExpr>(e) || isa<SubstNonTypeTemplateParmExpr>(e)) &&
+             isa<ConstantExpr>(e) || isa<SubstNonTypeTemplateParmExpr>(e) || isa<SizeOfPackExpr>(e)) &&
             constant(e, c))
             return c;
+        // constexpr / const globals and static members: their value
+        if (const auto* ic = dyn_cast<ImplicitCastExpr>(e); ic && ic->getCastKind() == CK_LValueToRValue) {
+            if (const auto* dr = dyn_cast<DeclRefExpr>(ic->getSubExpr()->IgnoreParens())) {
+                const auto* vd = dyn_cast<VarDecl>(dr->getDecl());
+                if (vd && !fn->vars.count(vd) && !vd->hasAttr<CUDASharedAttr>() &&
+                    vd->isUsableInConstantExpressions(Ctx) && constant(e, c))
+                    return c;
+            }
+        }
         if (const auto* pe = dyn_cast<ParenExpr>(e)) return "(" + rvalue(pe->getSubExpr()) + ")";
         if (const auto* x = dyn_cast<ExprWithCleanups>(e)) return rvalue(x->getSubExpr());
         if (const auto* x = dyn_cast<MaterializeTemporaryExpr>(e)) return rvalue(x->getSubExpr());
@@ -791,6 +1115,11 @@ private:
         if (const auto* ctor = dyn_cast<CXXConstructExpr>(e)) return construct(ctor);
         if (const auto* sv = dyn_cast<CXXScalarValueInitExpr>(e)) return zero(sv->getType());
         if (const auto* ile = dyn_cast<InitListExpr>(e)) return init_list(ile);
+        // C++20 T(a, b, c) on an aggregate: same as T{a, b, c}
+        if (const auto* pl = dyn_cast<CXXParenListInitExpr>(e)) {
+            auto inits = const_cast<CXXParenListInitExpr*>(pl)->getInitExprs();
+            return aggregate(pl->getType(), std::vector<const Expr*>(inits.begin(), inits.end()));
+        }
         if (const auto* ie = dyn_cast<ImplicitValueInitExpr>(e)) return zero(ie->getType());
 
         if (isa<MemberExpr>(e) || isa<ArraySubscriptExpr>(e)) return load(lvalue(e));
@@ -807,11 +1136,26 @@ private:
             return call(ce);
         }
         if (isa<CXXThisExpr>(e)) return address(self(), "this");
+        if (constant(e, c)) return c;   // anything else the compiler can evaluate
         throw Unsupported(std::string("expression ") + e->getStmtClassName());
     }
 
     std::string init_list(const InitListExpr* ile) {
-        QualType t = bare(ile->getType());
+        std::vector<const Expr*> inits;
+        for (unsigned i = 0; i < ile->getNumInits(); i++) inits.push_back(ile->getInit(i));
+        return aggregate(ile->getType(), inits);
+    }
+
+    // An array or struct built from its elements / fields in order (bases
+    // first); missing ones are zero.
+    std::string aggregate(QualType type_, const std::vector<const Expr*>& inits) {
+        QualType t = bare(type_);
+        struct Inits {
+            const std::vector<const Expr*>& v;
+            unsigned getNumInits() const { return (unsigned)v.size(); }
+            const Expr* getInit(unsigned i) const { return v[i]; }
+        } list{inits};
+        const Inits* ile = &list;
         if (const auto* at = Ctx.getAsConstantArrayType(t)) {
             std::string elem = type(bare(at->getElementType()));
             uint64_t n = at->getSize().getZExtValue();
@@ -1172,7 +1516,34 @@ private:
 
         std::string binding;
         std::vector<std::string> args;
-        if (md && !md->isStatic()) {
+        const Lambda* lambda = nullptr;
+        bind_arguments(ce, fd, md, object, first_arg, binding, args, lambda);
+        lambda_for_function = lambda;
+        std::string name;
+        try {
+            name = function(fd, binding);
+        } catch (...) {
+            lambda_for_function = nullptr;
+            throw;
+        }
+        lambda_for_function = nullptr;
+        std::string out = name + "(";
+        for (size_t i = 0; i < args.size(); i++) out += (i ? ", " : "") + args[i];
+        return out + ")";
+    }
+
+    // Arguments of a call and how each is passed (the function variant):
+    // the implicit object / lambda captures first, then the parameters.
+    void bind_arguments(const CallExpr* ce, const FunctionDecl* fd, const CXXMethodDecl* md, const Expr* object,
+                        unsigned first_arg, std::string& binding, std::vector<std::string>& args,
+                        const Lambda*& lambda) {
+        if (md && md->getParent()->isLambda()) {
+            lambda = &lambda_of(md, object);
+            for (const LV& c : lambda->captures) {
+                if (c.kind == LV::Mem) { binding += ByAddress; args.push_back(c.text); }
+                else { binding += ByInout; args.push_back(writable_place(c)); }
+            }
+        } else if (md && !md->isStatic()) {
             bool arrow = false;
             if (const auto* mc = dyn_cast<CXXMemberCallExpr>(ce)) {
                 if (const auto* me = dyn_cast<MemberExpr>(mc->getCallee()->IgnoreParens())) arrow = me->isArrow();
@@ -1182,7 +1553,7 @@ private:
                     LV s = self();
                     if (s.kind == LV::Mem) { binding += ByAddress; args.push_back(s.text); }
                     else if (md->isConst()) { binding += ByValue; args.push_back(load(s)); }
-                    else { binding += ByInout; args.push_back(place(s)); }
+                    else { binding += ByInout; args.push_back(writable_place(s)); }
                 } else {
                     binding += ByAddress;
                     args.push_back(rvalue(object));
@@ -1196,7 +1567,7 @@ private:
                 LV o = lvalue(object);
                 if (o.kind == LV::Mem) { binding += ByAddress; args.push_back(o.text); }
                 else if (md->isConst()) { binding += ByValue; args.push_back(load(o)); }
-                else { binding += ByInout; args.push_back(place(o)); }
+                else { binding += ByInout; args.push_back(writable_place(o)); }
             }
         }
         for (unsigned i = 0; i < fd->getNumParams(); i++) {
@@ -1208,16 +1579,150 @@ private:
             if (pt->isLValueReferenceType() && !pt.getNonReferenceType().isConstQualified()) {
                 LV lv = lvalue(a);
                 if (lv.kind == LV::Mem) { binding += ByAddress; args.push_back(lv.text); }
-                else { binding += ByInout; args.push_back(place(lv)); }
+                else { binding += ByInout; args.push_back(writable_place(lv)); }
             } else {
                 binding += ByValue;
                 args.push_back(rvalue_as(a, pt.getNonReferenceType()));
             }
         }
-        std::string name = function(fd, binding);
-        std::string out = name + "(";
-        for (size_t i = 0; i < args.size(); i++) out += (i ? ", " : "") + args[i];
-        return out + ")";
+    }
+
+    // The object expression and first argument index of a call.
+    static const Expr* call_object(const CallExpr* ce, const CXXMethodDecl* md, unsigned& first_arg) {
+        first_arg = 0;
+        if (const auto* mc = dyn_cast<CXXMemberCallExpr>(ce)) return mc->getImplicitObjectArgument();
+        if (const auto* oc = dyn_cast<CXXOperatorCallExpr>(ce); oc && md && !md->isStatic()) {
+            first_arg = 1;
+            return oc->getArg(0);
+        }
+        return nullptr;
+    }
+
+    // A method whose every return is `*this` (operator=, operator+= ...): its
+    // GLSL function updates self and returns nothing, and a call's result is
+    // the object it was called on.
+    static bool is_this(const Expr* e) {
+        if (!e) return false;
+        e = e->IgnoreImplicit()->IgnoreParens();
+        const auto* uo = dyn_cast<UnaryOperator>(e);
+        return uo && uo->getOpcode() == UO_Deref && isa<CXXThisExpr>(uo->getSubExpr()->IgnoreParenImpCasts());
+    }
+    static bool all_returns_this(const Stmt* s, int& count) {
+        if (!s || isa<LambdaExpr>(s)) return true;
+        if (const auto* rs = dyn_cast<ReturnStmt>(s)) {
+            if (!is_this(rs->getRetValue())) return false;
+            count++;
+            return true;
+        }
+        for (const Stmt* c : s->children()) if (!all_returns_this(c, count)) return false;
+        return true;
+    }
+    static bool returns_this(const FunctionDecl* fd) {
+        if (const FunctionDecl* d = fd->getDefinition()) fd = d;
+        const auto* md = dyn_cast<CXXMethodDecl>(fd);
+        if (!md || md->isStatic() || !fd->hasBody() || isa<CXXConstructorDecl>(fd)) return false;
+        QualType rt = fd->getReturnType();
+        if (!rt->isLValueReferenceType()) return false;
+        int count = 0;
+        return all_returns_this(fd->getBody(), count) && count > 0;
+    }
+
+    // `e` as a call of `fd` itself (a tail call when returned).
+    static const CallExpr* self_call(const Expr* e, const FunctionDecl* fd) {
+        if (!e || !fd) return nullptr;
+        e = e->IgnoreImplicit()->IgnoreParens();
+        if (const auto* ew = dyn_cast<ExprWithCleanups>(e)) e = ew->getSubExpr()->IgnoreImplicit()->IgnoreParens();
+        const auto* ce = dyn_cast<CallExpr>(e);
+        if (!ce || !ce->getDirectCallee()) return nullptr;
+        const FunctionDecl* callee = ce->getDirectCallee();
+        if (const FunctionDecl* d = callee->getDefinition()) callee = d;
+        return callee == fd ? ce : nullptr;
+    }
+
+    // Whether `s` returns a call of `fd` (tail recursion).  A tail call inside
+    // a loop of the body can't jump back to the top, so it is refused.
+    static bool has_tail_self_call(const Stmt* s, const FunctionDecl* fd, bool in_loop) {
+        if (!s) return false;
+        if (const auto* rs = dyn_cast<ReturnStmt>(s)) {
+            if (!self_call(rs->getRetValue(), fd)) return false;
+            if (in_loop) throw Unsupported("recursion in " + fd->getNameAsString() + " (tail call inside a loop)");
+            return true;
+        }
+        if (isa<LambdaExpr>(s)) return false;
+        bool loop = isa<ForStmt>(s) || isa<WhileStmt>(s) || isa<DoStmt>(s) || isa<CXXForRangeStmt>(s);
+        bool found = false;
+        for (const Stmt* c : s->children()) found = has_tail_self_call(c, fd, in_loop || loop) || found;
+        return found;
+    }
+
+    // return f(args) inside f: rebind self and the parameters, go round again.
+    std::string tail_call(const CallExpr* ce) {
+        const FunctionDecl* fd = ce->getDirectCallee();
+        const auto* md = dyn_cast<CXXMethodDecl>(fd);
+        unsigned first_arg = 0;
+        const Expr* object = (md && !md->isStatic()) ? call_object(ce, md, first_arg) : nullptr;
+        std::string binding;
+        std::vector<std::string> args;
+        const Lambda* lambda = nullptr;
+        bind_arguments(ce, fd, md, object, first_arg, binding, args, lambda);
+        if (binding != fn->binding || args.size() != fn->slots.size())
+            throw Unsupported("recursion in " + fd->getNameAsString() + " (arguments passed differently)");
+        std::vector<std::pair<std::string, std::string>> assigns;   // slot name, temp
+        for (size_t i = 0; i < args.size(); i++) {
+            std::string d = fn->slots[i];
+            std::string slot = d.substr(d.find_last_of(' ') + 1);
+            if (binding[i] == ByInout) {
+                if (args[i] != slot) throw Unsupported("recursion in " + fd->getNameAsString() + " (reference to another local)");
+                continue;
+            }
+            if (d.find('[') != std::string::npos) throw Unsupported("recursion with an array parameter");
+            std::string tmp = fresh("next");
+            emit_pending(d.substr(0, d.size() - slot.size()) + tmp + " = " + args[i] + ";");
+            assigns.push_back({slot, tmp});
+        }
+        std::string out;
+        for (auto& a : assigns) out += a.first + " = " + a.second + "; ";
+        return out + "continue;";
+    }
+
+    // Bind a lambda's captures where it is made.
+    const Lambda& make_lambda(const LambdaExpr* le) {
+        Lambda l;
+        l.expr = le;
+        l.made_in = fn;
+        for (const LambdaCapture& c : le->captures()) {
+            LV lv;
+            if (c.capturesThis()) {
+                lv = self();
+            } else if (c.capturesVariable()) {
+                const auto* v = dyn_cast<VarDecl>(c.getCapturedVar());
+                auto found = v ? fn->vars.find(v) : fn->vars.end();
+                if (found == fn->vars.end()) throw Unsupported("lambda capture of a non-local");
+                lv = found->second;
+                if (c.getCaptureKind() == LCK_ByCopy) {        // value at creation
+                    std::string name = fresh(v->getNameAsString());
+                    emit_pending(decl(lv.type, name) + " = " + load(lv) + ";");
+                    lv.kind = LV::Reg;
+                    lv.text = name;
+                    lv.u8bool = false;
+                }
+            } else {
+                throw Unsupported("lambda capture kind");
+            }
+            l.captures.push_back(lv);
+        }
+        return lambdas[le->getLambdaClass()] = l;
+    }
+
+    // The lambda a call operator belongs to (made in this function).
+    const Lambda& lambda_of(const CXXMethodDecl* md, const Expr* object) {
+        if (object) {
+            if (const auto* le = dyn_cast<LambdaExpr>(object->IgnoreImplicit())) return make_lambda(le);   // [..](..){..}(args)
+        }
+        auto found = lambdas.find(md->getParent());
+        if (found == lambdas.end()) throw Unsupported("call of a lambda not made in this kernel code");
+        if (found->second.made_in != fn) throw Unsupported("lambda called outside the function that made it (pass values, not lambdas)");
+        return found->second;
     }
 
     // CXXConstructExpr → value
@@ -1245,7 +1750,7 @@ private:
             if (pt->isLValueReferenceType() && !pt.getNonReferenceType().isConstQualified()) {
                 LV lv = lvalue(a);
                 if (lv.kind == LV::Mem) { binding += ByAddress; args.push_back(lv.text); }
-                else { binding += ByInout; args.push_back(place(lv)); }
+                else { binding += ByInout; args.push_back(writable_place(lv)); }
             } else {
                 binding += ByValue;
                 args.push_back(rvalue_as(a, pt.getNonReferenceType()));
@@ -1284,16 +1789,44 @@ private:
         QualType object_type;
         if (md) object_type = Ctx.getRecordType(md->getParent());
 
-        if (md && !md->isStatic() && !ctor) {
+        const Lambda* lambda = lambda_for_function;
+        lambda_for_function = nullptr;   // nested calls in the body are their own
+        if (lambda) {
+            // captures first: `this` becomes self, variables become parameters
+            const auto& caps = lambda->expr->captures();
+            size_t ci = 0;
+            for (const LambdaCapture& c : caps) {
+                const LV& outer_lv = lambda->captures[ci];
+                char b = binding[bi++];
+                std::string pname = "c" + std::to_string(ci) + "_" +
+                                    (c.capturesThis() ? std::string("this") : sanitize(c.getCapturedVar()->getNameAsString()));
+                LV lv;
+                lv.type = outer_lv.type;
+                if (b == ByAddress) {
+                    params.push_back("uint64_t " + pname);
+                    lv.kind = LV::Mem;
+                } else {
+                    params.push_back("inout " + decl(outer_lv.type, pname));
+                    lv.kind = LV::Reg;
+                    lv.u8bool = outer_lv.u8bool;
+                }
+                lv.text = pname;
+                if (c.capturesThis()) { f.has_self = true; f.self = lv; }
+                else f.vars[c.getCapturedVar()] = lv;
+                ci++;
+            }
+        } else if (md && !md->isStatic() && !ctor) {
             char b = binding[bi++];
             f.has_self = true;
             f.self.type = object_type;
             if (b == ByAddress) {
                 params.push_back("uint64_t self_addr");
+                f.slots.push_back("uint64_t self_addr");
                 f.self.kind = LV::Mem;
                 f.self.text = "self_addr";
             } else {
                 params.push_back(std::string(b == ByInout ? "inout " : "") + type(object_type) + " self");
+                f.slots.push_back(type(object_type) + " self");
                 f.self.kind = LV::Reg;
                 f.self.text = "self";
             }
@@ -1306,13 +1839,19 @@ private:
             lv.type = p->getType().getNonReferenceType();
             if (b == ByAddress) {
                 params.push_back("uint64_t " + pname);
+                f.slots.push_back("uint64_t " + pname);
                 lv.kind = LV::Mem;
             } else {
                 params.push_back(std::string(b == ByInout ? "inout " : "") + decl(p->getType().getNonReferenceType(), pname));
+                f.slots.push_back(decl(p->getType().getNonReferenceType(), pname));
                 lv.kind = LV::Reg;
             }
             lv.text = pname;
             f.vars[p] = lv;
+        }
+        if (!lambda) {
+            f.decl = fd;
+            f.binding = binding;
         }
 
         std::string ret;
@@ -1347,7 +1886,17 @@ private:
                         if (pi->getNumExprs() != 1) throw Unsupported("member initialiser list");
                         ie = pi->getExpr(0);
                     }
-                    line = store(target, rvalue_as(ie, fdl->getType()));
+                    if (Ctx.getAsConstantArrayType(bare(fdl->getType()))) {
+                        // array member: copied from another array (the implicit
+                        // copy / move constructors' ArrayInitLoopExpr) or braced
+                        const Expr* src = ie->IgnoreImplicit();
+                        if (const auto* al = dyn_cast<ArrayInitLoopExpr>(src)) src = al->getCommonExpr()->getSourceExpr();
+                        src = src->IgnoreImplicit();
+                        if (const auto* il = dyn_cast<InitListExpr>(src)) line = store(target, init_list(il));
+                        else line = copy_array(target, lvalue_or_temp(src), fdl->getType());
+                    } else {
+                        line = store(target, rvalue_as(ie, fdl->getType()));
+                    }
                 } else {
                     throw Unsupported("delegating constructor");
                 }
@@ -1358,14 +1907,23 @@ private:
             if (fd->hasBody()) body += stmt(fd->getBody(), 1);
             body += "    return self;\n";
         } else {
-            if (rt->isLValueReferenceType() && !rt.getNonReferenceType().isConstQualified()) {
+            if (returns_this(fd)) {
+                ret = "void";
+                f.returns_self = true;
+            } else if (rt->isLValueReferenceType() && !rt.getNonReferenceType().isConstQualified()) {
                 ret = "uint64_t";
                 f.returns_address = true;
             } else {
                 ret = type(rt.getNonReferenceType());
             }
             f.return_type = rt;
-            body = stmt(fd->getBody(), 1);
+            if (f.decl && has_tail_self_call(fd->getBody(), fd, false)) {
+                f.tail_loop = true;
+                body = "    for (;;) {\n" + stmt(fd->getBody(), 2) +
+                       (rt->isVoidType() ? "        return;\n" : "") + "    }\n";
+            } else {
+                body = stmt(fd->getBody(), 1);
+            }
         }
 
         std::string sig = ret + " " + name + "(";
@@ -1401,6 +1959,12 @@ private:
         if (vd->isStaticLocal()) throw Unsupported("static local variable " + vd->getNameAsString());
         QualType t = vd->getType();
         const Expr* init = vd->getInit();
+        if (init) {
+            if (const auto* le = dyn_cast<LambdaExpr>(init->IgnoreImplicit())) {
+                make_lambda(le);
+                return with_pending(depth, "");
+            }
+        }
         if (t->isReferenceType()) {
             if (!init) throw Unsupported("reference without initialiser");
             bool const_ref = t.getNonReferenceType().isConstQualified() || t->isRValueReferenceType();
@@ -1461,6 +2025,10 @@ private:
         }
         if (const auto* rs = dyn_cast<ReturnStmt>(s)) {
             if (!rs->getRetValue()) return with_pending(depth, "return;");
+            if (fn->returns_self) return with_pending(depth, "return;");
+            if (fn->tail_loop) {
+                if (const CallExpr* tc = self_call(rs->getRetValue(), fn->decl)) return with_pending(depth, tail_call(tc));
+            }
             if (fn->returns_address) {
                 LV lv = lvalue(rs->getRetValue());
                 return with_pending(depth, "return " + address(lv, "returned reference") + ";");

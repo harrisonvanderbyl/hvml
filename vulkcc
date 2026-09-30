@@ -27,6 +27,7 @@ runtime="$here/tensor/ops/vulkan/runtime.hpp"
 source=""
 output=""
 compile_only=0
+shaders=1
 cxx="${VULKCC_CXX:-g++}"
 compile_flags=()
 link_flags=()
@@ -34,21 +35,27 @@ tool_flags=()
 while [ $# -gt 0 ]; do
     case "$1" in
         -c) compile_only=1 ;;
+        --no-shaders) shaders=0 ;;                       # kernels only, no display shaders
+        -Xanalysis) tool_flags+=("$2"); shift ;;         # flag for parsing the program only
+        -Xanalysis=*) tool_flags+=("${1#*=}") ;;
         -ccbin=*|--compiler-bindir=*) cxx="${1#*=}" ;;
         -ccbin|--compiler-bindir) cxx="$2"; shift ;;
         -o) output="$2"; shift ;;
         -o*) output="${1#-o}" ;;
         -l*|-L*|-Wl,*|-rdynamic|-pthread) link_flags+=("$1") ;;
         -fopenmp*|-fsanitize*|-flto*) compile_flags+=("$1"); link_flags+=("$1") ;;
-        -I|-D|-U|-isystem|-iquote) compile_flags+=("$1" "$2"); tool_flags+=("$1" "$2"); shift ;;
-        -I*|-D*|-U*|-std=*|-isystem*|-iquote*) compile_flags+=("$1"); tool_flags+=("$1") ;;
+        -I|-D|-U|-isystem|-iquote) compile_flags+=("$1" "$2"); tool_flags+=("$1" "$2"); shift ;;-std=*|--std=*)
+            std="${1#*=}"
+            compile_flags+=("-std=$std")
+            tool_flags+=("-std=$std")
+            ;;
         -*) compile_flags+=("$1") ;;
         *) if [ -z "$source" ]; then source="$1"; else compile_flags+=("$1"); fi ;;
     esac
     shift
 done
 if [ -z "$source" ]; then
-    echo "usage: vulkcc <source.cpp> [-c] [-o output] [-ccbin=<compiler>] [compiler/linker flags]" >&2
+    echo "usage: vulkcc <source.cpp> [-c] [-o output] [-ccbin=<compiler>] [--no-shaders] [-Xanalysis <flag>] [compiler/linker flags]" >&2
     exit 1
 fi
 source="$(realpath "$source")"
@@ -74,13 +81,15 @@ analysis=(-x cuda --cuda-host-only -nocudainc -nocudalib -U__CUDACC__ -D__VULKCC
 main="$work/$(basename "$source")"
 "$tool" "$source" --rewrite-launches="$main" --no-shaders -- "${analysis[@]}"
 
-# 2. kernels → SPIR-V (+ material shaders for a whole program)
-if [ $compile_only = 1 ]; then
-    "$tool" "$main" --vulkan-kernels="$work/kernels.cpp" --no-shaders "${keep[@]}" -- "${analysis[@]}"
-    printf '#include "%s"\n#include "%s"\n' "$main" "$work/kernels.cpp" > "$work/unit.cpp"
-else
+# 2. kernels → SPIR-V, and the display's material shaders (shad.cpp: the
+#    shaders' SPIR-V, then the program itself), for -c objects too, so
+#    vulkan.o is the whole program with its shaders and kernels
+if [ $shaders = 1 ]; then
     "$tool" "$main" --vulkan-kernels="$work/kernels.cpp" -o "$work/shad.cpp" "${keep[@]}" -- "${analysis[@]}"
     printf '#include "%s"\n#include "%s"\n' "$work/shad.cpp" "$work/kernels.cpp" > "$work/unit.cpp"
+else
+    "$tool" "$main" --vulkan-kernels="$work/kernels.cpp" --no-shaders "${keep[@]}" -- "${analysis[@]}"
+    printf '#include "%s"\n#include "%s"\n' "$main" "$work/kernels.cpp" > "$work/unit.cpp"
 fi
 
 # 3. host code
