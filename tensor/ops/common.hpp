@@ -603,7 +603,12 @@ public:
 
             size_t allocate_size = OP::get_allocate_size(out_shape);
 
-            auto out_param = Tensor<Out, -1>({allocate_size}, MemoryLocation(target_device.storage_device->this_device_type, target_device.storage_device->device_id), device);
+            // outputs go with the inputs, except that disk tensors' results
+            // live in host memory (the disk map writes to its file)
+            MemoryLocation out_loc = target_device.storage_device->this_device_type == MemoryType::kDISK
+                                         ? MemoryLocation(MemoryType::kDDR)
+                                         : MemoryLocation(target_device.storage_device->this_device_type, target_device.storage_device->device_id);
+            auto out_param = Tensor<Out, -1>({allocate_size}, out_loc, device);
             // if out has an assignment operator that can handle = 0
             // accumulating operations (reductions) add into the output, so
             // start it at zero; element-wise operations write every element

@@ -783,13 +783,7 @@ private:
             case CK_LValueToRValue: {
                 std::string punned;
                 if (const auto* uo = dyn_cast<UnaryOperator>(sub->IgnoreParens()); uo && pun(uo, punned)) return punned;
-                if (const auto* co = dyn_cast<ConditionalOperator>(sub->IgnoreParens())) {
-                    // the value of an lvalue conditional
-                    std::string t = type(to);
-                    auto side = [&](const Expr* x) { return x->isGLValue() ? load(lvalue(x)) : rvalue(x); };
-                    return "(" + rvalue_as(co->getCond(), Ctx.BoolTy) + " ? " + side(co->getTrueExpr()) + " : " +
-                           side(co->getFalseExpr()) + ")";
-                }
+                if (const auto* co = dyn_cast<ConditionalOperator>(sub->IgnoreParens())) return conditional_value(co);
                 return load(lvalue(sub));
             }
             case CK_NoOp: case CK_UserDefinedConversion: case CK_ConstructorConversion:
@@ -943,6 +937,19 @@ private:
             if (l.offset == offset && bare(l.type) == t && l.u8 == u8) { out = l.expr; return true; }
         }
         return false;
+    }
+
+    // The value of an lvalue conditional (c ? a : (d ? b : e) with named
+    // operands): read as a value ternary, nested ones too — locals have no
+    // address to select between.
+    std::string conditional_value(const ConditionalOperator* co) {
+        auto side = [&](const Expr* x) -> std::string {
+            if (const auto* inner = dyn_cast<ConditionalOperator>(x->IgnoreParens()); inner && inner->isGLValue())
+                return conditional_value(inner);
+            return x->isGLValue() ? load(lvalue(x)) : rvalue(x);
+        };
+        return "(" + rvalue_as(co->getCond(), Ctx.BoolTy) + " ? " + side(co->getTrueExpr()) + " : " +
+               side(co->getFalseExpr()) + ")";
     }
 
     bool is_scalar_value(QualType t) {

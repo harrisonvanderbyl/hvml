@@ -24,7 +24,7 @@
 #include "file_loaders/wav.hpp"
 #include <chrono>
 
-int main(int argc, char** argv) {
+__weak int main(int argc, char** argv) {
     if (argc < 3) {
         std::cerr << "usage: " << argv[0] << " <model_dir> <audio.wav> [--device cpu|cuda|hip|vulkan] "
                      "[--language L] [--context text] [--max-tokens n] [--full-attention] [--profile]\n";
@@ -53,7 +53,9 @@ int main(int argc, char** argv) {
     auto t0 = std::chrono::steady_clock::now();
     auto model = qwen3asr::Qwen3ASR::from_pretrained(model_dir, loc);
     model->set_windowed_encoder_attention(!full_attention);
-    auto samples = load_audio(audio_path, 16000);
+    // the WAV file (a disk tensor) → 16 kHz float samples on the model's device
+    AudioFile file(audio_path);
+    auto audio = file.as<AudioSample<float, 16000>>(loc);
     auto t1 = std::chrono::steady_clock::now();
 
     size_t printed = 0;
@@ -64,14 +66,14 @@ int main(int argc, char** argv) {
             printed = text.size();
         }
     };
-    auto result = model->transcribe(samples, opt);
+    auto result = model->transcribe(audio, opt);
     auto t2 = std::chrono::steady_clock::now();
 
     std::cerr << "\n";
     std::cout << "language: " << (result.language.empty() ? "(none)" : result.language) << "\n";
     std::cout << "text: " << result.text << "\n";
     std::cerr << "load " << std::chrono::duration<double>(t1 - t0).count() << "s, "
-              << samples.size() / 16000.0 << "s of audio transcribed in "
+              << audio.seconds() << "s of audio transcribed in "
               << std::chrono::duration<double>(t2 - t1).count() << "s ("
               << result.tokens.size() << " tokens)\n";
     return 0;

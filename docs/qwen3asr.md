@@ -42,10 +42,15 @@ From code:
 #include "models/qwen3asr/qwen3asr.hpp"
 #include "file_loaders/wav.hpp"
 
-auto model = qwen3asr::Qwen3ASR::from_pretrained("Qwen3-ASR-0.6B", MemoryType::kCUDA_VRAM);
-auto result = model->transcribe(load_audio("speech.wav"));   // any WAV; resampled to 16 kHz
+MemoryLocation gpu(MemoryType::kCUDA_VRAM);
+auto model = qwen3asr::Qwen3ASR::from_pretrained("Qwen3-ASR-0.6B", gpu);
+AudioFile file("speech.wav");                                  // any WAV, read-only on disk
+auto audio = file.as<AudioSample<float, 16000>>(gpu);          // converted + resampled on the GPU
+auto result = model->transcribe(audio);                        // any audio tensor; mixed to mono
 std::cout << result.language << ": " << result.text << "\n";
 ```
+
+Audio tensors and WAV files are described in [audio.md](audio.md).
 
 `from_pretrained` reads `config.json`, `model.safetensors` (or a sharded
 `model.safetensors.index.json`), and `vocab.json` + `merges.txt` +

@@ -2,114 +2,120 @@
 #define FILE_LOADERS_WAV_HPP
 
 //
-//  Minimal WAV reader: PCM 8/16/24/32-bit and IEEE float 32/64, any channel
-//  count (mixed to mono), resampled to a target rate with a windowed-sinc
-//  filter.  Returns float samples in [-1, 1].
+//  AudioFile: a WAV file of any sample format (8/16/24/32-bit PCM, 16/32/64-bit
+//  float), opened on the disk map.
+//
+//      AudioFile file("speech.wav");                          // read-only (kR); kRW to edit in place
+//      file.sample_rate(), file.channels(), file.samples()    // from the header, in the allocation's metadata
+//      auto pcm   = file.view<int16_t>();                     // the file's own format: a view of the file
+//      auto audio = file.as<AudioSample<float, 16000>>(gpu);  // converted + resampled on the GPU
+//
+//  The allocation's CPU view starts at the samples (the WAV format put the
+//  data offset in its metadata); AudioFile itself is the data as bytes.  When
+//  the sample type is known in advance, a typed tensor opens the file
+//  directly: Audio<int16_t, 16000> t({0, 0}, "speech.wav").
 //
 
-#include <cmath>
-#include <cstdint>
-#include <cstring>
 #include <fstream>
 #include <stdexcept>
 #include <string>
-#include <vector>
+#include "audio/audio.hpp"
 
-struct WavAudio {
-    std::vector<float> samples;   // mono
-    int sample_rate = 0;
+// A WAV file of any format: its data as bytes, its header parsed.
+struct WavFileFormat : public FileFormat {
+    const char* name() const override { return "WAV"; }
+    void read(const char* file, size_t size, AllocationMetadata& meta) const override {
+        WavHeader h;
+        size_t at, len;
+        parse_wav(file, size, h, at, len);
+        size_t bytes = (size_t)h.samples * h.channels * (h.bits / 8);
+        meta.data_offset = at;
+        meta.shape = Shape<-1>{(long)(bytes / meta.type_size)};
+        meta.byte_size = bytes;
+        meta.header = std::make_shared<WavHeader>(h);
+    }
+    std::vector<char> write(AllocationMetadata&) const override {
+        throw std::runtime_error("AudioFile opens existing WAV files; create one with a typed tensor, "
+                                 "e.g. Audio<int16_t, 16000> out({samples, channels}, \"out.wav\")");
+    }
+    static const WavFileFormat* instance() {
+        static WavFileFormat format;
+        return &format;
+    }
 };
 
-inline WavAudio read_wav(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("read_wav: cannot open " + path);
-    std::vector<char> buf((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    auto u16 = [&](size_t o) { uint16_t v; memcpy(&v, &buf[o], 2); return v; };
-    auto u32 = [&](size_t o) { uint32_t v; memcpy(&v, &buf[o], 4); return v; };
-    if (buf.size() < 12 || memcmp(&buf[0], "RIFF", 4) != 0 || memcmp(&buf[8], "WAVE", 4) != 0) {
-        throw std::runtime_error("read_wav: not a RIFF/WAVE file: " + path);
+struct AudioFile : public Tensor<uint8_t, 1> {
+    // flags: kR (default) maps the file read-only; kRW lets views of it write
+    // into the file.
+    explicit AudioFile(const std::string& path, AllocationFlags flags = AllocationFlags::kR)
+        : Tensor<uint8_t, 1>(open(path, flags)) {}
+
+    const WavHeader& header() const { return *this->storage_pointer->metadata.header_as<WavHeader>(); }
+    int sample_rate() const { return header().sample_rate; }
+    int channels() const { return header().channels; }
+    long samples() const { return header().samples; }
+    int bits_per_sample() const { return header().bits; }
+
+    // Whether the file's samples are F.
+    template <typename F>
+    bool holds() const { return header().tag == wav_format<F>::tag && header().bits == wav_format<F>::bits; }
+
+    // The file's samples in its own format: a {samples, channels} view.
+    template <typename F>
+    Tensor<AudioSample<F, 0>, 2> view() const {
+        if (!holds<F>()) throw std::runtime_error("AudioFile::view: the file holds " + std::to_string(bits_per_sample()) +
+                                                  "-bit " + (header().tag == 3 ? "float" : "integer") + " samples");
+        using S = AudioSample<F, 0>;
+        return Tensor<S, 2>(Shape<2>{samples(), (long)channels()}, this->data.template reinterpret<S>(),
+                            MemoryLocation(*this->device), this->storage_pointer);
     }
 
-    int format = 0, channels = 0, bits = 0, rate = 0;
-    size_t data_at = 0, data_len = 0;
-    for (size_t o = 12; o + 8 <= buf.size();) {
-        uint32_t len = u32(o + 4);
-        if (memcmp(&buf[o], "fmt ", 4) == 0) {
-            format = u16(o + 8);
-            channels = u16(o + 10);
-            rate = (int)u32(o + 12);
-            bits = u16(o + 22);
-            if (format == 0xFFFE && len >= 26) format = u16(o + 32);   // WAVE_FORMAT_EXTENSIBLE sub-format
-        } else if (memcmp(&buf[o], "data", 4) == 0) {
-            data_at = o + 8;
-            data_len = std::min<size_t>(len, buf.size() - data_at);
-        }
-        o += 8 + len + (len & 1);
-    }
-    if (!data_at || !channels || !bits) throw std::runtime_error("read_wav: missing fmt/data chunk");
+    // The samples as Sample (rate 0: the file's).  A view of the file when it
+    // already is that; converted in host memory otherwise.
+    template <typename Sample>
+    Tensor<Sample, 2> as() const { return dispatch<Sample>(nullptr); }
 
-    size_t bytes = bits / 8, frames = data_len / (bytes * channels);
-    WavAudio out;
-    out.sample_rate = rate;
-    out.samples.resize(frames);
-    for (size_t i = 0; i < frames; i++) {
-        double acc = 0;
-        for (int c = 0; c < channels; c++) {
-            const char* p = &buf[data_at + (i * channels + c) * bytes];
-            double v = 0;
-            if (format == 3 && bits == 32) { float x; memcpy(&x, p, 4); v = x; }
-            else if (format == 3 && bits == 64) { double x; memcpy(&x, p, 8); v = x; }
-            else if (bits == 8) v = ((unsigned char)p[0] - 128) / 128.0;
-            else if (bits == 16) { int16_t x; memcpy(&x, p, 2); v = x / 32768.0; }
-            else if (bits == 24) {
-                int32_t x = ((unsigned char)p[0]) | ((unsigned char)p[1] << 8) | ((signed char)p[2] << 16);
-                v = x / 8388608.0;
-            } else if (bits == 32) { int32_t x; memcpy(&x, p, 4); v = x / 2147483648.0; }
-            else throw std::runtime_error("read_wav: unsupported sample format");
-            acc += v;
-        }
-        out.samples[i] = (float)(acc / channels);
-    }
-    return out;
-}
+    // Same, on `loc`: the file's samples are moved there as they are, then
+    // converted there.
+    template <typename Sample>
+    Tensor<Sample, 2> as(MemoryLocation loc) const { return dispatch<Sample>(&loc); }
 
-// Band-limited resampling (Kaiser-windowed sinc).
-inline std::vector<float> resample(const std::vector<float>& in, int from, int to) {
-    if (from == to || in.empty()) return in;
-    double ratio = (double)to / from;
-    double cutoff = std::min(1.0, ratio) * 0.95;
-    const int half = 32;
-    const double beta = 8.6;
-    auto bessel_i0 = [](double x) {
-        double sum = 1, term = 1;
-        for (int k = 1; k < 30; k++) { term *= (x / (2 * k)) * (x / (2 * k)); sum += term; }
-        return sum;
-    };
-    double i0b = bessel_i0(beta);
-    size_t n_out = (size_t)std::floor(in.size() * ratio);
-    std::vector<float> out(n_out);
-    for (size_t i = 0; i < n_out; i++) {
-        double t = i / ratio;
-        long center = (long)std::floor(t);
-        double acc = 0, wsum = 0;
-        for (long k = center - half + 1; k <= center + half; k++) {
-            double x = t - k;
-            double sinc = x == 0 ? 1.0 : std::sin(M_PI * x * cutoff) / (M_PI * x * cutoff);
-            double r = x / half;
-            double win = std::fabs(r) >= 1 ? 0 : bessel_i0(beta * std::sqrt(1 - r * r)) / i0b;
-            double w = sinc * win;
-            wsum += w;
-            if (k >= 0 && k < (long)in.size()) acc += in[k] * w;
-        }
-        out[i] = (float)(wsum != 0 ? acc / wsum : 0);
+private:
+    static Tensor<uint8_t, 1> open(const std::string& path, AllocationFlags flags) {
+        if (!std::ifstream(path).good()) throw std::runtime_error("AudioFile: cannot open " + path);
+        MemoryLocation disk(path);
+        AllocationMetadata meta = AllocationMetadata::create<uint8_t>(Shape<1>{0}, MemoryType::kDISK, ComputeType::kFILE, 0,
+                                                                        flags, disk.device_id);
+        meta.file_format = WavFileFormat::instance();
+        return Tensor<uint8_t, 1>(meta);
     }
-    return out;
-}
 
-// Mono float samples at `rate` Hz.
-inline std::vector<float> load_audio(const std::string& path, int rate = 16000) {
-    WavAudio a = read_wav(path);
-    return resample(a.samples, a.sample_rate, rate);
+    template <typename Sample, typename F>
+    Tensor<Sample, 2> from(const MemoryLocation* loc) const {
+        // the file's samples, moved as they are
+        Tensor<AudioSample<F, 0>, 2> raw = loc ? view<F>().to(*loc) : view<F>();
+        int to = Sample::rate ? Sample::rate : sample_rate();
+        return audio_resample<Sample>(raw, sample_rate(), to);
+    }
+
+    template <typename Sample>
+    Tensor<Sample, 2> dispatch(const MemoryLocation* loc) const {
+        if (holds<uint8_t>()) return from<Sample, uint8_t>(loc);
+        if (holds<int16_t>()) return from<Sample, int16_t>(loc);
+        if (holds<pcm24>()) return from<Sample, pcm24>(loc);
+        if (holds<int32_t>()) return from<Sample, int32_t>(loc);
+        if (holds<float16>()) return from<Sample, float16>(loc);
+        if (holds<float>()) return from<Sample, float>(loc);
+        if (holds<double>()) return from<Sample, double>(loc);
+        throw std::runtime_error("AudioFile: unsupported sample format (tag " + std::to_string(header().tag) + ", " +
+                                 std::to_string(bits_per_sample()) + " bits)");
+    }
+};
+
+// Mono float samples at Rate Hz, on `loc`.
+template <int Rate = 16000>
+inline Tensor<float, 1> load_audio(const std::string& path, MemoryLocation loc = MemoryLocation(MemoryType::kDDR)) {
+    return AudioFile(path).as<AudioSample<float, Rate>>(loc).mono().channel(0);
 }
 
 #endif // FILE_LOADERS_WAV_HPP

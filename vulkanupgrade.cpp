@@ -12,6 +12,7 @@ __weak int main(){
 
 
     global_device_manager.get_device(MemoryType::kDDR,0).default_compute_type = ComputeType::kCPU;
+    global_device_manager.get_device(MemoryType::kCUDA_VRAM,0).default_compute_type = ComputeType::kVULKAN;
 
     scene.setCamera({0, 0, -5.0f}, {0, 0, 1.0f}, {0, 1, 0});
 

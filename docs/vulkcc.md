@@ -22,6 +22,11 @@ Vulkan tensors go through the same machinery, using kernels in
   compiler the device plugins were built with: g++ and clang export
   `global_device_manager` differently, and a mix ends up with two device
   managers.
+- **Display shaders:** the program's material shaders are compiled in too,
+  also for `-c` objects, so `vulkan.o` is the whole program with its shaders
+  and kernels (what `hvcc` links). `--no-shaders` leaves them out.
+- **Parse-only flags:** `-Xanalysis <flag>` passes a flag to the shader
+  tool's clang only (e.g. `--gcc-toolchain=/usr`, `-DSTBI_NO_SIMD`).
 - **Keeping generated files:** `VULKCC_KEEP=1` keeps the rewritten source,
   the GLSL and the registration code.
 
@@ -122,13 +127,29 @@ What translates:
 | `__shfl_sync/_up/_down/_xor` (and HIP's `__shfl*`) | subgroup shuffles; through shared memory when the subgroup is narrower than the width |
 | `__any_sync`, `__all_sync`, `__ballot_sync`, `__syncwarp`, `__ldg` | subgroup vote / ballot / barrier, a load |
 | `<cmath>`, `__expf`, `rsqrtf`, `__float_as_int`, `__popc`, … | GLSL built-ins |
-| `*(float*)&bits` type punning of locals | bit casts |
+| `*(float*)&bits` type punning of locals | bit casts; structs / arrays up to 64 bits are packed and unpacked |
+| `*(Hvec<T, 3>*)this` views of a local's leading fields (swizzles) | a copy built from those fields (read-only) |
+| accessors returning `T&` (`operator[]`, `x()`) on locals | evaluated in place |
+| methods returning `*this` (`operator=`, `operator+=`) | update `self`; the call's result is the object |
+| lambdas (captures by copy, by reference, `this`) | functions taking the captures first |
+| tail recursion (`return f(...)` on any object) | a loop |
+| `T(a, b)` aggregate init, `sizeof...`, `constexpr` globals | struct constructors, constants |
+| reading nested lvalue conditionals (`q < lo ? lo : (q > hi ? hi : q)`) | value ternaries |
+
+Device-only code paths: vulkcc defines `__VULKCC_DEVICE__` while it reads the
+program for kernels (the host build doesn't), like `__CUDA_ARCH__` /
+`__HIP_DEVICE_COMPILE__`. Code that picks a device path with
+`#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)` adds
+`|| defined(__VULKCC_DEVICE__)`.
 
 Not supported (the kernel is skipped with a message, and launching it
 throws):
-- unions, virtual functions and recursion;
-- function pointers and pointers to locals or `__shared__` memory;
-- dynamic shared memory, and globals other than `__shared__`.
+- unions, virtual functions, and recursion other than tail calls;
+- function pointers and pointers to locals or `__shared__` memory (a
+  mutable view of a local through a cast pointer included: write the
+  elements instead of `local.xyz() = v`);
+- lambdas passed to other functions (call them where they are made);
+- dynamic shared memory, and mutable globals.
 
 Transcendental math on `double` is computed in `float`.
 

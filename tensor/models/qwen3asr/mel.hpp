@@ -79,20 +79,30 @@ struct LogMel {
 
     // samples: 16 kHz mono → [frames, n_mels] on the tables' device
     Tensor<float, 2> compute(const std::vector<float>& samples) const {
-        long N = (long)samples.size();
+        return compute(tensor_from_host(Shape<1>{(long)samples.size()}, samples.data(), working_location(window)));
+    }
+
+    Tensor<float, 2> compute(const Tensor<float, 1>& samples) const {
+        long N = samples.shape[0];
         long pad = n_fft / 2;
-        long F = frames(samples.size());
+        long F = frames((size_t)N);
         if (F <= 0) throw std::runtime_error("LogMel: audio shorter than one hop");
         if (N <= pad) throw std::runtime_error("LogMel: audio too short for reflect padding");
 
-        // numpy-style reflect padding (edge sample not repeated)
-        std::vector<float> padded(N + 2 * pad);
-        for (long i = 0; i < pad; i++) padded[i] = samples[pad - i];
-        for (long i = 0; i < N; i++) padded[pad + i] = samples[i];
-        for (long i = 0; i < pad; i++) padded[pad + N + i] = samples[N - 2 - i];
-
         MemoryLocation loc = working_location(window);
-        auto signal = tensor_from_host(Shape<1>{(long)padded.size()}, padded.data(), loc);
+        Tensor<float, 1> x = samples.to(loc);
+
+        // numpy-style reflect padding (edge sample not repeated): the signal
+        // in the middle, mirrored samples gathered at both ends
+        Tensor<float, 1> signal(Shape<1>{N + 2 * pad}, loc);
+        signal[{{pad, pad + N}}] = x;
+        std::vector<long> left(pad), right(pad);
+        for (long i = 0; i < pad; i++) { left[i] = pad - i; right[i] = N - 2 - i; }
+        Tensor<float, 2> column = x.contiguous().view(Shape<2>{N, 1});
+        Tensor<float, 2> head = signal[{{0, pad}}].view(Shape<2>{pad, 1});
+        Tensor<float, 2> tail = signal[{{pad + N, pad + N + pad}}].view(Shape<2>{pad, 1});
+        head = column.tensor_index(tensor_from_host(Shape<1>{pad}, left.data(), loc));
+        tail = column.tensor_index(tensor_from_host(Shape<1>{pad}, right.data(), loc));
 
         // Frame f is signal[f·hop, f·hop + n_fft).  With the signal viewed as
         // rows of `hop` samples, columns [j·hop, (j+1)·hop) of the frames are

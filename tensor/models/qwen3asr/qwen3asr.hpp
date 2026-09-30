@@ -42,6 +42,7 @@
 #include "module/embedding/embedding.hpp"
 #include "module/conv/conv2d.hpp"
 #include "models/qwen3asr/mel.hpp"
+#include "audio/audio.hpp"
 #include "tokenizers/qwen2.hpp"
 
 namespace qwen3asr {
@@ -473,6 +474,17 @@ struct Qwen3ASR : public Module<Thinker> {
 
     // Greedy decoding from 16 kHz mono samples.
     Transcription transcribe(const std::vector<float>& samples, const TranscribeOptions& opt = {}) {
+        return transcribe(tensor_from_host(Shape<1>{(long)samples.size()}, samples.data(), working_location(mel.window)), opt);
+    }
+
+    // Any audio tensor: resampled to 16 kHz (an unspecified rate is taken as
+    // 16 kHz), mixed to mono, as floats.
+    template <typename F, int Rate>
+    Transcription transcribe(const Tensor<AudioSample<F, Rate>, 2>& audio, const TranscribeOptions& opt = {}) {
+        return transcribe(audio.template resample<16000>().mono().channel(0), opt);
+    }
+
+    Transcription transcribe(const Tensor<float, 1>& samples, const TranscribeOptions& opt = {}) {
         // Profiling: wait for the device at stage boundaries and report the
         // wall time and number of operations of each stage.
         auto clock = std::chrono::steady_clock::now();

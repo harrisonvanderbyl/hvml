@@ -7,6 +7,7 @@
 // onto the CPU AllocationMap.
 
 #include "plugin.hpp"
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -66,6 +67,87 @@ static AllocationMap* create_disk_mapper(int device_id) {
     mapper->compute_device_allocators[ComputeType::kFILE] = [mapper](AllocationMetadata meta, void* existing_data) {
         std::string filename = mapper->device_name.empty() ? "tensor_swap_file.bin" : mapper->device_name;
         bool file_exists = std::ifstream(filename).good();
+
+        // Read-only (kR without kW): open an existing file as it is — never
+        // created, resized or written.  Its CPU view is mapped read-only.
+        bool read_only = ((int)meta.rwstatus & AllocationFlags::kW) == 0 && ((int)meta.rwstatus & AllocationFlags::kR) != 0;
+        const FileFormat* format = meta.file_format;
+
+        // An existing file's header, parsed into m (the file mapped read-only
+        // just for this).
+        auto read_header = [&](AllocationMetadata& m) {
+            int fd = ::open(filename.c_str(), O_RDONLY);
+            if (fd < 0) throw std::runtime_error("cannot open " + filename);
+            struct stat st;
+            fstat(fd, &st);
+            size_t size = (size_t)st.st_size;
+            void* map = size ? mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0) : nullptr;
+            ::close(fd);
+            if (map == MAP_FAILED) throw std::runtime_error("cannot map " + filename);
+            try {
+                format->read((const char*)map, size, m);
+            } catch (...) {
+                if (map) munmap(map, size);
+                throw;
+            }
+            if (map) munmap(map, size);
+        };
+
+        if (read_only) {
+            FILE* file = file_exists ? fopen(filename.c_str(), "rb") : nullptr;
+            if (!file) throw std::runtime_error("cannot open " + filename + " for reading");
+            if (format) {
+                try { read_header(meta); } catch (...) { fclose(file); throw; }
+                return new BaseMemoryAllocation(meta, file);
+            }
+            fseek(file, 0, SEEK_END);
+            long size = ftell(file);
+            fseek(file, 0, SEEK_SET);
+            meta.byte_size = size;
+            meta.shape = Shape<-1>{(long)(size / meta.type_size)};
+            return new BaseMemoryAllocation(meta, file);
+        }
+
+        if (format) {
+            // An existing file of this format is opened as it is when asked
+            // to open it (no shape: byte_size 0) or when it already has the
+            // requested shape; otherwise it is replaced by a new one.
+            if (file_exists && !existing_data) {
+                AllocationMetadata found = meta;
+                bool parsed = true;
+                std::string why;
+                try { read_header(found); } catch (const std::exception& e) { parsed = false; why = e.what(); }
+                if (meta.byte_size == 0 && !parsed) throw std::runtime_error(filename + ": " + why);
+                if (parsed && (meta.byte_size == 0 || found.shape == meta.shape)) {
+                    FILE* file = fopen(filename.c_str(), "r+b");
+                    if (!file) throw std::runtime_error("cannot open " + filename + " for writing");
+                    return new BaseMemoryAllocation(found, file);
+                }
+            }
+            if (meta.byte_size == 0 && !existing_data) throw std::runtime_error("cannot open " + filename + ": no such file");
+            // a new file: header, then the data (given, or the format's fill)
+            FILE* file = fopen(filename.c_str(), "w+b");
+            if (!file) throw std::runtime_error("cannot create " + filename + ": " + strerror(errno));
+            std::vector<char> head = format->write(meta);
+            fwrite(head.data(), 1, head.size(), file);
+            if (existing_data) {
+                fwrite(existing_data, 1, meta.byte_size, file);
+            } else if (format->fill_byte() != 0) {
+                std::vector<char> chunk(1 << 16, (char)format->fill_byte());
+                for (size_t left = meta.byte_size; left > 0;) {
+                    size_t n = std::min(left, chunk.size());
+                    fwrite(chunk.data(), 1, n, file);
+                    left -= n;
+                }
+            } else if (meta.byte_size > 0) {
+                fseek(file, (long)(meta.data_offset + meta.byte_size - 1), SEEK_SET);
+                fputc(0, file);
+            }
+            fflush(file);
+            fseek(file, 0, SEEK_SET);
+            return new BaseMemoryAllocation(meta, file);
+        }
+
         FILE* file = fopen(filename.c_str(), file_exists ? "r+b" : "w+b");
         if (!file) {
             std::cerr << "Failed to create swap file on disk: " << strerror(errno) << std::endl;
@@ -105,16 +187,22 @@ static AllocationMap* create_disk_mapper(int device_id) {
         struct stat st;
         fstat(fd, &st);
         size_t size = st.st_size;
-        void* map = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        bool writable = ((int)base->metadata.rwstatus & AllocationFlags::kW) != 0;
+        void* map = mmap(nullptr, size, writable ? (PROT_READ | PROT_WRITE) : PROT_READ, MAP_SHARED, fd, 0);
         if (map == MAP_FAILED) {
             perror("mmap");
             return (void*)nullptr;
         }
-        return map;
+        // the view starts at the data (after a file format's header)
+        return (void*)((char*)map + base->metadata.data_offset);
     };
 
     mapper->compute_mapping_deallocators[ComputeType::kCPU] = [](void* ptr, BaseMemoryAllocation* original) {
-        munmap(ptr, original->metadata.byte_size);
+        // the whole file was mapped; the view is data_offset into it
+        struct stat st;
+        size_t size = original->metadata.data_offset + original->metadata.byte_size;
+        if (original->data && fstat(fileno((FILE*)original->data), &st) == 0) size = (size_t)st.st_size;
+        munmap((char*)ptr - original->metadata.data_offset, size);
     };
 
     // Register converter on the CPU device (created earlier, priority 10)

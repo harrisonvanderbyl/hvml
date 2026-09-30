@@ -21,6 +21,38 @@ using json = nlohmann::json;
     };
     NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(metadata_t, dtype, shape, data_offsets)
 
+    // A safetensors file on the disk map: 8-byte header length, the JSON
+    // header, then the tensor data.  The allocation's CPU view starts at the
+    // data; the parsed header is in its metadata.
+    struct SafetensorsHeader : public FileHeader {
+        uint64_t header_size = 0;
+        json header;
+    };
+
+    struct SafetensorsFormat : public FileFormat {
+        const char* name() const override { return "safetensors"; }
+        void read(const char* file, size_t size, AllocationMetadata& meta) const override {
+            if (size < 8) throw std::runtime_error("not a safetensors file (too short)");
+            uint64_t n;
+            memcpy(&n, file, 8);
+            if (8 + n > size) throw std::runtime_error("not a safetensors file (header length " + std::to_string(n) + ")");
+            auto h = std::make_shared<SafetensorsHeader>();
+            h->header_size = n;
+            h->header = json::parse(file + 8, file + 8 + n);
+            meta.data_offset = 8 + n;
+            meta.byte_size = size - meta.data_offset;
+            meta.shape = Shape<-1>{(long)(meta.byte_size / meta.type_size)};
+            meta.header = h;
+        }
+        std::vector<char> write(AllocationMetadata&) const override {
+            throw std::runtime_error("safetensors files are written with safetensors::save");
+        }
+        static const SafetensorsFormat* instance() {
+            static SafetensorsFormat format;
+            return &format;
+        }
+    };
+
     /**
      *
      */
@@ -165,32 +197,13 @@ using json = nlohmann::json;
         safetensors(){};
 
         void init() {
-
-                // todo: handle exception
-                uint64_t header_size = this->view<uint64_t, 1>({-1})[0];
-
-                // std::vector<char> meta_block(header_size);
-                // in.read(meta_block.data(), static_cast<std::streamsize>(header_size));
-                std::cout << "Header size: " << header_size << std::endl;
-                std::vector<char> meta_block((*this)[Slice{8, header_size+8}].data.data, (*this)[Slice{8, header_size+8}].data.data + header_size);
-                const auto metadatas = json::parse(meta_block);
-
-                // How many bytes remaining to pre-allocate the storage tensor
-                // in.seekg(0, std::ios::end);
-                // std::streamsize f_size = in.tellg();
-                // in.seekg(8 + header_size, std::ios::beg);
-                // const auto tensors_size = f_size - 8 - header_size;
-
+                // the disk map parsed the header (SafetensorsFormat); the data view starts after it
+                const SafetensorsHeader* h = this->storage_pointer->metadata.template header_as<SafetensorsHeader>();
+                if (!h) throw std::runtime_error("safetensors: not opened as a safetensors file");
+                std::cout << "Header size: " << h->header_size << std::endl;
+                const json& metadatas = h->header;
                 metas = std::unordered_map<std::string, const metadata_t>(metadatas.size());
-                // allocate in a way that prevents it from being freed
-                // storage = new char[tensors_size];
-                // posix_memalign((void**)&storage, 128, tensors_size);
-                
-               
-
-                // Read the remaining content
-                // in.read((char*)storage, static_cast<std::streamsize>(tensors_size));
-                storage = this->data + 8 + header_size; // point to the start of the tensor data in the file
+                storage = this->data.data;   // the start of the tensor data
 
                 // Populate the meta lookup table
                 if (metadatas.is_object()) {
@@ -207,13 +220,23 @@ using json = nlohmann::json;
 
             }
 
+            // The file on the disk map, opened as a safetensors file.
+            static Tensor<char, 1> open_file(const std::string& filename) {
+                if (!std::ifstream(filename).good()) throw std::runtime_error("safetensors: cannot open " + filename);
+                MemoryLocation disk(filename);
+                AllocationMetadata meta = AllocationMetadata::create<char>(Shape<1>{0}, MemoryType::kDISK, ComputeType::kFILE, 0,
+                                                                         AllocationFlags::kRW, disk.device_id);
+                meta.file_format = SafetensorsFormat::instance();
+                return Tensor<char, 1>(meta);
+            }
 
-            safetensors(const char* filename): Tensor<char, 1>({1}, filename) {
+
+            safetensors(const char* filename): Tensor<char, 1>(open_file(filename)) {
                 std::cout << "Loading safetensors file: " << filename << "\n" << "\n";
                 init();
             }
 
-            safetensors(const std::string& filename): Tensor<char, 1>({1}, filename) {
+            safetensors(const std::string& filename): Tensor<char, 1>(open_file(filename)) {
                 std::cout << "Loading safetensors file: " << filename << "\n" << "\n";
                 init();
             }

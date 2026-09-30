@@ -11,8 +11,17 @@
 #include <string.h>
 
 
+// Member functions for tensors of particular element types.  Empty by
+// default (no size or behaviour change); a header specialises it to give
+// every Tensor<R, rank> of its element type extra functions, e.g.
+// audio/audio.hpp gives Tensor<AudioSample<F, Rate>, 2> mono(),
+// resample<To>() ...  `Derived` is the Tensor, reached with
+// static_cast<const Derived&>(*this).
+template <typename Derived, typename R, int rank>
+struct TensorExtensions {};
+
 template <typename R = float, int rank = -1>
-class Tensor
+class Tensor : public TensorExtensions<Tensor<R, rank>, R, rank>
 {
 public:
     using value_type = R;
@@ -177,7 +186,7 @@ public:
             this->strides = other.strides;
             copy_indexer(other);
         }else{
-            tensor_copy(*this, other);
+            assign_from(other);
         }
         return *this;
     };
@@ -185,8 +194,22 @@ public:
     template <typename M, int V>
     Tensor<R, rank>& operator=(const Tensor<M,V>& other)
     {
-        tensor_copy(*this, other);
+        assign_from(other);
         return *this;
+    }
+
+    // Element-wise copy (converting the element type).  A source on another
+    // kind of device is brought here first (a disk tensor's through host
+    // memory), so assignment works across devices.
+    template <typename M, int V>
+    void assign_from(const Tensor<M, V>& other) {
+        ComputeType mine = this->data.metadata.compute_device, theirs = other.data.metadata.compute_device;
+        if (mine != theirs && mine != ComputeType::kUnknown && theirs != ComputeType::kUnknown) {
+            Tensor<M, V> here = other.to(this->scratch_location());
+            tensor_copy(*this, here);
+        } else {
+            tensor_copy(*this, other);
+        }
     }
 
     template <typename X = SliceList<-1>, int newrank = X::reducedims<0?-1:std::max(rank-X::reducedims,-1)>
@@ -378,9 +401,17 @@ public:
         return MemoryLocation(*device, this->data.metadata.compute_device);
     }
 
+    // Where temporaries made from this tensor go: its own location, except
+    // for disk tensors — the disk map's allocator writes to its file (a
+    // checkpoint, a WAV...), so their temporaries live in host memory.
+    MemoryLocation scratch_location() const {
+        if (device->this_device_type == MemoryType::kDISK) return MemoryLocation(MemoryType::kDDR);
+        return location();
+    }
+
     inline Tensor contiguous() const
     {
-        Tensor a = Tensor{shape, location()};
+        Tensor a = Tensor{shape, scratch_location()};
         a = *this;
         return a;
     }

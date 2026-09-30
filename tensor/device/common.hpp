@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <memory>
 #include <dlfcn.h>
 #include <dirent.h>
 #include <sys/mman.h>
@@ -40,6 +41,41 @@ struct ComputePointer {
 //  Allocation metadata
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+//  File formats
+//
+//  A disk allocation can be a file with a header in front of its data (a WAV
+//  file, a safetensors file...).  Its AllocationMetadata then carries the
+//  format, the parsed header, and where the data starts; the disk map's CPU
+//  view starts at the data, so the tensor never sees the header.
+//
+//      auto* wav = t.storage_pointer->metadata.header_as<WavHeader>();
+//
+//  An element type chooses the format of the files it is stored in by
+//  declaring `static const FileFormat* file_format()` (AudioSample: WAV).
+// ---------------------------------------------------------------------------
+
+struct AllocationMetadata;
+
+// A parsed file header (a format's own type; read with header_as<T>()).
+struct FileHeader {
+    virtual ~FileHeader() = default;
+};
+
+struct FileFormat {
+    virtual ~FileFormat() = default;
+    virtual const char* name() const = 0;
+    // An existing file (`size` bytes at `file`): parse its header into meta —
+    // data_offset, header, shape and byte_size of the data.  Throws when the
+    // file is not this format or does not hold meta's element type.
+    virtual void read(const char* file, size_t size, AllocationMetadata& meta) const = 0;
+    // A new file for meta (shape, element type): the header bytes.  Sets
+    // meta.data_offset and meta.header.
+    virtual std::vector<char> write(AllocationMetadata& meta) const = 0;
+    // byte the data of a new file starts as (0; 128 for 8-bit PCM silence)
+    virtual int fill_byte() const { return 0; }
+};
+
 struct AllocationMetadata {
     MemoryType storage_device;
     AllocationFlags rwstatus;
@@ -49,6 +85,14 @@ struct AllocationMetadata {
     int format = 0;
     Shape<-1> shape = {};
     int device_id = 0;
+
+    // files with a header (disk allocations): see FileFormat
+    size_t data_offset = 0;                         // where the data starts in the file
+    const FileFormat* file_format = nullptr;        // the file's format (null: raw data)
+    std::shared_ptr<const FileHeader> header;       // its parsed header
+
+    template <typename H>
+    const H* header_as() const { return dynamic_cast<const H*>(header.get()); }
 
     template <typename T>
     static AllocationMetadata create(
@@ -68,6 +112,7 @@ struct AllocationMetadata {
         tocreate.byte_size = shapein.total_size() * tocreate.type_size;
         tocreate.format = informat;
         tocreate.device_id = deviceid;
+        if constexpr (requires { T::file_format(); }) tocreate.file_format = T::file_format();
         return tocreate;
     }
 
