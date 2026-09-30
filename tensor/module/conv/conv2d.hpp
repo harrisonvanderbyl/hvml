@@ -28,7 +28,7 @@ struct Conv2d : public Module<Tensor<W, 4>, Tensor<W, 1>>
 
     // optionally followed by GELU (fused with the bias add)
     Tensor<float, 4> forward(const Tensor<float, 4>& x, bool with_gelu = false) const {
-        MemoryLocation loc = working_location(weight.device);
+        MemoryLocation loc = working_location(weight);
         long B = x.shape[0], Ci = x.shape[1], H = x.shape[2], Wd = x.shape[3], Co = weight.shape[0];
         long Ho = out_size(H, 2), Wo = out_size(Wd, 3);
         int KH = weight.shape[2], KW = weight.shape[3];

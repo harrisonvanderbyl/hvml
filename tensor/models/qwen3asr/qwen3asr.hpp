@@ -153,7 +153,7 @@ struct AudioAttention : public Module<Linear<WeightType, true>, Linear<WeightTyp
     Tensor<float, 2> forward(const Tensor<float, 2>& x, long window) const {
         long N = x.shape[0], D = x.shape[1], hd = D / heads;
         auto q = q_proj(x), k = k_proj(x), v = v_proj(x);
-        Tensor<float, 2> out(Shape<2>{N, D}, MemoryLocation(*x.device));
+        Tensor<float, 2> out(Shape<2>{N, D}, x.location());
         long step = window > 0 ? window : N;
         for (long w0 = 0; w0 < N; w0 += step) {
             long w1 = std::min(N, w0 + step), n = w1 - w0;
@@ -219,7 +219,7 @@ struct AudioEncoder : public Module<Conv2d<WeightType>, Conv2d<WeightType>, Conv
 
     // mel: [frames, n_mels] on the model's device → [tokens, output_dim]
     Tensor<float, 2> forward(const Tensor<float, 2>& mel) const {
-        MemoryLocation loc = working_location(conv_out.weight.device);
+        MemoryLocation loc = working_location(conv_out.weight);
         long F = mel.shape[0], nmel = mel.shape[1];
         long chunk = cfg.chunk_frames();
         long nC = (F + chunk - 1) / chunk;
@@ -336,7 +336,7 @@ struct TextModel : public Module<Embedding<WeightType>, ModuleList<TextDecoderLa
         : Module({embed_tokens, "embed_tokens"}, {layers, "layers"}, {norm, "norm"}),
           layers(c.layers, [&](size_t) { return new TextDecoderLayer(c); }), norm(c.rms_eps), cfg(c) {}
 
-    MemoryLocation location() const { return working_location(embed_tokens.weight.device); }
+    MemoryLocation location() const { return working_location(embed_tokens.weight); }
 
     // Token ids → float embeddings [T, hidden]
     Tensor<float, 2> embed(const std::vector<int>& ids) const {

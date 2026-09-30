@@ -91,7 +91,7 @@ struct LogMel {
         for (long i = 0; i < N; i++) padded[pad + i] = samples[i];
         for (long i = 0; i < pad; i++) padded[pad + N + i] = samples[N - 2 - i];
 
-        MemoryLocation loc = working_location(window.device);
+        MemoryLocation loc = working_location(window);
         auto signal = tensor_from_host(Shape<1>{(long)padded.size()}, padded.data(), loc);
 
         // Frame f is signal[f·hop, f·hop + n_fft).  With the signal viewed as

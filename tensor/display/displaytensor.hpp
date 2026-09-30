@@ -125,7 +125,7 @@ public:
         flags = flags | AllocationFlags::kRW;
         int format = has_flag(flags, AllocationFlags::kDEPTH) ? (int)VK_FORMAT_D32_SFLOAT
                                                               : (int)VkFormatOf<T>::value;
-        return AllocationMetadata::create<T>(shape, ctx.getRenderingMemoryType(), ct, format, flags, 0);
+        return AllocationMetadata::create<T>(shape, ctx.getRenderingMemoryType(), ct, format, flags, ctx.getRenderingMemoryId());
     }
 
     // A display tensor over an image made elsewhere (e.g. a swapchain image).
@@ -136,13 +136,13 @@ public:
         VulkanResource* r = wrap ? wrap(image, (int)format, w, h, (int)restingLayout, usage) : nullptr;
         if (!r) throw std::runtime_error("[display] could not wrap image as a tensor (vulkan plugin missing?)");
 
-        MemoryType mem = VulkanContext::get().getRenderingMemoryType();
+        MemoryLocation loc = VulkanContext::get().getRenderingMemoryLocation();
         Shape<2> shape{(long)w, (long)h};
         AllocationMetadata meta = AllocationMetadata::create<T>(
-            shape, mem, ComputeType::kVULKANTEXTURE, (int)format,
-            AllocationFlags::kRW | (AllocationFlags)r->flags, 0);
+            shape, loc.memory_type, ComputeType::kVULKANTEXTURE, (int)format,
+            AllocationFlags::kRW | (AllocationFlags)r->flags, loc.device_id);
         auto* alloc = new BaseMemoryAllocation(meta, (void*)r);
-        DisplayTensor t(Base(shape, MassagedMemory<T>(meta, (T*)(void*)r, alloc), MemoryLocation(mem, 0), alloc));
+        DisplayTensor t(Base(shape, MassagedMemory<T>(meta, (T*)(void*)r, alloc), loc, alloc));
         alloc->dealloc();   // drop the reference `new` started with; `t` holds its own
         return t;
     }

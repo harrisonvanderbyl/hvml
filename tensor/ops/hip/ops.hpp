@@ -45,7 +45,7 @@ void hip_thrust_sort(float* keys, int* indices, size_t count) {
 }
 
 template <typename A, typename B> 
-__host__ __device__ void atomicAddCuda(A* a, const B& b){
+__host__ __device__ void atomicAddHip(A* a, const B& b){
     atomicAdd(a,b);
 }
 

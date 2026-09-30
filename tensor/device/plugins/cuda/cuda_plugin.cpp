@@ -13,6 +13,9 @@
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <unistd.h>  // dup()
+#include <map>
+#include <mutex>
+#include "vulkan_interop.hpp"
 
 // Note: GL constants are needed for the OpenGL-interop converter.  We define
 // them here so the plugin does not require GL headers at compile time; the
@@ -31,6 +34,128 @@
     } while (0)
 
 // ---------------------------------------------------------------------------
+//  Vulkan → CUDA external memory interop
+//
+//  A Vulkan allocation in CUDA memory exports its VkDeviceMemory as an opaque
+//  fd (vulkan plugin).  CUDA imports it and maps:
+//    buffers → a device pointer  (cudaExternalMemoryGetMappedBuffer)
+//    images  → a cudaArray_t     (cudaExternalMemoryGetMappedMipmappedArray)
+//  over the same memory — no copy.  Each import is recorded so the mapping
+//  deallocator can unmap it and destroy the external memory when the
+//  allocation is freed.
+// ---------------------------------------------------------------------------
+
+struct VulkanImport {
+    cudaExternalMemory_t memory = nullptr;
+    cudaMipmappedArray_t mipmap = nullptr;   // images only
+};
+
+static std::mutex g_vulkan_imports_mutex;
+static std::map<void*, VulkanImport> g_vulkan_imports;   // mapped pointer / array → import
+
+static cudaExternalMemory_t import_vulkan_memory(const VulkanResource* r, int device_id) {
+    if (!r || r->fd < 0) {
+        std::cerr << "[cuda] Vulkan memory not exported (no fd) — no CUDA view" << std::endl;
+        return nullptr;
+    }
+    CUDA_CHECK(cudaSetDevice(device_id));
+    int fd = dup(r->fd);   // CUDA owns the fd once the import succeeds
+    if (fd < 0) {
+        std::cerr << "[cuda] dup(fd) failed for Vulkan→CUDA interop" << std::endl;
+        return nullptr;
+    }
+    cudaExternalMemoryHandleDesc desc{};
+    desc.type = cudaExternalMemoryHandleTypeOpaqueFd;
+    desc.handle.fd = fd;
+    desc.size = r->alloc_size;
+    desc.flags = r->dedicated ? cudaExternalMemoryDedicated : 0;
+    cudaExternalMemory_t memory = nullptr;
+    cudaError_t err = cudaImportExternalMemory(&memory, &desc);
+    if (err != cudaSuccess) {
+        close(fd);
+        std::cerr << "[cuda] cudaImportExternalMemory failed: " << cudaGetErrorString(err) << std::endl;
+        return nullptr;
+    }
+    return memory;
+}
+
+static void* import_vulkan_buffer(const VulkanResource* r, size_t bytes, int device_id) {
+    cudaExternalMemory_t memory = import_vulkan_memory(r, device_id);
+    if (!memory) return nullptr;
+    cudaExternalMemoryBufferDesc desc{};
+    desc.offset = 0;
+    desc.size = bytes;
+    void* ptr = nullptr;
+    cudaError_t err = cudaExternalMemoryGetMappedBuffer(&ptr, memory, &desc);
+    if (err != cudaSuccess) {
+        std::cerr << "[cuda] cudaExternalMemoryGetMappedBuffer failed: " << cudaGetErrorString(err) << std::endl;
+        cudaDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+    g_vulkan_imports[ptr] = VulkanImport{memory, nullptr};
+    return ptr;
+}
+
+static void* import_vulkan_image(const VulkanResource* r, int device_id) {
+    if (!r || !r->image) return nullptr;
+    VulkanFormatChannels ch = vulkan_format_channels(r->format);
+    if (!ch.ok) {
+        std::cerr << "[cuda] Vulkan image format " << r->format << " has no CUDA array equivalent" << std::endl;
+        return nullptr;
+    }
+    cudaExternalMemory_t memory = import_vulkan_memory(r, device_id);
+    if (!memory) return nullptr;
+
+    cudaChannelFormatKind kind = ch.kind == VulkanFormatChannels::kFloat  ? cudaChannelFormatKindFloat
+                               : ch.kind == VulkanFormatChannels::kSigned ? cudaChannelFormatKindSigned
+                                                                          : cudaChannelFormatKindUnsigned;
+    cudaExternalMemoryMipmappedArrayDesc desc{};
+    desc.offset = 0;
+    desc.formatDesc = cudaCreateChannelDesc(ch.x, ch.y, ch.z, ch.w, kind);
+    desc.extent = make_cudaExtent(r->width, r->height, 0);
+    desc.flags = 0;
+    if (r->image_usage & kVkImageUsageStorage) desc.flags |= cudaArraySurfaceLoadStore;
+    if (r->image_usage & kVkImageUsageColorAttachment) desc.flags |= cudaArrayColorAttachment;
+    desc.numLevels = 1;
+
+    cudaMipmappedArray_t mipmap = nullptr;
+    cudaError_t err = cudaExternalMemoryGetMappedMipmappedArray(&mipmap, memory, &desc);
+    if (err != cudaSuccess) {
+        std::cerr << "[cuda] cudaExternalMemoryGetMappedMipmappedArray failed: " << cudaGetErrorString(err) << std::endl;
+        cudaDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    cudaArray_t level0 = nullptr;
+    err = cudaGetMipmappedArrayLevel(&level0, mipmap, 0);
+    if (err != cudaSuccess) {
+        std::cerr << "[cuda] cudaGetMipmappedArrayLevel failed: " << cudaGetErrorString(err) << std::endl;
+        cudaFreeMipmappedArray(mipmap);
+        cudaDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+    g_vulkan_imports[(void*)level0] = VulkanImport{memory, mipmap};
+    return (void*)level0;
+}
+
+// Unmap a pointer / array returned by the imports above (no-op for anything
+// else, e.g. a handle returned when the memory was not exported).
+static void release_vulkan_import(void* mapped) {
+    VulkanImport imp;
+    {
+        std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+        auto it = g_vulkan_imports.find(mapped);
+        if (it == g_vulkan_imports.end()) return;
+        imp = it->second;
+        g_vulkan_imports.erase(it);
+    }
+    if (imp.mipmap) CUDA_CHECK(cudaFreeMipmappedArray(imp.mipmap));
+    else CUDA_CHECK(cudaFree(mapped));
+    CUDA_CHECK(cudaDestroyExternalMemory(imp.memory));
+}
+
+// ---------------------------------------------------------------------------
 //  CUDA AllocationMap
 // ---------------------------------------------------------------------------
 
@@ -44,6 +169,9 @@ static AllocationMap* create_cuda_mapper(int device_id) {
     mapper->default_compute_type = ComputeType::kCUDA;
     mapper->default_allocator_type = ComputeType::kCUDA;
     mapper->supports_compute_device[ComputeType::kCUDA] = true;
+    mapper->pci_domain = prop.pciDomainID;
+    mapper->pci_bus = prop.pciBusID;
+    mapper->pci_device = prop.pciDeviceID;
 
     // Stream-ordered pool allocation when the device supports it: cudaFree
     // synchronises the whole device, and every temporary tensor ends in a
@@ -137,7 +265,10 @@ static AllocationMap* create_cuda_mapper(int device_id) {
             // nothing
         } else if (original->metadata.compute_device == ComputeType::kVULKAN ||
                    original->metadata.compute_device == ComputeType::kVULKANTEXTURE) {
-            // No-op — memory owned by the VulkanResource
+            // Unmap the import; the memory itself is owned by the VulkanResource.
+            std::cout << "[cuda] Releasing Vulkan→CUDA interop mapping for device " << device_id << std::endl;
+            CUDA_CHECK(cudaSetDevice(device_id));
+            release_vulkan_import(ptr);
         } else {
             throw std::runtime_error("No CUDA mapping deallocator found for original compute device");
         }
@@ -163,65 +294,27 @@ static AllocationMap* create_cuda_mapper(int device_id) {
     };
     std::cout << "[cuda] Registered CUDA_VRAM converter for DISK memory" << std::endl;
 
-    // -----------------------------------------------------------------
-    //  Vulkan → CUDA external memory interop
-    //
-    //  When a tensor is allocated with kVULKAN on this memory device,
-    //  the vulkan plugin stores a VulkanBufferHandle* in
-    //  BaseMemoryAllocation::data.  The Tensor constructor auto-calls
-    //  get_massaged_pointer(default_compute_type=kCUDA), which looks up
-    //  this {kVULKAN, kCUDA} converter.
-    //
-    //  We import the VkBuffer's exported fd into CUDA via
-    //  cudaImportExternalMemory + cudaExternalMemoryGetMappedBuffer,
-    //  returning a CUDA device pointer that CUDA kernels can read/write
-    //  directly.  The underlying memory is the same VkDeviceMemory —
-    //  no copy.
-    // -----------------------------------------------------------------
+    // Vulkan allocations in this GPU's memory, viewed as CUDA in place
+    // (import_vulkan_buffer / import_vulkan_image above).
     mapper->supports_compute_device[ComputeType::kVULKAN] = true;
 
+    mapper->supports_compute_device[ComputeType::kVULKANTEXTURE] = true;
+
+    // buffer (kVULKAN, or a kLINEAR texture's buffer) → device pointer
     mapper->compute_type_converters[{ComputeType::kVULKAN, ComputeType::kCUDA}] =
         [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) -> void* {
-            VulkanBufferHandle* handle = (VulkanBufferHandle*)ptr;
-            if (!handle || handle->fd < 0) {
-                std::cerr << "[cuda] No fd for Vulkan→CUDA interop" << std::endl;
-                return nullptr;
-            }
+            return import_vulkan_buffer((VulkanResource*)ptr, metadata.byte_size, device_id);
+        };
 
-            CUDA_CHECK(cudaSetDevice(device_id));
-
-            int dup_fd = dup(handle->fd);
-            if (dup_fd < 0) {
-                std::cerr << "[cuda] dup(fd) failed for Vulkan→CUDA interop" << std::endl;
-                return nullptr;
-            }
-
-            cudaExternalMemoryHandleDesc extMemDesc{};
-            extMemDesc.type = cudaExternalMemoryHandleTypeOpaqueFd;
-            extMemDesc.handle.fd = dup_fd;
-            extMemDesc.size = handle->alloc_size;
-            extMemDesc.flags = 0;
-
-            cudaExternalMemory_t extMem;
-            cudaError_t err = cudaImportExternalMemory(&extMem, &extMemDesc);
-            if (err != cudaSuccess) {
-                std::cerr << "[cuda] cudaImportExternalMemory failed: " << cudaGetErrorString(err) << std::endl;
-                return nullptr;
-            }
-
-            cudaExternalMemoryBufferDesc bufDesc{};
-            bufDesc.offset = 0;
-            bufDesc.size = metadata.byte_size;
-            bufDesc.flags = 0;
-
-            void* devPtr = nullptr;
-            err = cudaExternalMemoryGetMappedBuffer(&devPtr, extMem, &bufDesc);
-            if (err != cudaSuccess) {
-                std::cerr << "[cuda] cudaExternalMemoryGetMappedBuffer failed: " << cudaGetErrorString(err) << std::endl;
-                return nullptr;
-            }
-
-            return devPtr;
+    // optimal-tiled image (kVULKANTEXTURE) → cudaArray_t (level 0), for
+    // surface / texture objects — the counterpart of the OpenGL texture
+    // interop above.  The vulkan plugin sends buffer-backed textures to the
+    // buffer import instead.
+    mapper->compute_type_converters[{ComputeType::kVULKANTEXTURE, ComputeType::kCUDA}] =
+        [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) -> void* {
+            VulkanResource* r = (VulkanResource*)ptr;
+            if (r && r->buffer) return import_vulkan_buffer(r, metadata.byte_size, device_id);
+            return import_vulkan_image(r, device_id);
         };
 
     mapper->this_device_type = MemoryType::kCUDA_VRAM;
@@ -236,6 +329,7 @@ static ComputeDeviceBase* create_cuda_compute_device(int device_id) {
     ComputeDeviceBase* device = new ComputeDeviceBase();
     device->supports_memory_location[MemoryType::kCUDA_VRAM] = true;
     device->default_memory_type = MemoryType::kCUDA_VRAM;
+    device->default_memory_device_id = device_id;
 
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, device_id));

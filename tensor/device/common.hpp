@@ -196,6 +196,12 @@ struct AllocationMap {
 
     int device_id = 0;
 
+    // PCI address of the GPU this memory belongs to (-1 when unknown), so
+    // other backends (Vulkan) can attach to the same GPU's memory map.
+    int pci_domain = -1;
+    int pci_bus = -1;
+    int pci_device = -1;
+
     BaseMemoryAllocation* allocate(AllocationMetadata meta, void* existing_data = nullptr) {
         ComputeType compute_type = meta.compute_device;
         auto allocation_compute_type = compute_type == ComputeType::kUnknown ? default_compute_type : compute_type;
@@ -304,7 +310,12 @@ struct ComputeDeviceBase {
         {MemoryType::kUnknown_MEM, false}
     };
 
+    // Where this device's tensors live: memory map (type, id).  A Vulkan
+    // device on an NVIDIA GPU, for example, uses (kCUDA_VRAM, that GPU's
+    // CUDA index); one with no memory map of its own uses (kUnknown_MEM, i).
     MemoryType default_memory_type = MemoryType::kUnknown_MEM;
+    int default_memory_device_id = 0;
+    ComputeType compute_type = ComputeType::kUnknown;   // set by register_compute_device
     int compute_units = 0;
     size_t shared_memory_size = 0;
 
@@ -530,6 +541,7 @@ struct DeviceManager {
             compute_devices[type].resize(device_id + 1, nullptr);
         }
         compute_devices[type][device_id] = device;
+        if (device) device->compute_type = type;
     }
 
     // ---- lookup API --------------------------------------------------------
@@ -579,27 +591,51 @@ inline DeviceManager global_device_manager;
 //  MemoryLocation — convenience wrapper around global_device_manager
 // ---------------------------------------------------------------------------
 
+//
+//  A location is a memory map, plus optionally the compute type whose
+//  allocator and view tensors created there use.  kUnknown means the map's
+//  defaults (default_allocator_type / default_compute_type).
+//
+//      MemoryLocation(MemoryType::kCUDA_VRAM)                       CUDA memory, CUDA kernels
+//      MemoryLocation(MemoryType::kCUDA_VRAM, 0, ComputeType::kVULKAN)   Vulkan buffers in CUDA memory
+//      MemoryLocation(global_device_manager.get_compute_device(kVULKAN, i))
+//                                                  Vulkan device i, wherever its memory is
+//
 struct MemoryLocation {
     int device_id;
     MemoryType memory_type;
     AllocationMap* allocation_map;
+    ComputeType compute_type = ComputeType::kUnknown;
 
-    MemoryLocation(MemoryType memory_type = MemoryType::kDDR, int device_id = 0)
-        : memory_type(memory_type), device_id(device_id) {
+    MemoryLocation(MemoryType memory_type = MemoryType::kDDR, int device_id = 0,
+                   ComputeType compute_type = ComputeType::kUnknown)
+        : device_id(device_id), memory_type(memory_type), compute_type(compute_type) {
         allocation_map = &global_device_manager.get_device(memory_type, device_id);
     }
 
-    MemoryLocation(AllocationMap& allocation_map) : allocation_map(&allocation_map) {
+    MemoryLocation(AllocationMap& allocation_map, ComputeType compute_type = ComputeType::kUnknown)
+        : allocation_map(&allocation_map), compute_type(compute_type) {
         memory_type = allocation_map.this_device_type;
         device_id = allocation_map.device_id;
     }
 
-    MemoryLocation(const char* disk_path) : memory_type(MemoryType::kDISK), device_id(0) {
+    // The memory a compute device's tensors live in, used through that device.
+    explicit MemoryLocation(const ComputeDeviceBase& device)
+        : MemoryLocation(device.default_memory_type, device.default_memory_device_id, device.compute_type) {}
+
+    // Same memory, used through another compute type.
+    MemoryLocation with_compute(ComputeType ct) const {
+        MemoryLocation l = *this;
+        l.compute_type = ct;
+        return l;
+    }
+
+    MemoryLocation(const char* disk_path) : device_id(0), memory_type(MemoryType::kDISK) {
         allocation_map = &global_device_manager.get_device(MemoryType::kDISK, 0);
         allocation_map->device_name = std::string(disk_path);
     }
 
-    MemoryLocation(std::string disk_path) : memory_type(MemoryType::kDISK), device_id(0) {
+    MemoryLocation(std::string disk_path) : device_id(0), memory_type(MemoryType::kDISK) {
         allocation_map = &global_device_manager.get_device(MemoryType::kDISK, 0);
         allocation_map->device_name = disk_path;
     }

@@ -157,6 +157,7 @@ struct VulkanContext {
 
     // Memory type tensors on this GPU use (kHIP_VRAM / kCUDA_VRAM / kDDR)
     MemoryType renderMemory = MemoryType::kDDR;
+    int        renderMemoryId = 0;     // which map of that type (e.g. the GPU's CUDA index)
     int        renderDeviceIndex = 0;  // vulkan plugin's index for this GPU
 
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
@@ -197,12 +198,20 @@ struct VulkanContext {
     }
 
     MemoryType getRenderingMemoryType() const { return renderMemory; }
+    int getRenderingMemoryId() const { return renderMemoryId; }
     int getRenderingDeviceIndex() const { return renderDeviceIndex; }
+
+    // The rendering GPU's memory; with a compute type, used through it
+    // (kVULKAN: Vulkan buffers on this GPU for vulkcc kernels).
+    MemoryLocation getRenderingMemoryLocation(ComputeType ct = ComputeType::kUnknown) const {
+        return MemoryLocation(renderMemory, renderMemoryId, ct);
+    }
 
     // Compute type whose kernels can read/write this GPU's tensors in place.
     ComputeType interopComputeType() const {
         if (renderMemory == MemoryType::kCUDA_VRAM) return ComputeType::kCUDA;
         if (renderMemory == MemoryType::kHIP_VRAM)  return ComputeType::kHIP;
+        if (renderMemory == MemoryType::kUnknown_MEM) return ComputeType::kVULKAN;   // no CUDA / HIP for it
         return ComputeType::kCPU;
     }
 
@@ -458,8 +467,10 @@ struct VulkanContext {
         setDevice(&info);
 
         auto memType = (hvml_vk_rendering_memory_type_fn)dlsym(RTLD_DEFAULT, "get_rendering_device_memory_type");
+        auto memId = (hvml_vk_rendering_memory_id_fn)dlsym(RTLD_DEFAULT, "get_rendering_device_memory_id");
         auto devIndex = (hvml_vk_rendering_device_index_fn)dlsym(RTLD_DEFAULT, "get_rendering_device_index");
         if (memType) renderMemory = (MemoryType)memType();
+        if (memId) renderMemoryId = std::max(0, memId());
         if (devIndex) renderDeviceIndex = std::max(0, devIndex());
 
         global_device_manager.init_plugin("vulkan");
@@ -468,13 +479,14 @@ struct VulkanContext {
             // Plain tensors on a dedicated GPU's memory become Vulkan buffers
             // that HIP/CUDA import in place — one allocation usable by both
             // kernels and the renderer.  Needs fd export.
-            if (renderMemory != MemoryType::kDDR && externalMemoryFd) {
-                AllocationMap& mem = global_device_manager.get_device(renderMemory, 0);
+            if ((renderMemory == MemoryType::kCUDA_VRAM || renderMemory == MemoryType::kHIP_VRAM) && externalMemoryFd) {
+                AllocationMap& mem = global_device_manager.get_device(renderMemory, renderMemoryId);
                 mem.default_compute_type = interopComputeType();
                 mem.default_allocator_type = ComputeType::kVULKAN;
             }
             ComputeDeviceBase& cd = global_device_manager.get_compute_device(ComputeType::kVULKAN, renderDeviceIndex);
             cd.default_memory_type = renderMemory;
+            cd.default_memory_device_id = renderMemoryId;
             cd.supports_memory_location[renderMemory] = true;
         } catch (const std::exception& e) {
             std::cerr << "[vulkan-ctx] " << e.what() << std::endl;
@@ -772,8 +784,9 @@ private:
 };
 
 // Memory type display tensors are allocated on (creates the context if needed).
-inline MemoryType vk_render_memory() {
-    return VulkanContext::get().getRenderingMemoryType();
+// The rendering GPU's memory (type and map index).
+inline MemoryLocation vk_render_memory() {
+    return VulkanContext::get().getRenderingMemoryLocation();
 }
 
 #endif // VULKAN_CONTEXT_HPP

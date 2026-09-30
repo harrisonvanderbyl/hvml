@@ -93,6 +93,14 @@ struct VulkanDeviceState {
     uint32_t         compute_queue_family = 0;
     VkCommandPool    command_pool    = VK_NULL_HANDLE;
     bool             device_address  = false;   // bufferDeviceAddress enabled
+    bool             external_fd     = false;   // VK_KHR_external_memory_fd enabled (CUDA / HIP interop)
+    std::string      name;
+    bool             is_cpu          = false;   // llvmpipe, SwiftShader
+    int              pci_domain = -1, pci_bus = -1, pci_device = -1;   // VK_EXT_pci_bus_info
+    // The memory map this device's tensors live in: the same GPU's CUDA / HIP
+    // map, host memory, or (no such map) its own kUnknown_MEM map.
+    MemoryType       memory_type     = MemoryType::kUnknown_MEM;
+    int              memory_id       = -1;
 };
 
 VkInstance                     g_instance    = VK_NULL_HANDLE;
@@ -109,6 +117,7 @@ struct RenderingDevice {
     uint32_t         graphics_queue_family = 0;
     VkCommandPool    command_pool          = VK_NULL_HANDLE;
     MemoryType       memory_type           = MemoryType::kUnknown_MEM;
+    int              memory_id             = 0;    // index of that memory map
     int              device_index          = -1;   // matching index into g_devices
     bool             external_memory_fd    = false;
     bool             device_address        = false;
@@ -158,6 +167,7 @@ Dev dev_for(int device_id) {
         d.queue  = g_devices[device_id].compute_queue;
         d.pool   = g_devices[device_id].command_pool;
         d.device_address = g_devices[device_id].device_address;
+        d.external_fd = g_devices[device_id].external_fd;
         d.id     = device_id;
         return d;
     }
@@ -187,6 +197,7 @@ MemoryType memory_type_from_device_name(const char* name) {
 ComputeType interop_compute_type(MemoryType mem) {
     if (mem == MemoryType::kCUDA_VRAM) return ComputeType::kCUDA;
     if (mem == MemoryType::kHIP_VRAM)  return ComputeType::kHIP;
+    if (mem == MemoryType::kUnknown_MEM) return ComputeType::kUnknown;   // Vulkan's own map
     return ComputeType::kCPU;
 }
 
@@ -461,6 +472,21 @@ constexpr VkBufferUsageFlags kBufferUsage =
     VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 
+// Opaque fd for `memory` (allocated exportable), which CUDA / HIP import.
+int export_memory_fd(const Dev& d, VkDeviceMemory memory) {
+    auto get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(d.device, "vkGetMemoryFdKHR");
+    VkMemoryGetFdInfoKHR fd_info{};
+    fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+    fd_info.memory = memory;
+    fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    int fd = -1;
+    if (!get_fd || get_fd(d.device, &fd_info, &fd) != VK_SUCCESS) {
+        std::cerr << "[vulkan] could not export memory fd; HIP/CUDA interop unavailable" << std::endl;
+        return -1;
+    }
+    return fd;
+}
+
 // One VkDeviceMemory with a VkBuffer over all of it.  The memory is padded so
 // a linear image of the same data can be bound to it later.
 void create_backing_buffer(const Dev& d, VulkanResource* r, VkDeviceSize size,
@@ -520,19 +546,7 @@ void create_backing_buffer(const Dev& d, VulkanResource* r, VkDeviceSize size,
         r->device_address = vkGetBufferDeviceAddress(d.device, &bai);
     }
 
-    if (want_export) {
-        auto get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(d.device, "vkGetMemoryFdKHR");
-        VkMemoryGetFdInfoKHR fd_info{};
-        fd_info.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
-        fd_info.memory = memory;
-        fd_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-        int fd = -1;
-        if (!get_fd || get_fd(d.device, &fd_info, &fd) != VK_SUCCESS) {
-            std::cerr << "[vulkan] could not export memory fd; HIP/CUDA interop unavailable" << std::endl;
-            fd = -1;
-        }
-        r->fd = fd;
-    }
+    if (want_export) r->fd = export_memory_fd(d, memory);
 
     if (host_visible) {
         void* mapped = nullptr;
@@ -747,10 +761,37 @@ void create_linear_image(const Dev& d, VulkanResource* r, const VulkanResource* 
 
 // Optimal-tiled image with its own memory.  Uploads `data` if given and
 // leaves the image in its resting layout.
+// Whether an optimal image of this format / usage can be exported as an
+// opaque fd (CUDA / HIP import it as an array).
+bool image_exportable(VkPhysicalDevice phys, VkFormat format, VkImageUsageFlags usage) {
+    VkPhysicalDeviceExternalImageFormatInfo ext{};
+    ext.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
+    ext.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkPhysicalDeviceImageFormatInfo2 info{};
+    info.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
+    info.pNext = &ext;
+    info.format = format;
+    info.type = VK_IMAGE_TYPE_2D;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = usage;
+    VkExternalImageFormatProperties ext_props{};
+    ext_props.sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES;
+    VkImageFormatProperties2 props{};
+    props.sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2;
+    props.pNext = &ext_props;
+    if (vkGetPhysicalDeviceImageFormatProperties2(phys, &info, &props) != VK_SUCCESS) return false;
+    return (ext_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) != 0;
+}
+
 void create_optimal_image(const Dev& d, VulkanResource* r, VkFormat format, uint32_t w, uint32_t h,
-                          int flags, const void* data, size_t bytes) {
+                          int flags, const void* data, size_t bytes, bool want_export = false) {
     bool depth = is_depth_format(format);
     VkImageUsageFlags usage = image_usage_for(d, format, flags, VK_IMAGE_TILING_OPTIMAL);
+    want_export = want_export && image_exportable(d.phys, format, usage);
+
+    VkExternalMemoryImageCreateInfo ext_ci{};
+    ext_ci.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    ext_ci.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 
     VkImageCreateInfo ci{};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -764,6 +805,7 @@ void create_optimal_image(const Dev& d, VulkanResource* r, VkFormat format, uint
     ci.usage = usage;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (want_export) ci.pNext = &ext_ci;
 
     VkImage image;
     VK_THROW(vkCreateImage(d.device, &ci, nullptr, &image), "vkCreateImage");
@@ -776,6 +818,20 @@ void create_optimal_image(const Dev& d, VulkanResource* r, VkFormat format, uint
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = reqs.size;
     ai.memoryTypeIndex = pick_memory_type(d.phys, reqs.memoryTypeBits, false);
+
+    // Exported images get a dedicated allocation (some drivers require it,
+    // and CUDA / HIP must be told — VulkanResource::dedicated).
+    VkExportMemoryAllocateInfo export_info{};
+    export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+    export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkMemoryDedicatedAllocateInfo dedicated{};
+    dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+    dedicated.image = image;
+    if (want_export) {
+        ai.pNext = &export_info;
+        export_info.pNext = &dedicated;
+    }
+
     VkDeviceMemory memory;
     VK_THROW(vkAllocateMemory(d.device, &ai, nullptr, &memory), "vkAllocateMemory (image)");
     r->memory = (void*)memory;
@@ -783,6 +839,11 @@ void create_optimal_image(const Dev& d, VulkanResource* r, VkFormat format, uint
     r->alloc_size = reqs.size;
     r->memory_type = ai.memoryTypeIndex;
     VK_THROW(vkBindImageMemory(d.device, image, memory, 0), "vkBindImageMemory");
+    if (want_export) {
+        r->exported = true;
+        r->dedicated = 1;
+        r->fd = export_memory_fd(d, memory);
+    }
 
     VkImageAspectFlags aspect = aspect_for(format);
     r->image_view = (void*)create_image_view(d.device, image, format, aspect);
@@ -907,6 +968,7 @@ void release_contents(VulkanResource* r) {
     r->buffer_view = r->image_view = r->image = r->buffer = r->memory = r->mapped = nullptr;
     r->owns_buffer_view = r->owns_image_view = r->owns_image = r->owns_buffer = r->owns_memory = false;
     r->fd = -1;
+    r->dedicated = 0;
     r->alloc_size = 0;
     r->flags = 0;
     r->exported = false;
@@ -974,7 +1036,7 @@ VulkanResource* allocate_resource(const Dev& d, const AllocationMetadata& meta,
             } else if ((flags & kLINEAR) && depth) {
                 std::cerr << "[vulkan] kLINEAR ignored for depth format — using an optimal image" << std::endl;
             }
-            if (!linear) create_optimal_image(d, r, format, w, h, flags, data, meta.byte_size);
+            if (!linear) create_optimal_image(d, r, format, w, h, flags, data, meta.byte_size, want_export);
         } else {
             throw std::runtime_error("[vulkan] allocate_resource: unsupported compute type");
         }
@@ -1087,6 +1149,23 @@ typename Map::mapped_type original_of(Map& m, Key key) {
     return prev;
 }
 
+// The compute type converter another plugin installed for `key` before this
+// plugin replaced it (captured once per map, so re-registering doesn't wrap
+// our own wrapper).
+std::function<void*(void*, BaseMemoryAllocation*, AllocationMetadata)>
+original_converter(AllocationMap& map, ComputeType from, ComputeType to) {
+    using Fn = std::function<void*(void*, BaseMemoryAllocation*, AllocationMetadata)>;
+    static std::map<std::tuple<const void*, int, int>, Fn> originals;
+    auto id = std::make_tuple((const void*)&map, (int)from, (int)to);
+    auto it = originals.find(id);
+    if (it != originals.end()) return it->second;
+    Fn prev;
+    auto found = map.compute_type_converters.find({from, to});
+    if (found != map.compute_type_converters.end()) prev = found->second;
+    originals[id] = prev;
+    return prev;
+}
+
 // Mapping deallocator for kVULKAN / kVULKANTEXTURE targets — releases views.
 void install_view_releasers(AllocationMap& map) {
     for (ComputeType ct : {ComputeType::kVULKAN, ComputeType::kVULKANTEXTURE}) {
@@ -1159,16 +1238,22 @@ void register_resource_functions(AllocationMap& map, int device_id, ComputeType 
             if (prev) prev(ptr, original);
         };
     } else if (interop == ComputeType::kHIP || interop == ComputeType::kCUDA) {
-        // kVULKAN → kHIP/kCUDA is registered by the HIP/CUDA plugin (fd import).
-        // Buffer-backed textures reuse it, so kernels can write straight into
-        // a kLINEAR texture.  Optimal textures only carry their handle.
+        // The HIP / CUDA plugin registers the imports (like its OpenGL ones):
+        //   {kVULKAN, interop}        buffer → device pointer
+        //   {kVULKANTEXTURE, interop} optimal image → array (level 0)
+        // A buffer-backed (kLINEAR) texture uses the buffer import, so kernels
+        // write straight into its pixels; other textures go to the plugin's
+        // image import.  Without an exported fd, only the handle is returned.
         AllocationMap* mp = &map;
+        auto image_import = original_converter(map, ComputeType::kVULKANTEXTURE, interop);
         map.compute_type_converters[{ComputeType::kVULKANTEXTURE, interop}] =
-            [mp, interop](void* ptr, BaseMemoryAllocation* original, AllocationMetadata meta) -> void* {
+            [mp, interop, image_import](void* ptr, BaseMemoryAllocation* original, AllocationMetadata meta) -> void* {
                 VulkanResource* r = registry_find(ptr);
-                auto it = mp->compute_type_converters.find({ComputeType::kVULKAN, interop});
-                if (r && r->buffer && r->fd >= 0 && it != mp->compute_type_converters.end()) {
-                    void* p = it->second(ptr, original, meta);
+                if (r && r->fd >= 0) {
+                    auto it = mp->compute_type_converters.find({ComputeType::kVULKAN, interop});
+                    void* p = nullptr;
+                    if (r->buffer && it != mp->compute_type_converters.end()) p = it->second(ptr, original, meta);
+                    else if (!r->buffer && image_import) p = image_import(ptr, original, meta);
                     if (p) return p;
                 }
                 return ptr;   // handle only — bind it, don't launch kernels on it
@@ -1191,32 +1276,57 @@ BaseMemoryAllocation* download_to_host(VulkanResource* r, AllocationMetadata met
     return out;
 }
 
-// Transfers between host memory and the Vulkan device's memory type:
-//   host → `mem` with a Vulkan compute type  : allocate + upload
-//   `mem` Vulkan resource → host             : readback
-void install_transfer_converters(MemoryType mem, int device_id) {
+// Transfers between host memory and a memory map Vulkan devices allocate on:
+//   host → `mem` with a Vulkan compute type : that map's allocator for it
+//                                             (compute_device_allocators[kVULKAN]
+//                                             on e.g. kCUDA_VRAM), uploading the data
+//   `mem` Vulkan resource → host            : readback
+void install_transfer_converters(MemoryType mem, int mem_id) {
     AllocationMap* host = nullptr;
     try { host = &global_device_manager.get_device(MemoryType::kDDR, 0); } catch (...) { return; }
 
-    // host → mem
+    // host → mem (one converter per memory type; meta.device_id picks the map)
     {
         auto prev = original_of(host->memory_type_converters, mem);
-        host->memory_type_converters[mem] = [prev, device_id](void* ptr, AllocationMetadata meta) -> BaseMemoryAllocation* {
-            if (meta.compute_device == ComputeType::kVULKAN || meta.compute_device == ComputeType::kVULKANTEXTURE) {
-                Dev d = dev_for(device_id);
-                return new BaseMemoryAllocation(meta, (void*)allocate_resource(d, meta, ptr, meta.compute_device));
+        host->memory_type_converters[mem] = [prev, host](void* ptr, AllocationMetadata meta) -> BaseMemoryAllocation* {
+            size_t offset = 0;
+            VulkanResource* src = registry_find(ptr, &offset);
+            bool to_vulkan = meta.compute_device == ComputeType::kVULKAN || meta.compute_device == ComputeType::kVULKANTEXTURE;
+            auto allocate_on_target = [&](void* data) {
+                return global_device_manager.get_device(meta.storage_device, meta.device_id).allocate(meta, data);
+            };
+
+            if (!src) {
+                if (to_vulkan) return allocate_on_target(ptr);
+                if (prev) return prev(ptr, meta);
+                throw std::runtime_error("[vulkan] no converter from host memory");
             }
-            size_t offset;
-            if (VulkanResource* r = registry_find(ptr, &offset)) return download_to_host(r, meta, offset);
-            if (prev) return prev(ptr, meta);
-            throw std::runtime_error("[vulkan] no converter from host memory");
+
+            // The source is a Vulkan buffer in host memory (its kVULKAN view is
+            // a device address, not something to memcpy from).
+            if (to_vulkan && src->buffer && src->mapped) {
+                return allocate_on_target((char*)src->mapped + offset);
+            }
+            BaseMemoryAllocation* staged = download_to_host(src, meta, offset);
+            if (meta.storage_device == MemoryType::kDDR && !to_vulkan) return staged;
+            BaseMemoryAllocation* out = nullptr;
+            try {
+                if (to_vulkan) out = allocate_on_target(staged->data);
+                else if (prev) out = prev(staged->data, meta);
+            } catch (...) {
+                host->deallocate(staged);
+                throw;
+            }
+            host->deallocate(staged);
+            if (!out) throw std::runtime_error("[vulkan] no converter from host memory");
+            return out;
         };
     }
 
     // mem → host
     if (mem != MemoryType::kDDR) {
         try {
-            AllocationMap& dev_map = global_device_manager.get_device(mem, 0);
+            AllocationMap& dev_map = global_device_manager.get_device(mem, mem_id);
             auto prev = original_of(dev_map.memory_type_converters, MemoryType::kDDR);
             dev_map.memory_type_converters[MemoryType::kDDR] = [prev](void* ptr, AllocationMetadata meta) -> BaseMemoryAllocation* {
                 size_t offset;
@@ -1229,8 +1339,9 @@ void install_transfer_converters(MemoryType mem, int device_id) {
 }
 
 // ===========================================================================
-//  Per-plugin-device AllocationMap (kUnknown_MEM) — compute-only use without
-//  a display.
+//  Per-plugin-device AllocationMap (kUnknown_MEM) — for a Vulkan device with
+//  no memory map of its own (no CUDA / HIP plugin for it, or a second device
+//  in host memory).
 // ===========================================================================
 
 AllocationMap* create_vulkan_mapper(int device_id) {
@@ -1256,8 +1367,17 @@ AllocationMap* create_vulkan_mapper(int device_id) {
     for (MemoryType src : {MemoryType::kDDR, MemoryType::kDISK}) {
         try {
             AllocationMap& m = global_device_manager.get_device(src, 0);
-            m.memory_type_converters[MemoryType::kUnknown_MEM] = [mapper](void* ptr, AllocationMetadata meta) {
-                return mapper->allocate(meta, ptr);
+            m.memory_type_converters[MemoryType::kUnknown_MEM] = [](void* ptr, AllocationMetadata meta) {
+                size_t offset;
+                VulkanResource* src = registry_find(ptr, &offset);
+                AllocationMap& target = global_device_manager.get_device(MemoryType::kUnknown_MEM, meta.device_id);
+                if (!src) return target.allocate(meta, ptr);
+                AllocationMap& host = global_device_manager.get_device(MemoryType::kDDR, 0);
+                BaseMemoryAllocation* staged = download_to_host(src, meta, offset);
+                BaseMemoryAllocation* out = nullptr;
+                try { out = target.allocate(meta, staged->data); } catch (...) { host.deallocate(staged); throw; }
+                host.deallocate(staged);
+                return out;
             };
         } catch (...) {}
     }
@@ -1276,28 +1396,117 @@ ComputeDeviceBase* create_vulkan_compute_device(int device_id) {
     vkGetPhysicalDeviceProperties(phys_dev, &props);
     std::cout << "[vulkan] Initializing device " << device_id << ": " << props.deviceName << std::endl;
 
-    MemoryType mem = memory_type_from_device_name(props.deviceName);
+    const VulkanDeviceState& st = g_devices[device_id];
     device->compute_units = props.limits.maxComputeWorkGroupCount[0];
-    device->default_memory_type = mem;
-    device->supports_memory_location[mem] = true;
-
-    // Make Vulkan allocations possible on the memory type this GPU uses
-    // (e.g. kHIP_VRAM for AMD) — they are re-pointed at the display's device
-    // once it calls set_rendering_device().
-    try {
-        auto& mem_device = global_device_manager.get_device(mem, 0);
-        register_resource_functions(mem_device, device_id, interop_compute_type(mem));
-        if (device_id == 0) install_transfer_converters(mem, device_id);
-    } catch (...) {
-        std::cerr << "[vulkan] memory device for " << props.deviceName
-                  << " not available (plugin for it not loaded)" << std::endl;
-    }
+    device->default_memory_type = st.memory_type;
+    device->default_memory_device_id = st.memory_id;
+    device->supports_memory_location[st.memory_type] = true;
     return device;
+}
+
+// ===========================================================================
+//  Attaching Vulkan devices to memory maps
+//
+//  A Vulkan device allocates in the memory map of the GPU it runs on, so
+//  its buffers sit next to (and are importable by) that GPU's CUDA / HIP
+//  tensors: kCUDA_VRAM / kHIP_VRAM map of the same GPU (matched by PCI
+//  address, else by order), host memory for integrated and software GPUs.
+//  The map's compute_device_allocators[kVULKAN] then creates buffers on this
+//  device, so t.to(MemoryLocation(kCUDA_VRAM, i), kVULKAN) makes Vulkan
+//  buffers on GPU i.  Only a device with no such map gets its own
+//  kUnknown_MEM map.
+// ===========================================================================
+
+AllocationMap* find_memory_map(DeviceManager* dm, MemoryType mem, int id) {
+    auto it = dm->memory_devices.find(mem);
+    if (it == dm->memory_devices.end() || id < 0 || id >= (int)it->second.size()) return nullptr;
+    return it->second[id];
+}
+
+void attach_devices(DeviceManager* dm) {
+    std::map<std::pair<MemoryType, int>, int> owner;   // memory map → plugin device
+    std::map<MemoryType, int> next_in_order;
+
+    // Real GPUs before software rasterisers, so host memory goes to an
+    // integrated GPU rather than llvmpipe.
+    std::vector<int> order;
+    for (int i = 0; i < (int)g_devices.size(); i++) if (!g_devices[i].is_cpu) order.push_back(i);
+    for (int i = 0; i < (int)g_devices.size(); i++) if (g_devices[i].is_cpu) order.push_back(i);
+
+    for (int i : order) {
+        VulkanDeviceState& st = g_devices[i];
+        MemoryType mem = memory_type_from_device_name(st.name.c_str());
+        int id = -1;
+        if (mem == MemoryType::kDDR) {
+            if (find_memory_map(dm, mem, 0)) id = 0;
+        } else {
+            auto it = dm->memory_devices.find(mem);
+            bool any_pci = false;
+            if (it != dm->memory_devices.end()) {
+                for (int j = 0; j < (int)it->second.size(); j++) {
+                    AllocationMap* m = it->second[j];
+                    if (!m || m->pci_bus < 0) continue;
+                    any_pci = true;
+                    if (st.pci_bus >= 0 && m->pci_domain == st.pci_domain && m->pci_bus == st.pci_bus &&
+                        m->pci_device == st.pci_device) id = j;
+                }
+            }
+            // no PCI information on either side: pair them up in order
+            if (id < 0 && (!any_pci || st.pci_bus < 0)) {
+                int j = next_in_order[mem]++;
+                if (find_memory_map(dm, mem, j)) id = j;
+            }
+        }
+        if (id >= 0 && !owner.count({mem, id})) {
+            owner[{mem, id}] = i;
+            st.memory_type = mem;
+            st.memory_id = id;
+        } else {
+            st.memory_type = MemoryType::kUnknown_MEM;
+            st.memory_id = i;
+        }
+    }
+
+    for (int i = 0; i < (int)g_devices.size(); i++) {
+        VulkanDeviceState& st = g_devices[i];
+        if (st.memory_type == MemoryType::kUnknown_MEM) {
+            dm->register_memory_device(MemoryType::kUnknown_MEM, i, create_vulkan_mapper(i));
+        } else {
+            AllocationMap& map = *find_memory_map(dm, st.memory_type, st.memory_id);
+            register_resource_functions(map, i, interop_compute_type(st.memory_type));
+            install_transfer_converters(st.memory_type, st.memory_id);
+        }
+        std::cout << "[vulkan] Device " << i << " (" << st.name << ") allocates in "
+                  << st.memory_type << " " << st.memory_id << std::endl;
+    }
 }
 
 // ===========================================================================
 //  Vulkan instance + device enumeration
 // ===========================================================================
+
+bool device_has_extension(VkPhysicalDevice phys, const char* name) {
+    uint32_t n = 0;
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, nullptr);
+    std::vector<VkExtensionProperties> exts(n);
+    vkEnumerateDeviceExtensionProperties(phys, nullptr, &n, exts.data());
+    for (auto& e : exts) if (strcmp(e.extensionName, name) == 0) return true;
+    return false;
+}
+
+// PCI address (domain, bus, device) of a GPU, when the driver reports it.
+void query_pci_address(VkPhysicalDevice phys, VulkanDeviceState& state) {
+    if (!device_has_extension(phys, VK_EXT_PCI_BUS_INFO_EXTENSION_NAME)) return;
+    VkPhysicalDevicePCIBusInfoPropertiesEXT pci{};
+    pci.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 p2{};
+    p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    p2.pNext = &pci;
+    vkGetPhysicalDeviceProperties2(phys, &p2);
+    state.pci_domain = (int)pci.pciDomain;
+    state.pci_bus = (int)pci.pciBus;
+    state.pci_device = (int)pci.pciDevice;
+}
 
 int count_vulkan_devices() {
     if (g_initialized) return static_cast<int>(g_devices.size());
@@ -1335,6 +1544,9 @@ int count_vulkan_devices() {
 
         VulkanDeviceState state;
         state.physical_device = physical_devices[i];
+        state.name = props.deviceName;
+        state.is_cpu = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+        query_pci_address(physical_devices[i], state);
 
         uint32_t qf_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_devices[i], &qf_count, nullptr);
@@ -1356,14 +1568,19 @@ int count_vulkan_devices() {
         qci.pQueuePriorities = &priority;
 
         VulkanComputeFeatures features(physical_devices[i]);
+        std::vector<const char*> extensions = features.extensions;
+        // Exportable memory, so CUDA / HIP can import buffers and images
+        // allocated in their VRAM (same as the display's device does).
+        state.external_fd = device_has_extension(physical_devices[i], VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        if (state.external_fd) extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
         VkDeviceCreateInfo dci{};
         dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
         dci.pNext = features.chain();
         dci.pEnabledFeatures = nullptr;
-        dci.enabledExtensionCount = (uint32_t)features.extensions.size();
-        dci.ppEnabledExtensionNames = features.extensions.data();
+        dci.enabledExtensionCount = (uint32_t)extensions.size();
+        dci.ppEnabledExtensionNames = extensions.data();
         state.device_address = features.device_address;
         if (vkCreateDevice(physical_devices[i], &dci, nullptr, &state.device) != VK_SUCCESS) continue;
         vkGetDeviceQueue(state.device, family, 0, &state.compute_queue);
@@ -1578,9 +1795,7 @@ extern "C" void plugin_register(DeviceManager* dm) {
     int count = count_vulkan_devices();
     if (count == 0) return;
 
-    for (int i = 0; i < count; i++) {
-        dm->register_memory_device(MemoryType::kUnknown_MEM, i, create_vulkan_mapper(i));
-    }
+    attach_devices(dm);
     for (int i = 0; i < count; i++) {
         dm->register_compute_device(ComputeType::kVULKAN, i, create_vulkan_compute_device(i));
     }
@@ -1671,6 +1886,10 @@ extern "C" int get_rendering_device_memory_type() {
     return (int)g_rendering_device.memory_type;
 }
 
+extern "C" int get_rendering_device_memory_id() {
+    return g_rendering_device.memory_id;
+}
+
 // Called by the display layer's VulkanContext after it created its device.
 // From then on every kVULKAN / kVULKANTEXTURE allocation on the GPU's memory
 // type (e.g. kHIP_VRAM) is created on that device.
@@ -1687,17 +1906,25 @@ extern "C" void hvml_vk_set_rendering_device(const HvmlVkDeviceInfo* info) {
 
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(g_rendering_device.physical_device, &props);
+    // The memory map the plugin attached this GPU to (attach_devices).
     MemoryType mem = memory_type_from_device_name(props.deviceName);
+    int mem_id = 0;
+    int idx = g_rendering_device.device_index;
+    if (idx >= 0 && idx < (int)g_devices.size() && g_devices[idx].memory_id >= 0) {
+        mem = g_devices[idx].memory_type;
+        mem_id = g_devices[idx].memory_id;
+    }
     g_rendering_device.memory_type = mem;
+    g_rendering_device.memory_id = mem_id;
 
     std::cout << "[vulkan] Rendering device: " << props.deviceName
               << " (plugin device " << g_rendering_device.device_index
-              << ", memory " << mem << ")" << std::endl;
+              << ", memory " << mem << " " << mem_id << ")" << std::endl;
 
     try {
-        AllocationMap& render_mem = global_device_manager.get_device(mem, 0);
+        AllocationMap& render_mem = global_device_manager.get_device(mem, mem_id);
         register_resource_functions(render_mem, kRenderingDevice, interop_compute_type(mem));
-        install_transfer_converters(mem, kRenderingDevice);
+        if (mem != MemoryType::kUnknown_MEM) install_transfer_converters(mem, mem_id);
         // Host-visible Vulkan buffers (uniform blocks, staging-free uploads):
         // kVULKAN tensors on kDDR are mapped for the CPU.
         if (mem != MemoryType::kDDR) {

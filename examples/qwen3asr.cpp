@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     }
 
     // --device vulkan: the vulkan plugin's compute device (build with vulkcc)
-    MemoryLocation loc = device == "vulkan" ? MemoryLocation(MemoryType::kUnknown_MEM, 0)
+    MemoryLocation loc = device == "vulkan" ? MemoryLocation(global_device_manager.get_compute_device(ComputeType::kVULKAN, 0))
                        : MemoryLocation(device == "cuda" ? MemoryType::kCUDA_VRAM
                                       : device == "hip"  ? MemoryType::kHIP_VRAM
                                                          : MemoryType::kDDR);

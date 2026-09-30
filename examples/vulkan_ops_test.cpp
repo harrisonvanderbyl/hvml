@@ -13,7 +13,9 @@
 #include <random>
 
 static MemoryLocation cpu() { return MemoryLocation(MemoryType::kDDR); }
-static MemoryLocation gpu() { return MemoryLocation(MemoryType::kUnknown_MEM, 0); }   // the plugin's Vulkan device
+// Vulkan device 0, in whichever memory it allocates (its GPU's CUDA / HIP
+// memory, host memory, or its own map); tensors made there are Vulkan tensors.
+static MemoryLocation gpu() { return MemoryLocation(global_device_manager.get_compute_device(ComputeType::kVULKAN, 0)); }
 
 static int failures = 0;
 

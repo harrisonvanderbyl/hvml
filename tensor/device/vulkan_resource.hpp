@@ -71,6 +71,10 @@ struct VulkanBufferHandle {
     // ---- kernels ----------------------------------------------------------
     unsigned long long device_address = 0;    // VkDeviceAddress of `buffer` (0 = none): the
                                               // kVULKAN kernel view of the allocation
+
+    // ---- interop ------------------------------------------------------------
+    int32_t  dedicated    = 0;        // `memory` is a dedicated allocation of `image`
+                                      // (CUDA / HIP import it with the dedicated flag)
 };
 
 using VulkanResource = VulkanBufferHandle;
@@ -107,6 +111,7 @@ extern "C" {
     typedef void            (*hvml_vk_set_rendering_device_fn)(const HvmlVkDeviceInfo* info);
     typedef int             (*hvml_vk_rendering_memory_type_fn)();
     typedef int             (*hvml_vk_rendering_device_index_fn)();
+    typedef int             (*hvml_vk_rendering_memory_id_fn)();
     typedef int             (*hvml_vk_upload_fn)(VulkanResource* r, const void* data, unsigned long bytes);
     typedef int             (*hvml_vk_download_fn)(VulkanResource* r, void* out, unsigned long bytes);
     typedef VulkanResource* (*hvml_vk_wrap_image_fn)(void* image, int format, uint32_t width, uint32_t height,

@@ -42,10 +42,66 @@ __global__ void simulate(Particle* ps, int n, float dt, float* energy) {
     atomicAdd(energy, ps[i].vx * ps[i].vx);
 }
 
-MemoryLocation vk(MemoryType::kUnknown_MEM, 0);          // Vulkan device 0
+MemoryLocation vk(global_device_manager.get_compute_device(ComputeType::kVULKAN, 0));   // Vulkan device 0
 Tensor<uint8_t, 1> ps = ...;                             // allocated on vk
 simulate<<<(n + 255) / 256, 256>>>((Particle*)ps.data.data, n, 0.01f, energy.data);
 ```
+
+## Where Vulkan tensors live
+
+A Vulkan device allocates in the memory map of the GPU it runs on:
+
+- an NVIDIA GPU uses `kCUDA_VRAM`, an AMD GPU uses `kHIP_VRAM` (the same GPU's
+  CUDA / HIP index, matched by PCI address);
+- integrated and software GPUs use host memory, `kDDR`;
+- a device with no such map (no CUDA / HIP plugin for it) gets its own
+  `kUnknown_MEM` map.
+
+That map's `compute_device_allocators[kVULKAN]` creates buffers on the device.
+`to()` and the shape constructor allocate with the compute type you ask for
+and return its view, so these are the same:
+
+```cpp
+auto& vk = global_device_manager.get_compute_device(ComputeType::kVULKAN, i);
+auto a1 = a.to(MemoryLocation(vk.default_memory_type, vk.default_memory_device_id), ComputeType::kVULKAN);
+auto a2 = a.to(MemoryLocation(vk));        // the location carries kVULKAN
+Tensor<float, 1> c = a1 + b1;              // vulkcc kernels; c is a Vulkan tensor too
+```
+
+`MemoryLocation` can carry a compute type. `Tensor::location()` returns a
+tensor's own (memory map and compute type), so tensors made there work with
+it in kernels. With a window open, `VulkanContext::getRenderingMemoryLocation()`
+is the rendering GPU's memory.
+
+### Zero-copy views (`to_compute`)
+
+Rows are the compute type an allocation was made with; columns are the views
+`to_compute(col)` returns in place. Everything else copies with `to()`.
+
+| allocated ↓ / view → | kCPU | kCUDA | kHIP | kVULKAN | kVULKANTEXTURE |
+|---|---|---|---|---|---|
+| **kCPU** | ✓ | host memory ¹ | host memory ¹ | – | – |
+| **kCUDA** | managed (host) only | ✓ | – | – | – |
+| **kHIP** | managed (host) only | – | ✓ | – | – |
+| **kVULKAN** | host memory ² | `kCUDA_VRAM` ³ | `kHIP_VRAM` ³ | ✓ device address | ✓ linear image alias |
+| **kVULKANTEXTURE** | host, `kLINEAR` ² | `kCUDA_VRAM` ³ ⁴ | `kHIP_VRAM` ³ ⁴ | `kLINEAR` only | ✓ other image views |
+
+1. `cudaHostRegister` / `hipHostRegister`, on GPUs that can map host memory.
+2. Host-visible buffers are persistently mapped.
+3. The Vulkan memory is exported as an opaque fd (`VK_KHR_external_memory_fd`,
+   enabled on every Vulkan device that has it) and imported by the CUDA / HIP
+   plugin, like their OpenGL interop. The imports are released with the
+   allocation.
+4. `kLINEAR` textures give a device pointer to their pixels. Optimal-tiled
+   images give a `cudaArray_t` / `hipArray_t` (level 0) for surface and
+   texture objects. They are exported as dedicated allocations. HIP image
+   import needs `hipExternalMemoryGetMappedMipmappedArray`, which Linux ROCm
+   (up to at least 7.0) declares but does not export; the plugin looks it up
+   at run time, and without it an optimal image has no HIP view (use
+   `kLINEAR`).
+
+OpenGL has the same pattern: kOPENGL buffers view as CPU (host), CUDA and HIP,
+and kOPENGLTEXTURE views as a `cudaArray_t`.
 
 A kVULKAN tensor's `data` is its kernel view, `to_compute(kVULKAN)`: the
 buffer's **device address**. So tensors, slices and `Parameter<T>` hand
@@ -108,6 +164,8 @@ atomics (`tensor/device/vulkan_compute_features.hpp`).
   structs, pointers, `__shared__` tiles, atomics, warp shuffles and 2-D
   blocks.
 - `examples/vulkan_ops_test.cpp`: hvml operations against the CPU.
+- `examples/device_interface_test.cpp`: `a + b` on the CPU, CUDA, HIP and
+  every Vulkan device, picking devices the way user code does.
 - `examples/qwen3asr.cpp --device vulkan`: the whole model.
 
 ## Limits

@@ -126,16 +126,27 @@ inline MemoryLocation working_location(AllocationMap* device) {
     return MemoryLocation(*device);
 }
 
+// Same, keeping the tensor's compute type (Vulkan weights in CUDA memory →
+// Vulkan activations there).
+template <typename T, int R>
+inline MemoryLocation working_location(const Tensor<T, R>& t) {
+    if (t.device->this_device_type == MemoryType::kDISK) return MemoryLocation(MemoryType::kDDR);
+    return t.location();
+}
+
 // ===========================================================================
 //  Host transfers
 // ===========================================================================
 
-// Copy host data into a new tensor on `loc`.
+// Copy host data into a new tensor on `loc` (allocated and viewed through
+// loc.compute_type when it has one).
 template <typename T, int R>
 inline Tensor<T, R> tensor_from_host(Shape<R> shape, const T* src, MemoryLocation loc) {
     Tensor<T, R> host(shape, MemoryLocation(MemoryType::kDDR), ComputeType::kCPU);
     memcpy((void*)host.data.data, (const void*)src, shape.total_size() * sizeof(T));
-    if (loc.memory_type == MemoryType::kDDR) return host;
+    bool plain_host = loc.memory_type == MemoryType::kDDR &&
+                      (loc.compute_type == ComputeType::kUnknown || loc.compute_type == ComputeType::kCPU);
+    if (plain_host) return host;
     return host.to(loc);
 }
 
@@ -223,7 +234,7 @@ inline Tensor<float, 2> attention(Tensor<float, 3> q, const Tensor<float, 3>& k,
                                   float scale, long q_offset, bool causal) {
     long T = q.shape[0], Hq = q.shape[1], D = q.shape[2];
     long Hk = k.shape[0], S = k.shape[1], G = Hq / Hk;
-    MemoryLocation loc(*q.device);
+    MemoryLocation loc = working_location(q);
 
     // scores[hk, g, t, s] = q[t, hk·G + g] · k[hk, s]
     Tensor<float, 4> qg = q.view(Shape<4>{T, Hk, G, D});

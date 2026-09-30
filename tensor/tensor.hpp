@@ -69,11 +69,18 @@ public:
         // printf("ndim: %d\n", __a.ndim());
         this->shape = __a;
         this->strides = __a.clone();
-        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, (compute_type==kUnknown)?device->default_allocator_type:compute_type, 0, AllocationFlags::kRW, memory_device.device_id));
+        // The compute type picks both the allocator on this memory map
+        // (compute_device_allocators[ct]) and the view the tensor holds, so
+        // kernels of that type get pointers they can use.  Without one, the
+        // location's compute type, then the map's defaults.
+        if (compute_type == kUnknown) compute_type = memory_device.compute_type;
+        ComputeType alloc_type = compute_type == kUnknown ? device->default_allocator_type : compute_type;
+        ComputeType view_type = compute_type == kUnknown ? device->default_compute_type : compute_type;
+        storage_pointer = device->allocate(AllocationMetadata::create<R>(__a, memory_device.memory_type, alloc_type, 0, AllocationFlags::kRW, memory_device.device_id));
         this->shape = storage_pointer->metadata.shape;
         this->strides = storage_pointer->metadata.shape.calc_strides();
         calculate_metadata();
-        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, device->default_compute_type, 0, AllocationFlags::kRW, memory_device.device_id));
+        data = this->device->template get_massaged_pointer<R>(storage_pointer, AllocationMetadata::create<R>(__a, memory_device.memory_type, view_type, 0, AllocationFlags::kRW, memory_device.device_id));
     }
 
     Tensor(AllocationMetadata metadata){
@@ -364,9 +371,16 @@ public:
         return t;
     }
 
+    // Where this tensor lives and what it is used through: its memory map and
+    // compute type.  New tensors made at location() work with this one in
+    // kernels (a Vulkan tensor in CUDA memory gives Vulkan tensors there).
+    MemoryLocation location() const {
+        return MemoryLocation(*device, this->data.metadata.compute_device);
+    }
+
     inline Tensor contiguous() const
     {
-        Tensor a = Tensor{shape, *device};
+        Tensor a = Tensor{shape, location()};
         a = *this;
         return a;
     }
@@ -592,7 +606,11 @@ public:
         // auto tensorc = Tensor<R, rank>(tensorin.shape, tensorin.device_type);
         // tensorc = tensorin;
        
-        if(!device->supports_compute_device[kCPU])
+        // Read through a host copy unless this view is a host pointer (a
+        // Vulkan / CUDA / HIP view of host memory is not).
+        ComputeType view = data.metadata.compute_device;
+        bool host_view = view == kCPU || view == kFILE || view == kUnknown;
+        if(original_tensor == nullptr && (!device->supports_compute_device[kCPU] || !host_view))
         {
             device->synchronize_function();
             auto tensor = to(MemoryType::kDDR, ComputeType::kCPU);
@@ -682,48 +700,60 @@ public:
         this->device->register_allocation(this->storage_pointer);
     }
 
+    // Copy to `device_type`'s memory, allocated by that memory map's allocator
+    // for `compute_type` (compute_device_allocators[compute_type] — e.g. the
+    // Vulkan plugin's allocator on kCUDA_VRAM for kVULKAN), and return the
+    // `compute_type` view of it.  Without a compute type: the location's, then
+    // the map's defaults.  Already there with that allocator → no copy, just
+    // the view.
     Tensor<R,rank> to(MemoryLocation device_type, ComputeType compute_type = ComputeType::kUnknown) const{
-        
-        if(this->device->this_device_type == device_type.memory_type && this->device->device_id == device_type.device_id && (this->device->default_compute_type == compute_type || compute_type == kUnknown)){
-            return *this;
+        if (compute_type == kUnknown) compute_type = device_type.compute_type;
+
+        AllocationMap& target_device = *device_type.allocation_map;
+        ComputeType alloc_type = compute_type == kUnknown ? target_device.default_allocator_type : compute_type;
+        ComputeType view_type = compute_type == kUnknown ? target_device.default_compute_type : compute_type;
+
+        if (this->device == &target_device && this->storage_pointer) {
+            ComputeType have = this->storage_pointer->metadata.compute_device;
+            bool viewable = have == view_type ||
+                            this->device->compute_type_converters.count(std::make_tuple(have, view_type)) != 0;
+            if ((compute_type == kUnknown || have == alloc_type) && viewable) {
+                if (this->data.metadata.compute_device == view_type) return *this;
+                return this->to_compute(view_type);
+            }
         }
-        
 
         BaseMemoryAllocation* result;
 
-        AllocationMap& target_device = global_device_manager.get_device(device_type.memory_type, device_type.device_id);
-
+        // Slices, transposes, gathers: pack them on their own device first.
         if(indexer != nullptr || strides != shape.calc_strides()){
-            // For Vulkan compute types, we can't use to_compute() (no kernel ops).
-            // Instead, make a contiguous copy on CPU first, then convert.
-            if (compute_type == ComputeType::kVULKAN || compute_type == ComputeType::kVULKANTEXTURE) {
-                Tensor<R,rank> contiguous = this->to(MemoryLocation(MemoryType::kDDR, 0), ComputeType::kCPU);
-                return contiguous.to(device_type, compute_type);
-            }
-            std::cout << "Shape: " << shape << " Strides: " << strides << " Calculated strides: " << shape.calc_strides() << std::endl;
-            Tensor output = {shape, device_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type};
-            output = this->to_compute(compute_type);
-            return output;
+            return this->contiguous().to(device_type, compute_type);
         }
-        else{
-            result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape,device_type.memory_type, compute_type == ComputeType::kUnknown ? target_device.default_allocator_type : compute_type, 0, AllocationFlags::kRW, device_type.device_id));
-        
-            return {
-                shape,
-                device_type.allocation_map->get_massaged_pointer<R>(
-                    result,
-                    AllocationMetadata::create<R>(
-                        shape,
-                        device_type.memory_type,
-                        device_type.allocation_map->default_compute_type,
-                        0,
-                        AllocationFlags::kRW,
-                        device_type.device_id
-                    )
-                ),
-                device_type,
-                result
-            };
+
+        // Memory converters move data between memory types.  Host memory is
+        // the hub: the backends' host → X converters honour the requested
+        // allocator (host → kCUDA_VRAM as kVULKAN allocates a Vulkan buffer),
+        // while other converters only produce the target's default
+        // allocation (disk → host is always a CPU allocation).  So a direct
+        // conversion is used from host memory or for the target's default
+        // allocator; anything else is staged through host memory.
+        bool from_host = this->device->this_device_type == MemoryType::kDDR;
+        bool direct = this->device->memory_type_converters.count(device_type.memory_type) != 0 &&
+                      (from_host || alloc_type == target_device.default_allocator_type);
+        if (!direct) {
+            return this->to(MemoryLocation(MemoryType::kDDR), ComputeType::kCPU).to(device_type, compute_type);
+        }
+
+        result = device->convert_memory_type((void*)this->data.data, AllocationMetadata::create<R>(shape, device_type.memory_type, alloc_type, 0, AllocationFlags::kRW, device_type.device_id));
+
+        return {
+            shape,
+            target_device.get_massaged_pointer<R>(
+                result,
+                AllocationMetadata::create<R>(shape, device_type.memory_type, view_type, 0, AllocationFlags::kRW, device_type.device_id)
+            ),
+            device_type,
+            result
         };
     };
 
@@ -739,14 +769,14 @@ public:
             throw std::runtime_error("Compute type not supported on device type");
         }
 
-        size_t offset = 0;
-        if (
-            this->storage_pointer->metadata.compute_device == this->data.metadata.compute_device 
-        ){
-            offset = this->data.data - (R*)this->storage_pointer->data;
-        }else{
-            offset = this->data.data - (R*)this->storage_pointer->cached_massaged_pointers[this->data.metadata.hash()];
-        }
+        // Offset of this view into its allocation, measured from the base of
+        // the view it is in (a cached converted view — including a backend's
+        // view of its own type, like a Vulkan buffer's device address — or the
+        // raw allocation).
+        auto& cache = this->storage_pointer->cached_massaged_pointers;
+        auto cached = cache.find(this->data.metadata.hash());
+        R* base = cached != cache.end() ? (R*)cached->second : (R*)this->storage_pointer->data;
+        size_t offset = this->data.data - base;
 
         int compute_device_id = this->data.metadata.device_id;
         if (compute_type == ComputeType::kCPU || compute_type == ComputeType::kFILE || compute_type == ComputeType::kUnknown) {

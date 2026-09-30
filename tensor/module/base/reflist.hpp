@@ -78,7 +78,8 @@ struct has_move_to<T, std::void_t<decltype(std::declval<T&>().move_to(std::declv
 template <typename T>
 inline void move_tensor_to(T& tensor, MemoryLocation loc) {
     if (tensor.storage_pointer == nullptr) return;          // not loaded
-    if (tensor.device->this_device_type == loc.memory_type && tensor.device->device_id == loc.device_id) return;
+    if (tensor.device->this_device_type == loc.memory_type && tensor.device->device_id == loc.device_id &&
+        (loc.compute_type == ComputeType::kUnknown || tensor.data.metadata.compute_device == loc.compute_type)) return;
     T moved = tensor.to(loc);
     tensor.~T();
     new (&tensor) T(moved);

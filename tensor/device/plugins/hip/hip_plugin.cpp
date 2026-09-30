@@ -12,6 +12,10 @@
 #include <hip/driver_types.h>
 #include <hip/hip_gl_interop.h>
 #include <unistd.h>
+#include <dlfcn.h>
+#include <map>
+#include <mutex>
+#include "vulkan_interop.hpp"
 
 #define HIP_CHECK(__call)                                                      \
     do {                                                                       \
@@ -21,6 +25,162 @@
                       << " at " << __FILE__ << ":" << __LINE__ << std::endl;  \
         }                                                                      \
     } while (0)
+
+// ---------------------------------------------------------------------------
+//  Vulkan → HIP external memory interop
+//
+//  A Vulkan allocation in HIP memory exports its VkDeviceMemory as an opaque
+//  fd (vulkan plugin).  HIP imports it and maps:
+//    buffers → a device pointer (hipExternalMemoryGetMappedBuffer)
+//    images  → a hipArray_t     (hipExternalMemoryGetMappedMipmappedArray, ROCm 6+)
+//  over the same memory — no copy.  Each import is recorded so the mapping
+//  deallocator can unmap it and destroy the external memory when the
+//  allocation is freed.
+// ---------------------------------------------------------------------------
+
+#if defined(HIP_VERSION_MAJOR) && HIP_VERSION_MAJOR >= 6
+#define HVML_HIP_VULKAN_IMAGES 1
+#endif
+
+struct VulkanImport {
+    hipExternalMemory_t memory = nullptr;
+#ifdef HVML_HIP_VULKAN_IMAGES
+    hipMipmappedArray_t mipmap = nullptr;   // images only
+#endif
+};
+
+static std::mutex g_vulkan_imports_mutex;
+static std::map<void*, VulkanImport> g_vulkan_imports;   // mapped pointer / array → import
+
+static hipExternalMemory_t import_vulkan_memory(const VulkanResource* r, int device_id) {
+    if (!r || r->fd < 0) {
+        std::cerr << "[hip] Vulkan memory not exported (no fd) — no HIP view" << std::endl;
+        return nullptr;
+    }
+    HIP_CHECK(hipSetDevice(device_id));
+    int fd = dup(r->fd);   // HIP owns the fd once the import succeeds
+    if (fd < 0) {
+        std::cerr << "[hip] dup(fd) failed for Vulkan→HIP interop" << std::endl;
+        return nullptr;
+    }
+    hipExternalMemoryHandleDesc desc{};
+    desc.type = hipExternalMemoryHandleTypeOpaqueFd;
+    desc.handle.fd = fd;
+    desc.size = r->alloc_size;
+    desc.flags = r->dedicated ? hipExternalMemoryDedicated : 0;
+    hipExternalMemory_t memory = nullptr;
+    hipError_t err = hipImportExternalMemory(&memory, &desc);
+    if (err != hipSuccess) {
+        close(fd);
+        std::cerr << "[hip] hipImportExternalMemory failed: " << hipGetErrorString(err) << std::endl;
+        return nullptr;
+    }
+    return memory;
+}
+
+static void* import_vulkan_buffer(const VulkanResource* r, size_t bytes, int device_id) {
+    hipExternalMemory_t memory = import_vulkan_memory(r, device_id);
+    if (!memory) return nullptr;
+    hipExternalMemoryBufferDesc desc{};
+    desc.offset = 0;
+    desc.size = bytes;
+    void* ptr = nullptr;
+    hipError_t err = hipExternalMemoryGetMappedBuffer(&ptr, memory, &desc);
+    if (err != hipSuccess) {
+        std::cerr << "[hip] hipExternalMemoryGetMappedBuffer failed: " << hipGetErrorString(err) << std::endl;
+        hipDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+    g_vulkan_imports[ptr] = VulkanImport{memory};
+    return ptr;
+}
+
+static void* import_vulkan_image(const VulkanResource* r, int device_id) {
+#ifdef HVML_HIP_VULKAN_IMAGES
+    if (!r || !r->image) return nullptr;
+    VulkanFormatChannels ch = vulkan_format_channels(r->format);
+    if (!ch.ok) {
+        std::cerr << "[hip] Vulkan image format " << r->format << " has no HIP array equivalent" << std::endl;
+        return nullptr;
+    }
+    hipExternalMemory_t memory = import_vulkan_memory(r, device_id);
+    if (!memory) return nullptr;
+
+    hipChannelFormatKind kind = ch.kind == VulkanFormatChannels::kFloat  ? hipChannelFormatKindFloat
+                              : ch.kind == VulkanFormatChannels::kSigned ? hipChannelFormatKindSigned
+                                                                         : hipChannelFormatKindUnsigned;
+    hipExternalMemoryMipmappedArrayDesc desc{};
+    desc.offset = 0;
+    desc.formatDesc = hipCreateChannelDesc(ch.x, ch.y, ch.z, ch.w, kind);
+    desc.extent = make_hipExtent(r->width, r->height, 0);
+    desc.flags = 0;
+    if (r->image_usage & kVkImageUsageStorage) desc.flags |= hipArraySurfaceLoadStore;
+#ifdef hipArrayColorAttachment
+    if (r->image_usage & kVkImageUsageColorAttachment) desc.flags |= hipArrayColorAttachment;
+#endif
+    desc.numLevels = 1;
+
+    // Declared in the headers but not exported by libamdhip64 on Linux
+    // (hip_hcc.map lacks it as of ROCm 7.0), so look it up at run time: a
+    // runtime that exports it gets image import, others report it missing.
+    using MappedMipmappedArrayFn = hipError_t (*)(hipMipmappedArray_t*, hipExternalMemory_t,
+                                                  const hipExternalMemoryMipmappedArrayDesc*);
+    static auto mapped_mipmapped_array =
+        (MappedMipmappedArrayFn)dlsym(RTLD_DEFAULT, "hipExternalMemoryGetMappedMipmappedArray");
+    if (!mapped_mipmapped_array) {
+        std::cerr << "[hip] this HIP runtime does not export hipExternalMemoryGetMappedMipmappedArray — "
+                     "optimal-tiled Vulkan images have no HIP view (allocate them kLINEAR for a HIP pointer)"
+                  << std::endl;
+        hipDestroyExternalMemory(memory);
+        return nullptr;
+    }
+
+    hipMipmappedArray_t mipmap = nullptr;
+    hipError_t err = mapped_mipmapped_array(&mipmap, memory, &desc);
+    if (err != hipSuccess) {
+        std::cerr << "[hip] hipExternalMemoryGetMappedMipmappedArray failed: " << hipGetErrorString(err) << std::endl;
+        hipDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    hipArray_t level0 = nullptr;
+    err = hipGetMipmappedArrayLevel(&level0, mipmap, 0);
+    if (err != hipSuccess) {
+        std::cerr << "[hip] hipGetMipmappedArrayLevel failed: " << hipGetErrorString(err) << std::endl;
+        hipFreeMipmappedArray(mipmap);
+        hipDestroyExternalMemory(memory);
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+    VulkanImport imp;
+    imp.memory = memory;
+    imp.mipmap = mipmap;
+    g_vulkan_imports[(void*)level0] = imp;
+    return (void*)level0;
+#else
+    std::cerr << "[hip] Vulkan image import needs ROCm 6 or newer" << std::endl;
+    return nullptr;
+#endif
+}
+
+// Unmap a pointer / array returned by the imports above (no-op for anything
+// else, e.g. a handle returned when the memory was not exported).
+static void release_vulkan_import(void* mapped) {
+    VulkanImport imp;
+    {
+        std::lock_guard<std::mutex> lock(g_vulkan_imports_mutex);
+        auto it = g_vulkan_imports.find(mapped);
+        if (it == g_vulkan_imports.end()) return;
+        imp = it->second;
+        g_vulkan_imports.erase(it);
+    }
+#ifdef HVML_HIP_VULKAN_IMAGES
+    if (imp.mipmap) HIP_CHECK(hipFreeMipmappedArray(imp.mipmap));
+    else
+#endif
+    HIP_CHECK(hipFree(mapped));
+    HIP_CHECK(hipDestroyExternalMemory(imp.memory));
+}
 
 // ---------------------------------------------------------------------------
 //  HIP AllocationMap
@@ -36,6 +196,9 @@ static AllocationMap* create_hip_mapper(int device_id) {
     mapper->default_compute_type = ComputeType::kHIP;
     mapper->default_allocator_type = ComputeType::kHIP;
     mapper->supports_compute_device[ComputeType::kHIP] = true;
+    mapper->pci_domain = prop.pciDomainID;
+    mapper->pci_bus = prop.pciBusID;
+    mapper->pci_device = prop.pciDeviceID;
 
     // Stream-ordered pool allocation when the device supports it (hipFree
     // synchronises the device on every temporary tensor).
@@ -134,6 +297,7 @@ static ComputeDeviceBase* create_hip_compute_device(int device_id) {
     ComputeDeviceBase* device = new ComputeDeviceBase();
     device->supports_memory_location[MemoryType::kHIP_VRAM] = true;
     device->default_memory_type = MemoryType::kHIP_VRAM;
+    device->default_memory_device_id = device_id;
 
     hipDeviceProp_t prop;
     HIP_CHECK(hipGetDeviceProperties(&prop, device_id));
@@ -184,72 +348,37 @@ static ComputeDeviceBase* create_hip_compute_device(int device_id) {
         };
     }
 
-    // -----------------------------------------------------------------
-    //  Vulkan → HIP interop
-    //
-    //  When a tensor is allocated with kVULKAN on this memory device,
-    //  the vulkan plugin stores a VulkanBufferHandle* in
-    //  BaseMemoryAllocation::data.  The Tensor constructor auto-calls
-    //  get_massaged_pointer(default_compute_type=kHIP), which looks up
-    //  this {kVULKAN, kHIP} converter.
-    //
-    //  We import the VkBuffer's exported fd into HIP via
-    //  hipImportExternalMemory + hipExternalMemoryGetMappedBuffer,
-    //  returning a HIP device pointer that HIP kernels can read/write
-    //  directly.  The underlying memory is the same VkDeviceMemory —
-    //  no copy.
-    // -----------------------------------------------------------------
+    // Vulkan allocations in this GPU's memory, viewed as HIP in place
+    // (import_vulkan_buffer / import_vulkan_image above).
     auto& hip_mem_device = global_device_manager.get_device(MemoryType::kHIP_VRAM, device_id);
     hip_mem_device.supports_compute_device[ComputeType::kVULKAN] = true;
+    hip_mem_device.supports_compute_device[ComputeType::kVULKANTEXTURE] = true;
 
+    // buffer (kVULKAN, or a kLINEAR texture's buffer) → device pointer
     hip_mem_device.compute_type_converters[{ComputeType::kVULKAN, ComputeType::kHIP}] =
         [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) -> void* {
-            VulkanBufferHandle* handle = (VulkanBufferHandle*)ptr;
-            if (!handle || handle->fd < 0) {
-                std::cerr << "[hip] No fd for Vulkan→HIP interop" << std::endl;
-                return nullptr;
-            }
-
-            // Duplicate the fd — hipImportExternalMemory takes ownership on success
-            int dup_fd = dup(handle->fd);
-            if (dup_fd < 0) {
-                std::cerr << "[hip] dup(fd) failed for Vulkan→HIP interop" << std::endl;
-                return nullptr;
-            }
-
-            hipExternalMemoryHandleDesc extMemDesc{};
-            extMemDesc.type = hipExternalMemoryHandleTypeOpaqueFd;
-            extMemDesc.handle.fd = dup_fd;
-            extMemDesc.size = handle->alloc_size;
-            extMemDesc.flags = 0;
-
-            hipExternalMemory_t extMem;
-            hipError_t err = hipImportExternalMemory(&extMem, &extMemDesc);
-            if (err != hipSuccess) {
-                std::cerr << "[hip] hipImportExternalMemory failed: " << hipGetErrorString(err) << std::endl;
-                return nullptr;
-            }
-
-            hipExternalMemoryBufferDesc bufDesc{};
-            bufDesc.offset = 0;
-            bufDesc.size = metadata.byte_size;
-            bufDesc.flags = 0;
-
-            void* devPtr = nullptr;
-            err = hipExternalMemoryGetMappedBuffer(&devPtr, extMem, &bufDesc);
-            if (err != hipSuccess) {
-                std::cerr << "[hip] hipExternalMemoryGetMappedBuffer failed: " << hipGetErrorString(err) << std::endl;
-                return nullptr;
-            }
-
-            return devPtr;
+            return import_vulkan_buffer((VulkanResource*)ptr, metadata.byte_size, device_id);
         };
 
-    // The mapped HIP pointer is a view of the VkBuffer's memory.
-    // Do NOT hipFree it — the vulkan plugin frees the VkBuffer/VkDeviceMemory.
+    // optimal-tiled image (kVULKANTEXTURE) → hipArray_t (level 0), for
+    // surface / texture objects.  The vulkan plugin sends buffer-backed
+    // textures to the buffer import instead.
+    hip_mem_device.compute_type_converters[{ComputeType::kVULKANTEXTURE, ComputeType::kHIP}] =
+        [device_id](void* ptr, BaseMemoryAllocation* original, AllocationMetadata metadata) -> void* {
+            VulkanResource* r = (VulkanResource*)ptr;
+            if (r && r->buffer) return import_vulkan_buffer(r, metadata.byte_size, device_id);
+            return import_vulkan_image(r, device_id);
+        };
+
+    // Unmap Vulkan imports; other HIP views of this memory (OpenGL interop)
+    // own nothing.  The memory itself belongs to the Vulkan / GL resource.
     hip_mem_device.compute_mapping_deallocators[ComputeType::kHIP] =
         [device_id](void* ptr, BaseMemoryAllocation* original) {
-            // Nothing — the underlying memory is owned by the VulkanBufferHandle.
+            if (original->metadata.compute_device == ComputeType::kVULKAN ||
+                original->metadata.compute_device == ComputeType::kVULKANTEXTURE) {
+                HIP_CHECK(hipSetDevice(device_id));
+                release_vulkan_import(ptr);
+            }
         };
 
     return device;

@@ -84,7 +84,8 @@ __global__ void histogram(const unsigned int* values, int n, unsigned int* bins,
 
 // ---- host ------------------------------------------------------------------------
 
-static MemoryLocation gpu() { return MemoryLocation(MemoryType::kUnknown_MEM, 0); }
+// Vulkan device 0, in whichever memory it allocates.
+static MemoryLocation gpu() { return MemoryLocation(global_device_manager.get_compute_device(ComputeType::kVULKAN, 0)); }
 static int failures = 0;
 
 static void check(const char* name, bool ok, const std::string& detail = "") {
