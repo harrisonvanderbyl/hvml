@@ -1,0 +1,131 @@
+// ops/vulkan/ops.vk — hvml operations on Vulkan tensors (compiled by vulkcc).
+//
+// The Vulkan counterpart of ops/nvidia/ops.cuh and ops/hip/ops.hpp: the same
+// element-wise and reduction kernels, launched with vulkcc::launch.  A
+// kVULKAN tensor's data pointer (its kernel view, Tensor::to_compute(kVULKAN))
+// is the buffer's device address, so Parameter<T> works here exactly as on
+// CUDA / HIP.
+
+#include "ops/common.hpp"
+
+template <>
+struct AssignmentHelper<AssignmentType::Direct, ComputeType::kVULKAN> {
+    template <typename T>
+    static __host__ __device__ inline void assignOperation(T& dest, const T& src) {
+        dest = src;
+    }
+};
+
+template <>
+struct AssignmentHelper<AssignmentType::InplaceAdd, ComputeType::kVULKAN> {
+    template <typename T>
+    static __host__ __device__ inline void assignOperation(T& dest, const T& src) {
+        atomicAdd(&dest, src);
+    }
+};
+
+// ----------------------------------------------------------------------------
+// Element-wise: block b covers elements [b·blockDim·loopsize, ...); in each of
+// the `loopsize` steps the block's threads take consecutive elements.  The
+// grid is 2-D when it has more than 65535 blocks.
+// ----------------------------------------------------------------------------
+template <typename OP, typename OutputType, typename... Args>
+__global__ void VKOPKERNEL(
+    unsigned long total_size,
+    int loopsize,
+    Parameter<OutputType> output,
+    Parameter<Args>... params) {
+    unsigned long block = (unsigned long)blockIdx.y * gridDim.x + blockIdx.x;
+    unsigned long start = block * blockDim.x * loopsize + threadIdx.x;
+
+    for (int i = 0; i < loopsize; i++) {
+        unsigned long global_idx = start + (unsigned long)i * blockDim.x;
+        if (global_idx >= total_size) return;
+        if constexpr (std::is_same<OutputType, void>::value) {
+            OP::apply(params.get_index(global_idx)...);
+        } else {
+            AssignmentHelper<OP::assignment_type, kVULKAN>::assignOperation(
+                output.get_index(global_idx), OP::apply(params.get_index(global_idx)...));
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Reduction: a group of `lanes` threads (≤ a warp) computes one output.  Lane l
+// combines inputs l, l + lanes, ... along the reduced dim, then the group
+// combines its partial results with warp shuffles.
+// ----------------------------------------------------------------------------
+template <typename OP, typename Out, typename... C>
+__device__ inline Out vk_reduce_lane(int lane, int lanes, long len, C... c) {
+    Out acc = OP::template identity<Out>();
+    for (long r = lane; r < len; r += lanes) OP::combine(acc, OP::apply(c(r)...));
+    return acc;
+}
+
+template <typename OP, typename Out, typename... Args>
+__global__ void VKREDUCEKERNEL(
+    long outer, long len, long inner, int dim, int lanes,
+    Parameter<Out> output,
+    Parameter<Args>... params) {
+    long block = (long)blockIdx.y * gridDim.x + blockIdx.x;
+    long thread = block * blockDim.x + threadIdx.x;
+    long o = thread / lanes;
+    int lane = (int)(thread % lanes);
+    bool valid = o < outer;          // every thread stays for the shuffles
+    long base = valid ? (o / inner) * len * inner + (o % inner) : 0;
+
+    Out acc = OP::template identity<Out>();
+    if (valid) acc = vk_reduce_lane<OP, Out>(lane, lanes, len, ReductionCursor<Args>(params, base, inner, dim)...);
+
+    for (int off = lanes / 2; off > 0; off >>= 1) {
+        Out other = __shfl_down_sync(0xffffffffu, acc, off, lanes);
+        OP::combine(acc, other);
+    }
+    if (valid && lane == 0) output.get_index(base) = acc;
+}
+
+inline dim3 vk_grid(unsigned long blocks) {
+    unsigned long x = blocks < 65535ul ? blocks : 65535ul;
+    return dim3((unsigned int)x, (unsigned int)((blocks + x - 1) / x), 1);
+}
+
+template <typename T>
+inline void vk_device_hint(const Parameter<T>& p) {
+    if constexpr (!std::is_same<T, void>::value) {
+        if (p.istensor && !vulkcc::current_device_hint) vulkcc::set_device(p.data);
+    }
+}
+
+template <typename OP, typename... Args>
+void call_vulkan(
+    int device_id,
+    unsigned long total_size,
+    Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
+    Parameter<Args>... params
+) {
+    (void)device_id;
+    using Out = typename OutputTypeSelector<OP, Args...>::type;
+    if (total_size == 0) return;
+
+    // run on the device the tensors live on
+    vulkcc::current_device_hint = nullptr;
+    vk_device_hint(output);
+    (vk_device_hint(params), ...);
+
+    const unsigned int threads = 256;
+    if constexpr (!std::is_same<Out, void>::value && OP::assignment_type == AssignmentType::InplaceAdd) {
+        ReductionShape rs = reduction_shape<OP>(output, total_size);
+        if (rs.outer == 0) return;
+        int lanes = reduction_lanes(rs.len);
+        unsigned long blocks = ((unsigned long)rs.outer * lanes + threads - 1) / threads;
+        vulkcc::launch<VKREDUCEKERNEL<OP, Out, Args...>>(vk_grid(blocks), dim3(threads), 0, nullptr,
+                                                         rs.outer, rs.len, rs.inner, rs.dim, lanes, output, params...);
+    } else {
+        long per_thread = (long)total_size / ((long)threads * 1024);
+        int loopsize = (int)std::max(1L, std::min(256L, per_thread));
+        unsigned long blocks = (total_size + (unsigned long)threads * loopsize - 1) / ((unsigned long)threads * loopsize);
+        vulkcc::launch<VKOPKERNEL<OP, Out, Args...>>(vk_grid(blocks), dim3(threads), 0, nullptr,
+                                                     total_size, loopsize, output, params...);
+    }
+    vulkcc::current_device_hint = nullptr;
+}

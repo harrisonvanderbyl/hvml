@@ -133,6 +133,12 @@ struct MassagedMemory : public MemoryWithMetadata<T> {
     MassagedMemory(AllocationMetadata meta, T* da, BaseMemoryAllocation* base)
         : MemoryWithMetadata<T>(meta, da), base_memory(base) {};
 
+    // Same memory seen as another element type.
+    template <typename U>
+    MassagedMemory<U> reinterpret() const {
+        return MassagedMemory<U>(this->metadata, (U*)(void*)this->data, this->base_memory);
+    }
+
     MassagedMemory operator+=(size_t offset) {
         this->data += offset;
         return *this;
@@ -243,7 +249,13 @@ struct AllocationMap {
         // extra view in place.
         bool wants_new_view = ((int)meta.rwstatus & ~(int)ptr->metadata.rwstatus & kVIEW_FLAGS) != 0;
 
-        if (target_type == ptr->metadata.compute_device && !wants_new_view) {
+        // A backend can register a converter from a compute type to itself to
+        // give that type's kernels a different view of their own allocations
+        // (Vulkan: the buffer's device address instead of its handle).
+        auto self = compute_type_converters.find(std::make_tuple(target_type, target_type));
+        bool self_view = target_type == ptr->metadata.compute_device && self != compute_type_converters.end();
+
+        if (target_type == ptr->metadata.compute_device && !wants_new_view && !self_view) {
             return MassagedMemory<T>(meta, (T*)ptr->data, ptr);
         } else {
             auto key = std::make_tuple(ptr->metadata.compute_device, target_type);

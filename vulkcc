@@ -1,0 +1,93 @@
+#!/bin/bash
+# vulkcc — compile CUDA-style hvml programs for Vulkan, like nvcc / hipcc.
+#
+# The program is read as CUDA: __global__ / __device__ functions, __shared__
+# memory, threadIdx / blockIdx / blockDim / gridDim, __syncthreads, atomics,
+# warp shuffles and kernel<<<grid, block, shmem, stream>>>(args) launches.
+# Every launched kernel is translated to a SPIR-V compute shader; the host
+# code is compiled with the host compiler, launches going through
+# vulkcc::launch<kernel>(...).  hvml operations on Vulkan tensors use the
+# kernels in tensor/ops/vulkan/ops.vk.
+#
+#   vulkcc main.cpp -c -o vulkan.o [flags]   object with the program and its
+#                                            Vulkan kernels (nvcc -c style;
+#                                            hvcc links it with the others)
+#   vulkcc main.cpp -o app [flags]           executable (with material shaders)
+#
+# Flags: -I / -D / -std / -O / -march / -f... go to the compilers, -l / -L /
+# -Wl to the link.  -ccbin=<compiler> picks the host compiler (default g++;
+# use the one the device plugins were built with).  VULKCC_KEEP=1 keeps the
+# generated files (rewritten source, GLSL, registration code).
+
+set -e
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tool="$here/shader-compiler/build/shader_tool"
+runtime="$here/tensor/ops/vulkan/runtime.hpp"
+
+source=""
+output=""
+compile_only=0
+cxx="${VULKCC_CXX:-g++}"
+compile_flags=()
+link_flags=()
+tool_flags=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -c) compile_only=1 ;;
+        -ccbin=*|--compiler-bindir=*) cxx="${1#*=}" ;;
+        -ccbin|--compiler-bindir) cxx="$2"; shift ;;
+        -o) output="$2"; shift ;;
+        -o*) output="${1#-o}" ;;
+        -l*|-L*|-Wl,*|-rdynamic|-pthread) link_flags+=("$1") ;;
+        -fopenmp*|-fsanitize*|-flto*) compile_flags+=("$1"); link_flags+=("$1") ;;
+        -I|-D|-U|-isystem|-iquote) compile_flags+=("$1" "$2"); tool_flags+=("$1" "$2"); shift ;;
+        -I*|-D*|-U*|-std=*|-isystem*|-iquote*) compile_flags+=("$1"); tool_flags+=("$1") ;;
+        -*) compile_flags+=("$1") ;;
+        *) if [ -z "$source" ]; then source="$1"; else compile_flags+=("$1"); fi ;;
+    esac
+    shift
+done
+if [ -z "$source" ]; then
+    echo "usage: vulkcc <source.cpp> [-c] [-o output] [-ccbin=<compiler>] [compiler/linker flags]" >&2
+    exit 1
+fi
+source="$(realpath "$source")"
+srcdir="$(dirname "$source")"
+if [ -z "$output" ]; then output=$([ $compile_only = 1 ] && echo "vulkan.o" || echo "a.out"); fi
+
+# build the shader tool on first use
+if [ ! -x "$tool" ]; then
+    mkdir -p "$here/shader-compiler/build"
+    (cd "$here/shader-compiler/build" && cmake .. -DCMAKE_BUILD_TYPE=Release > /dev/null && make -j"$(nproc)" > /dev/null)
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/vulkcc.XXXXXX")"
+if [ "${VULKCC_KEEP:-0}" = 1 ]; then echo "vulkcc: keeping generated files in $work"; else trap 'rm -rf "$work"' EXIT; fi
+keep=()
+[ "${VULKCC_KEEP:-0}" = 1 ] && keep=(--keep-glsl)
+
+# the program as CUDA (host side), with the vulkcc runtime in front
+analysis=(-x cuda --cuda-host-only -nocudainc -nocudalib -U__CUDACC__ -D__VULKCC_ANALYSIS__
+          -include "$runtime" -I"$here/tensor" -iquote "$srcdir" "${tool_flags[@]}")
+
+# 1. kernel<<<...>>>(args) → vulkcc::launch<kernel>(...)
+main="$work/$(basename "$source")"
+"$tool" "$source" --rewrite-launches="$main" --no-shaders -- "${analysis[@]}"
+
+# 2. kernels → SPIR-V (+ material shaders for a whole program)
+if [ $compile_only = 1 ]; then
+    "$tool" "$main" --vulkan-kernels="$work/kernels.cpp" --no-shaders "${keep[@]}" -- "${analysis[@]}"
+    printf '#include "%s"\n#include "%s"\n' "$main" "$work/kernels.cpp" > "$work/unit.cpp"
+else
+    "$tool" "$main" --vulkan-kernels="$work/kernels.cpp" -o "$work/shad.cpp" "${keep[@]}" -- "${analysis[@]}"
+    printf '#include "%s"\n#include "%s"\n' "$work/shad.cpp" "$work/kernels.cpp" > "$work/unit.cpp"
+fi
+
+# 3. host code
+host=(-include "$runtime" -I"$here/tensor" -iquote "$srcdir" "${compile_flags[@]}")
+if [ $compile_only = 1 ]; then
+    "$cxx" -c "$work/unit.cpp" -o "$output" "${host[@]}"
+else
+    "$cxx" -c "$work/unit.cpp" -o "$work/unit.o" "${host[@]}"
+    "$cxx" "$work/unit.o" -o "$output" -ldl -rdynamic "${link_flags[@]}"
+fi

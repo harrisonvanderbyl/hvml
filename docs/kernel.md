@@ -80,22 +80,40 @@ This makes the CPU loop walk memory sequentially.
 **How reductions run on each device:**
 - **CPU:** each output element sums its own run along the reduced dimension,
   and outputs are split across threads when built with `-fopenmp`.
-- **CUDA and HIP:** each thread adds consecutive elements that land on the same
-  output locally, then issues one atomic add.
+- **CUDA and HIP:** up to 32 threads share one output. They stride along the
+  reduced dimension (coalesced when it is contiguous) and combine with warp
+  shuffles, with no atomics.
 
-## Max and other folds
+## Other reductions: `identity` and `combine`
 
-A reduction that isn't a sum can be written with slices. `row_max` halves the
-row and folds the upper half onto the lower with an in-place `max` until one
-column is left:
+A reduction sums by default. An operation can override how values combine:
 
 ```cpp
-while (n > 1) {
-    long h = n / 2;
-    OpMaxEq::run(m[{{}, {0, h}}], m[{{}, {n - h, n}}]);
-    n -= h;
-}
+template <int dim = -1>
+struct ReduceMax : public ReductionOperation<ReduceMax<dim>, dim> {
+    template <typename A> __host__ __device__ static auto apply(const A& a) { return a; }
+    template <typename T> __host__ __device__ static T identity() { return -INFINITY; }
+    template <typename T> __host__ __device__ static void combine(T& acc, const T& v) { if (v > acc) acc = v; }
+};
 ```
+
+Every output is written once (CPU: one thread per output; GPU: up to 32
+lanes per output combined with warp shuffles), so any associative `combine`
+works on arithmetic types.
+
+## Fusing element-wise operations: `ChainOperations`
+
+`ChainOperations<A, B, ...>` runs `A` on the arguments, then feeds the result
+through `B`, and so on, in one kernel. Linear layers use it to add the bias
+and apply GELU in one pass:
+
+```cpp
+Tensor<float, 2> y = ChainOperations<OperationAdd, OpGelu>::run(xw, bias.unsqueeze(0));
+```
+
+Each operation is a kernel launch plus an output allocation, so on a GPU
+fewer, fatter operations are faster. Run the example with `--profile` to see
+operation counts per stage.
 
 ## Gathering rows: `tensor_index`
 
@@ -119,7 +137,7 @@ The view holds a pointer to `ids`, so keep `ids` alive while the view is used.
 | `rms_norm(x, w, eps)`, `layer_norm(x, w, b, eps)` | row normalisation                       |
 | `rope_tables(positions, dim, θ, loc)`, `rope(x, tables)` | rotary embedding (rotate-half)   |
 | `attention(q, k, v, scale, q_offset, causal)` | GQA attention over one sequence             |
-| `row_max(x)`, `softmax_rows(x)`        | slice folds + `ReduceSum`                          |
+| `row_max(x)`, `softmax_rows(x, scale)` | `ReduceMax`, one fused exp, `ReduceSum`            |
 | `gelu(x)`, `OpSiluMul`, `OpCos`, `OpSin` | activations / float trig                         |
 | `OpPower`, `OpLog10Clamp`, `OpWhisperNorm` | Whisper log-mel front end                      |
 | `tensor_from_host`, `tensor_to_host`   | host ↔ device copies                               |

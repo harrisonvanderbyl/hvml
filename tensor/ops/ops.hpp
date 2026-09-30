@@ -7,6 +7,9 @@
 #if defined(__HIPCC__)
 #include "ops/hip/ops.hpp"
 #endif
+#if defined(__VULKCC__)
+#include "ops/vulkan/ops.vk"
+#endif
 
 #define CREATE_OP(func_name, OPERATION)                                     \
 template <int AD, typename A, typename... B>                     \

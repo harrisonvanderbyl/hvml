@@ -310,6 +310,32 @@ __weak void call_hip(
     Parameter<Args>... params
 );
 
+// Vulkan: defined in ops/vulkan/ops.vk, compiled by vulkcc (like call_cuda
+// by nvcc and call_hip by hipcc).
+template <typename OP, typename... Args>
+__weak void call_vulkan(
+    int device_id,
+    unsigned long total_size,
+    Parameter<typename OutputTypeSelector<OP,Args...>::type> output,
+    Parameter<Args>... params
+);
+
+template <typename OP, typename... Args>
+struct BinaryKernel<ComputeType::kVULKAN, OP, Args...>
+    : public Kernel<ComputeType::kVULKAN, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...>
+{
+public:
+    void inline call(
+        int device_id,
+        unsigned long total_size,
+        Parameter<typename OutputTypeSelector<OP, Args...>::type> output,
+        Parameter<Args>... params
+    ) override
+    {
+        call_vulkan<OP, Args...>(device_id, total_size, output, params...);
+    }
+};
+
 template <typename OP, typename... Args>
 struct BinaryKernel<ComputeType::kCUDA, OP, Args...>
     : public Kernel<ComputeType::kCUDA, int, unsigned long, Parameter<typename OutputTypeSelector<OP, Args...>::type>,Parameter<Args>...> 
@@ -642,6 +668,8 @@ struct OperationSelector {
                 return ApplyKernelOperationHelper<OP, ComputeType::kCUDA>::apply(target_device, Parameter(a), Parameter(b)...);
             case ComputeType::kHIP:
                 return ApplyKernelOperationHelper<OP, ComputeType::kHIP>::apply(target_device, Parameter(a), Parameter(b)...);
+            case ComputeType::kVULKAN:
+                return ApplyKernelOperationHelper<OP, ComputeType::kVULKAN>::apply(target_device, Parameter(a), Parameter(b)...);
             default:
                 throw std::runtime_error("Unsupported compute type");
         }                                                                          

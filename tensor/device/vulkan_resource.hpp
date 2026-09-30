@@ -67,6 +67,10 @@ struct VulkanBufferHandle {
     bool owns_image_view  = false;
     bool owns_buffer_view = false;
     bool exported         = false;    // memory allocated with an export handle type
+
+    // ---- kernels ----------------------------------------------------------
+    unsigned long long device_address = 0;    // VkDeviceAddress of `buffer` (0 = none): the
+                                              // kVULKAN kernel view of the allocation
 };
 
 using VulkanResource = VulkanBufferHandle;
@@ -80,6 +84,21 @@ struct HvmlVkDeviceInfo {
     uint32_t queue_family       = 0;
     void*    command_pool       = nullptr;  // VkCommandPool (on queue_family)
     int      external_memory_fd = 0;        // VK_KHR_external_memory_fd enabled
+    int      buffer_device_address = 0;     // bufferDeviceAddress enabled (vulkcc kernels)
+};
+
+// One kernel launch (hvml_vk_launch), built by vulkcc::launch.  The kernel
+// reads its arguments through a device address in its push constants; the
+// plugin copies `args` into a buffer and passes that buffer's address.
+// Returns when the kernel has finished.
+struct HvmlVkLaunch {
+    const uint32_t* spirv       = nullptr;  // SPIR-V words (also the pipeline cache key)
+    unsigned long   spirv_words = 0;
+    uint32_t        grid[3]  = {1, 1, 1};   // workgroups
+    uint32_t        block[3] = {1, 1, 1};   // invocations per workgroup (specialization constants 0..2)
+    const void*     args       = nullptr;   // kernel arguments, laid out as in C++
+    unsigned long   args_bytes = 0;
+    const void*     device_hint = nullptr;  // any pointer on the target device (null: default device)
 };
 
 // C ABI exported by the vulkan plugin (looked up with dlsym(RTLD_DEFAULT, ...)).
@@ -92,6 +111,7 @@ extern "C" {
     typedef int             (*hvml_vk_download_fn)(VulkanResource* r, void* out, unsigned long bytes);
     typedef VulkanResource* (*hvml_vk_wrap_image_fn)(void* image, int format, uint32_t width, uint32_t height,
                                                      int resting_layout, uint32_t usage);
+    typedef int             (*hvml_vk_launch_fn)(const HvmlVkLaunch* launch);
 }
 
 #endif // DEVICE_VULKAN_RESOURCE_HPP

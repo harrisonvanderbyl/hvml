@@ -47,6 +47,7 @@
 
 #include "tensor.hpp"
 #include "device/vulkan_resource.hpp"
+#include "device/vulkan_compute_features.hpp"
 
 #define VK_CTX_CHECK(call)                                                     \
     do {                                                                       \
@@ -150,6 +151,7 @@ struct VulkanContext {
     VkSampleCountFlagBits      msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 
     bool externalMemoryFd   = false;   // VK_KHR_external_memory_fd (HIP/CUDA interop)
+    VulkanComputeFeatures computeFeatures;   // what vulkcc kernels need (device addresses, ...)
     bool swapchainSupported = false;   // VK_KHR_swapchain
     bool validation         = false;
 
@@ -407,11 +409,17 @@ struct VulkanContext {
         qi.queueCount = 1;
         qi.pQueuePriorities = &priority;
 
+        // Compute-kernel features (vulkcc) on top of the material ones, so
+        // kernels can run on tensors that live on this device.
+        computeFeatures = VulkanComputeFeatures(physicalDevice, enabledFeatures);
+        for (const char* e : computeFeatures.extensions) exts.push_back(e);
+
         VkDeviceCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         ci.queueCreateInfoCount = 1;
         ci.pQueueCreateInfos = &qi;
-        ci.pEnabledFeatures = &enabledFeatures;
+        ci.pNext = computeFeatures.chain();
+        ci.pEnabledFeatures = nullptr;
         ci.enabledExtensionCount = (uint32_t)exts.size();
         ci.ppEnabledExtensionNames = exts.data();
         if (vkCreateDevice(physicalDevice, &ci, nullptr, &device) != VK_SUCCESS) {
@@ -446,6 +454,7 @@ struct VulkanContext {
         info.queue_family = graphicsFamily;
         info.command_pool = (void*)commandPool;
         info.external_memory_fd = externalMemoryFd ? 1 : 0;
+        info.buffer_device_address = computeFeatures.device_address ? 1 : 0;
         setDevice(&info);
 
         auto memType = (hvml_vk_rendering_memory_type_fn)dlsym(RTLD_DEFAULT, "get_rendering_device_memory_type");

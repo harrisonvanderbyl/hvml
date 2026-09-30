@@ -48,6 +48,7 @@
 //  destroyed with it.
 
 #include "plugin.hpp"
+#include "vulkan_compute_features.hpp"
 
 #include <vulkan/vulkan.h>
 #include <vector>
@@ -91,6 +92,7 @@ struct VulkanDeviceState {
     VkQueue          compute_queue   = VK_NULL_HANDLE;
     uint32_t         compute_queue_family = 0;
     VkCommandPool    command_pool    = VK_NULL_HANDLE;
+    bool             device_address  = false;   // bufferDeviceAddress enabled
 };
 
 VkInstance                     g_instance    = VK_NULL_HANDLE;
@@ -109,6 +111,7 @@ struct RenderingDevice {
     MemoryType       memory_type           = MemoryType::kUnknown_MEM;
     int              device_index          = -1;   // matching index into g_devices
     bool             external_memory_fd    = false;
+    bool             device_address        = false;
     bool             active                = false;
 };
 
@@ -123,6 +126,7 @@ struct Dev {
     VkQueue          queue        = VK_NULL_HANDLE;
     VkCommandPool    pool         = VK_NULL_HANDLE;
     bool             external_fd  = false;
+    bool             device_address = false;
     int              id           = kRenderingDevice;
 };
 
@@ -133,6 +137,7 @@ Dev rendering_dev() {
     d.queue       = g_rendering_device.graphics_queue;
     d.pool        = g_rendering_device.command_pool;
     d.external_fd = g_rendering_device.external_memory_fd;
+    d.device_address = g_rendering_device.device_address;
     d.id          = kRenderingDevice;
     return d;
 }
@@ -152,6 +157,7 @@ Dev dev_for(int device_id) {
         d.phys   = g_devices[device_id].physical_device;
         d.queue  = g_devices[device_id].compute_queue;
         d.pool   = g_devices[device_id].command_pool;
+        d.device_address = g_devices[device_id].device_address;
         d.id     = device_id;
         return d;
     }
@@ -188,23 +194,43 @@ ComputeType interop_compute_type(MemoryType mem) {
 //  Resource registry — lets any layer ask "is this pointer a VulkanResource?"
 // ===========================================================================
 
+//  A resource is found by its handle (the VulkanResource*), or by any device
+//  address inside its buffer — the kVULKAN kernel view of a tensor is
+//  `device_address + offset`.
+
 std::mutex                      g_registry_mutex;
 std::unordered_set<const void*> g_registry;
+std::map<uint64_t, VulkanResource*> g_address_ranges;   // buffer owners by device address
 
 void registry_add(VulkanResource* r) {
     std::lock_guard<std::mutex> lock(g_registry_mutex);
     g_registry.insert(r);
+    if (r->device_address && r->owns_buffer) g_address_ranges[r->device_address] = r;
 }
 
 void registry_remove(VulkanResource* r) {
     std::lock_guard<std::mutex> lock(g_registry_mutex);
     g_registry.erase(r);
+    auto it = g_address_ranges.find(r->device_address);
+    if (it != g_address_ranges.end() && it->second == r) g_address_ranges.erase(it);
 }
 
-VulkanResource* registry_find(const void* p) {
+// Handle, or device address inside a buffer (then `*offset` = bytes into it).
+VulkanResource* registry_find(const void* p, size_t* offset = nullptr) {
+    if (offset) *offset = 0;
     if (!p) return nullptr;
     std::lock_guard<std::mutex> lock(g_registry_mutex);
-    return g_registry.count(p) ? (VulkanResource*)p : nullptr;
+    if (g_registry.count(p)) return (VulkanResource*)p;
+    uint64_t a = (uint64_t)(uintptr_t)p;
+    auto it = g_address_ranges.upper_bound(a);
+    if (it == g_address_ranges.begin()) return nullptr;
+    --it;
+    VulkanResource* r = it->second;
+    if (a >= it->first && a < it->first + r->alloc_size) {
+        if (offset) *offset = (size_t)(a - it->first);
+        return r;
+    }
+    return nullptr;
 }
 
 // ===========================================================================
@@ -447,6 +473,7 @@ void create_backing_buffer(const Dev& d, VulkanResource* r, VkDeviceSize size,
     ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     ci.size = size;
     ci.usage = kBufferUsage;
+    if (d.device_address) ci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (want_export) ci.pNext = &ext_ci;
 
@@ -465,11 +492,17 @@ void create_backing_buffer(const Dev& d, VulkanResource* r, VkDeviceSize size,
     export_info.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
     export_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
 
+    VkMemoryAllocateFlagsInfo flags_info{};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
     VkMemoryAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = (reqs.size + 4095) & ~(VkDeviceSize)4095;
     ai.memoryTypeIndex = mem_type;
-    if (want_export) ai.pNext = &export_info;
+    const void** tail = &ai.pNext;
+    if (d.device_address) { *tail = &flags_info; tail = &flags_info.pNext; }
+    if (want_export) *tail = &export_info;
 
     VkDeviceMemory memory;
     VK_THROW(vkAllocateMemory(d.device, &ai, nullptr, &memory), "vkAllocateMemory");
@@ -479,6 +512,13 @@ void create_backing_buffer(const Dev& d, VulkanResource* r, VkDeviceSize size,
     r->memory_type = mem_type;
     r->exported = want_export;
     VK_THROW(vkBindBufferMemory(d.device, buffer, memory, 0), "vkBindBufferMemory");
+
+    if (d.device_address) {
+        VkBufferDeviceAddressInfo bai{};
+        bai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        bai.buffer = buffer;
+        r->device_address = vkGetBufferDeviceAddress(d.device, &bai);
+    }
 
     if (want_export) {
         auto get_fd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(d.device, "vkGetMemoryFdKHR");
@@ -808,19 +848,21 @@ void upload_to_image(const Dev& d, VulkanResource* r, const void* data, size_t b
     end_one_time_commands(d, cmd);
 }
 
-void download(VulkanResource* r, void* out, size_t bytes) {
+void download(VulkanResource* r, void* out, size_t bytes, size_t offset = 0) {
     Dev d = dev_of(r);
     vkQueueWaitIdle(d.queue);   // finish any rendering / compute into it first
-    bytes = std::min<size_t>(bytes, r->data_size ? r->data_size : r->alloc_size);
+    size_t avail = r->data_size ? r->data_size : r->alloc_size;
+    if (r->buffer && offset > avail) offset = avail;
+    bytes = std::min<size_t>(bytes, avail - (r->buffer ? offset : 0));
 
     if (r->buffer) {
         if (r->mapped) {
-            memcpy(out, r->mapped, bytes);
+            memcpy(out, (const char*)r->mapped + offset, bytes);
             return;
         }
         Staging staging(d, bytes);
         VkCommandBuffer cmd = begin_one_time_commands(d);
-        VkBufferCopy region{0, 0, bytes};
+        VkBufferCopy region{offset, 0, bytes};
         vkCmdCopyBuffer(cmd, (VkBuffer)r->buffer, staging.buffer, 1, &region);
         end_one_time_commands(d, cmd);
         memcpy(out, staging.ptr, bytes);
@@ -965,6 +1007,7 @@ VulkanResource* make_view(VulkanResource* base, const AllocationMetadata& meta, 
     v->memory_type = base->memory_type;
     v->mapped      = base->mapped;
     v->exported    = base->exported;
+    v->device_address = base->device_address;
     v->format      = format;
     v->width       = w;
     v->height      = h;
@@ -1049,8 +1092,10 @@ void install_view_releasers(AllocationMap& map) {
     for (ComputeType ct : {ComputeType::kVULKAN, ComputeType::kVULKANTEXTURE}) {
         auto prev = original_of(map.compute_mapping_deallocators, ct);
         map.compute_mapping_deallocators[ct] = [prev](void* ptr, BaseMemoryAllocation* original) {
-            if (VulkanResource* v = registry_find(ptr)) {
-                if (v->parent) destroy_resource(v);   // a view — owns only its extras
+            size_t offset;
+            if (VulkanResource* v = registry_find(ptr, &offset)) {
+                // a view owns only its extras; a device address is just the buffer
+                if (v->parent && v == ptr) destroy_resource(v);
                 return;
             }
             if (prev) prev(ptr, original);
@@ -1082,9 +1127,16 @@ void register_resource_functions(AllocationMap& map, int device_id, ComputeType 
     for (ComputeType src : {ComputeType::kVULKAN, ComputeType::kVULKANTEXTURE}) {
         for (ComputeType dst : {ComputeType::kVULKAN, ComputeType::kVULKANTEXTURE}) {
             map.compute_type_converters[{src, dst}] =
-                [dst](void* ptr, BaseMemoryAllocation*, AllocationMetadata meta) -> void* {
+                [src, dst](void* ptr, BaseMemoryAllocation*, AllocationMetadata meta) -> void* {
                     VulkanResource* base = registry_find(ptr);
                     if (!base) throw std::runtime_error("[vulkan] view requested on a non-Vulkan allocation");
+                    bool plain = ((int)meta.rwstatus & kVIEW_FLAGS) == 0;
+                    // A plain kVULKAN view (no image / texel-buffer flags) is what
+                    // kernels index: the buffer's device address.
+                    if (dst == ComputeType::kVULKAN && plain && base->device_address) {
+                        return (void*)(uintptr_t)base->device_address;
+                    }
+                    if (src == dst && plain) return ptr;   // the resource itself
                     return make_view(base, meta, dst);
                 };
         }
@@ -1127,7 +1179,7 @@ void register_resource_functions(AllocationMap& map, int device_id, ComputeType 
     }
 }
 
-BaseMemoryAllocation* download_to_host(VulkanResource* r, AllocationMetadata meta) {
+BaseMemoryAllocation* download_to_host(VulkanResource* r, AllocationMetadata meta, size_t offset = 0) {
     AllocationMap& host = global_device_manager.get_device(MemoryType::kDDR, 0);
     AllocationMetadata hm = meta;
     hm.storage_device = MemoryType::kDDR;
@@ -1135,7 +1187,7 @@ BaseMemoryAllocation* download_to_host(VulkanResource* r, AllocationMetadata met
     hm.rwstatus = AllocationFlags::kRW;
     hm.format = 0;
     BaseMemoryAllocation* out = host.allocate(hm);
-    download(r, out->data, hm.byte_size);
+    download(r, out->data, hm.byte_size, offset);
     return out;
 }
 
@@ -1154,7 +1206,8 @@ void install_transfer_converters(MemoryType mem, int device_id) {
                 Dev d = dev_for(device_id);
                 return new BaseMemoryAllocation(meta, (void*)allocate_resource(d, meta, ptr, meta.compute_device));
             }
-            if (VulkanResource* r = registry_find(ptr)) return download_to_host(r, meta);
+            size_t offset;
+            if (VulkanResource* r = registry_find(ptr, &offset)) return download_to_host(r, meta, offset);
             if (prev) return prev(ptr, meta);
             throw std::runtime_error("[vulkan] no converter from host memory");
         };
@@ -1166,7 +1219,8 @@ void install_transfer_converters(MemoryType mem, int device_id) {
             AllocationMap& dev_map = global_device_manager.get_device(mem, 0);
             auto prev = original_of(dev_map.memory_type_converters, MemoryType::kDDR);
             dev_map.memory_type_converters[MemoryType::kDDR] = [prev](void* ptr, AllocationMetadata meta) -> BaseMemoryAllocation* {
-                if (VulkanResource* r = registry_find(ptr)) return download_to_host(r, meta);
+                size_t offset;
+                if (VulkanResource* r = registry_find(ptr, &offset)) return download_to_host(r, meta, offset);
                 if (prev) return prev(ptr, meta);
                 throw std::runtime_error("[vulkan] no converter to host memory");
             };
@@ -1189,9 +1243,10 @@ AllocationMap* create_vulkan_mapper(int device_id) {
     register_resource_functions(*mapper, device_id, ComputeType::kUnknown);
 
     mapper->memory_type_converters[MemoryType::kDDR] = [](void* ptr, AllocationMetadata meta) {
-        VulkanResource* r = registry_find(ptr);
+        size_t offset;
+        VulkanResource* r = registry_find(ptr, &offset);
         if (!r) throw std::runtime_error("[vulkan] readback of a non-Vulkan pointer");
-        return download_to_host(r, meta);
+        return download_to_host(r, meta, offset);
     };
 
     mapper->synchronize_function = [device_id]() {
@@ -1300,12 +1355,16 @@ int count_vulkan_devices() {
         qci.queueCount = 1;
         qci.pQueuePriorities = &priority;
 
-        VkPhysicalDeviceFeatures features{};
+        VulkanComputeFeatures features(physical_devices[i]);
         VkDeviceCreateInfo dci{};
         dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
-        dci.pEnabledFeatures = &features;
+        dci.pNext = features.chain();
+        dci.pEnabledFeatures = nullptr;
+        dci.enabledExtensionCount = (uint32_t)features.extensions.size();
+        dci.ppEnabledExtensionNames = features.extensions.data();
+        state.device_address = features.device_address;
         if (vkCreateDevice(physical_devices[i], &dci, nullptr, &state.device) != VK_SUCCESS) continue;
         vkGetDeviceQueue(state.device, family, 0, &state.compute_queue);
 
@@ -1343,6 +1402,166 @@ int match_plugin_device(VkPhysicalDevice phys, int fallback) {
         if (memcmp(want, have, VK_UUID_SIZE) == 0) return (int)i;
     }
     return fallback;
+}
+
+
+// ===========================================================================
+//  Kernel launches (kernels compiled by vulkcc)
+// ===========================================================================
+//
+//  A vulkcc kernel reads its arguments through one device address in its push
+//  constants: the plugin copies the argument bytes into a host-visible buffer
+//  and passes that buffer's address.  Tensors are reached through the
+//  pointers inside the arguments (device addresses), so no descriptor sets
+//  are needed.  The workgroup size is specialization constants 0..2, so one
+//  pipeline is cached per (device, SPIR-V, block size).  Each launch is
+//  ordered after earlier work on the queue and waited for.
+
+struct KernelPipeline {
+    VkShaderModule   module = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline       pipeline = VK_NULL_HANDLE;
+};
+
+struct LaunchState {
+    VkBuffer        args_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory  args_memory = VK_NULL_HANDLE;
+    void*           args_mapped = nullptr;
+    VkDeviceSize    args_size = 0;
+    VkDeviceAddress args_address = 0;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence         fence = VK_NULL_HANDLE;
+    std::map<std::tuple<const uint32_t*, uint32_t, uint32_t, uint32_t>, KernelPipeline> pipelines;
+};
+
+std::mutex g_launch_mutex;
+std::map<VkDevice, LaunchState> g_launch;
+
+void ensure_args_buffer(const Dev& d, LaunchState& ls, VkDeviceSize bytes) {
+    if (ls.args_size >= bytes && ls.args_buffer) return;
+    if (ls.args_buffer) {
+        vkDestroyBuffer(d.device, ls.args_buffer, nullptr);
+        vkFreeMemory(d.device, ls.args_memory, nullptr);
+    }
+    VkDeviceSize size = std::max<VkDeviceSize>(4096, bytes * 2);
+    VkBufferCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    ci.size = size;
+    ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VK_THROW(vkCreateBuffer(d.device, &ci, nullptr, &ls.args_buffer), "vkCreateBuffer (kernel arguments)");
+    VkMemoryRequirements reqs;
+    vkGetBufferMemoryRequirements(d.device, ls.args_buffer, &reqs);
+    bool host_visible = false;
+    VkMemoryAllocateFlagsInfo fi{};
+    fi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    fi.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.pNext = &fi;
+    ai.allocationSize = reqs.size;
+    ai.memoryTypeIndex = pick_memory_type(d.phys, reqs.memoryTypeBits, true, &host_visible);
+    if (!host_visible) throw std::runtime_error("[vulkan] no host-visible memory for kernel arguments");
+    VK_THROW(vkAllocateMemory(d.device, &ai, nullptr, &ls.args_memory), "vkAllocateMemory (kernel arguments)");
+    VK_THROW(vkBindBufferMemory(d.device, ls.args_buffer, ls.args_memory, 0), "vkBindBufferMemory");
+    VK_THROW(vkMapMemory(d.device, ls.args_memory, 0, VK_WHOLE_SIZE, 0, &ls.args_mapped), "vkMapMemory");
+    VkBufferDeviceAddressInfo bai{};
+    bai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bai.buffer = ls.args_buffer;
+    ls.args_address = vkGetBufferDeviceAddress(d.device, &bai);
+    ls.args_size = size;
+}
+
+KernelPipeline& get_kernel_pipeline(const Dev& d, LaunchState& ls, const HvmlVkLaunch* k) {
+    auto key = std::make_tuple(k->spirv, k->block[0], k->block[1], k->block[2]);
+    auto found = ls.pipelines.find(key);
+    if (found != ls.pipelines.end()) return found->second;
+
+    KernelPipeline p;
+    VkShaderModuleCreateInfo smci{};
+    smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smci.codeSize = k->spirv_words * 4;
+    smci.pCode = k->spirv;
+    VK_THROW(vkCreateShaderModule(d.device, &smci, nullptr, &p.module), "vkCreateShaderModule");
+
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
+    VkPipelineLayoutCreateInfo plci{};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.pushConstantRangeCount = 1;
+    plci.pPushConstantRanges = &pcr;
+    VK_THROW(vkCreatePipelineLayout(d.device, &plci, nullptr, &p.layout), "vkCreatePipelineLayout");
+
+    VkSpecializationMapEntry entries[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+    VkSpecializationInfo spec{3, entries, 12, k->block};
+    VkComputePipelineCreateInfo cpci{};
+    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpci.stage.module = p.module;
+    cpci.stage.pName = "main";
+    cpci.stage.pSpecializationInfo = &spec;
+    cpci.layout = p.layout;
+    VK_THROW(vkCreateComputePipelines(d.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &p.pipeline),
+             "vkCreateComputePipelines");
+    return ls.pipelines.emplace(key, p).first->second;
+}
+
+Dev launch_device(const void* hint) {
+    if (hint) {
+        if (VulkanResource* r = registry_find(hint)) return dev_of(r);
+    }
+    if (g_rendering_device.active) return rendering_dev();
+    return dev_for(0);
+}
+
+void run_launch(const HvmlVkLaunch* k) {
+    Dev d = launch_device(k->device_hint);
+    if (!d.device_address) {
+        throw std::runtime_error("[vulkan] this device has no bufferDeviceAddress support, which vulkcc kernels need");
+    }
+    std::lock_guard<std::mutex> lock(g_launch_mutex);
+    LaunchState& ls = g_launch[d.device];
+    if (!ls.cmd) {
+        VkCommandBufferAllocateInfo cai{};
+        cai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cai.commandPool = d.pool;
+        cai.commandBufferCount = 1;
+        VK_THROW(vkAllocateCommandBuffers(d.device, &cai, &ls.cmd), "vkAllocateCommandBuffers");
+        VkFenceCreateInfo fci{};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VK_THROW(vkCreateFence(d.device, &fci, nullptr, &ls.fence), "vkCreateFence");
+    }
+    ensure_args_buffer(d, ls, std::max<unsigned long>(k->args_bytes, 16));
+    if (k->args_bytes) memcpy(ls.args_mapped, k->args, k->args_bytes);
+    KernelPipeline& p = get_kernel_pipeline(d, ls, k);
+
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_THROW(vkResetCommandBuffer(ls.cmd, 0), "vkResetCommandBuffer");
+    VK_THROW(vkBeginCommandBuffer(ls.cmd, &bi), "vkBeginCommandBuffer");
+    VkMemoryBarrier mb{};
+    mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(ls.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                         1, &mb, 0, nullptr, 0, nullptr);
+    vkCmdBindPipeline(ls.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
+    uint64_t args_address = ls.args_address;
+    vkCmdPushConstants(ls.cmd, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &args_address);
+    vkCmdDispatch(ls.cmd, k->grid[0], k->grid[1], k->grid[2]);
+    vkCmdPipelineBarrier(ls.cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+                         1, &mb, 0, nullptr, 0, nullptr);
+    VK_THROW(vkEndCommandBuffer(ls.cmd), "vkEndCommandBuffer");
+
+    VkSubmitInfo si{};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &ls.cmd;
+    VK_THROW(vkResetFences(d.device, 1, &ls.fence), "vkResetFences");
+    VK_THROW(vkQueueSubmit(d.queue, 1, &si, ls.fence), "vkQueueSubmit");
+    VK_THROW(vkWaitForFences(d.device, 1, &ls.fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
 }
 
 } // anonymous namespace
@@ -1433,6 +1652,17 @@ extern "C" int hvml_vk_download(VulkanResource* r, void* out, size_t bytes) {
     }
 }
 
+// Launch one vulkcc kernel (see HvmlVkLaunch).  Returns 0 on success.
+extern "C" int hvml_vk_launch(const HvmlVkLaunch* launch) {
+    try {
+        run_launch(launch);
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        return -1;
+    }
+}
+
 extern "C" int get_rendering_device_index() {
     return g_rendering_device.active ? g_rendering_device.device_index : -1;
 }
@@ -1451,6 +1681,7 @@ extern "C" void hvml_vk_set_rendering_device(const HvmlVkDeviceInfo* info) {
     g_rendering_device.graphics_queue_family = info->queue_family;
     g_rendering_device.command_pool          = (VkCommandPool)info->command_pool;
     g_rendering_device.external_memory_fd    = info->external_memory_fd != 0;
+    g_rendering_device.device_address        = info->buffer_device_address != 0;
     g_rendering_device.device_index          = match_plugin_device(g_rendering_device.physical_device, 0);
     g_rendering_device.active                = true;
 

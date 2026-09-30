@@ -11,3 +11,7 @@ target_include_directories(shader_tool PRIVATE
 
 target_link_libraries(shader_tool PRIVATE clang-cpp LLVM)
 
+# builtin headers of the clang the tool is linked with
+target_compile_definitions(shader_tool PRIVATE
+    HVML_CLANG_RESOURCE_DIR="${LLVM_LIBRARY_DIR}/clang/${LLVM_VERSION_MAJOR}")
+

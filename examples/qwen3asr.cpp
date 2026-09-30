@@ -6,11 +6,13 @@
 //   g++ -std=c++20 -O3 -fopenmp -I./tensor examples/qwen3asr.cpp -o qwen3asr -ldl -rdynamic
 //   # GPU (HIP + CUDA kernels, as for the other examples)
 //   make BASEFILE=examples/qwen3asr.cpp OUTPUT=qwen3asr
+//   # Vulkan (any GPU with a Vulkan driver)
+//   ./vulkcc examples/qwen3asr.cpp -o qwen3asr -I./tensor -std=c++20 -O3 -fopenmp
 //
 //   DEVICE_PLUGIN_DIR=tensor/device/plugins ./qwen3asr Qwen3-ASR-0.6B speech.wav --device hip
 //
 // Options:
-//   --device cpu|cuda|hip   where the weights and activations live (default cpu)
+//   --device cpu|cuda|hip|vulkan   where the weights and activations live (default cpu)
 //   --language <Name>       force the output language (e.g. English, Chinese)
 //   --context <text>        system-prompt context (names, jargon, ...)
 //   --max-tokens <n>        generation limit (default 512)
@@ -24,7 +26,7 @@
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::cerr << "usage: " << argv[0] << " <model_dir> <audio.wav> [--device cpu|cuda|hip] "
+        std::cerr << "usage: " << argv[0] << " <model_dir> <audio.wav> [--device cpu|cuda|hip|vulkan] "
                      "[--language L] [--context text] [--max-tokens n] [--full-attention] [--profile]\n";
         return 1;
     }
@@ -42,12 +44,14 @@ int main(int argc, char** argv) {
         else if (a == "--profile") opt.profile = true;
     }
 
-    MemoryType mem = device == "cuda" ? MemoryType::kCUDA_VRAM
-                   : device == "hip"  ? MemoryType::kHIP_VRAM
-                                      : MemoryType::kDDR;
+    // --device vulkan: the vulkan plugin's compute device (build with vulkcc)
+    MemoryLocation loc = device == "vulkan" ? MemoryLocation(MemoryType::kUnknown_MEM, 0)
+                       : MemoryLocation(device == "cuda" ? MemoryType::kCUDA_VRAM
+                                      : device == "hip"  ? MemoryType::kHIP_VRAM
+                                                         : MemoryType::kDDR);
 
     auto t0 = std::chrono::steady_clock::now();
-    auto model = qwen3asr::Qwen3ASR::from_pretrained(model_dir, MemoryLocation(mem));
+    auto model = qwen3asr::Qwen3ASR::from_pretrained(model_dir, loc);
     model->set_windowed_encoder_attention(!full_attention);
     auto samples = load_audio(audio_path, 16000);
     auto t1 = std::chrono::steady_clock::now();

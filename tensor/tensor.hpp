@@ -485,7 +485,7 @@ public:
             throw( std::runtime_error("Last dimension is not divisible by sizeof(T)"));
         }
         newshape[-1] = newlastdim;
-        Tensor<T, rank> b = Tensor<T, rank>(newshape, MassagedMemory<T>(data.metadata, (T*)(void*)data.data, storage_pointer), *device, storage_pointer);
+        Tensor<T, rank> b = Tensor<T, rank>(newshape, data.template reinterpret<T>(), *device, storage_pointer);
         return b;   
     }
 
@@ -538,7 +538,7 @@ public:
 
 
         return Tensor<T, Z>{newshape, 
-            MassagedMemory<T>(data.metadata, (T*)(void*)data.data, storage_pointer)
+            data.template reinterpret<T>()
             , *device, storage_pointer};   
     }
 

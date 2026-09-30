@@ -8,6 +8,7 @@
 #include <clang/Lex/Lexer.h>
 #include <clang/Sema/Sema.h>
 #include <llvm/Support/CommandLine.h>
+#include <llvm/Config/llvm-config.h>
 #include <regex>
 #include <string>
 #include <vector>
@@ -18,6 +19,8 @@
 #include <cstdlib>
 #include <memory>
 
+#include "vulkcc_translate.hpp"
+
 using namespace clang;
 using namespace clang::tooling;
 
@@ -27,6 +30,33 @@ static llvm::cl::opt<std::string> OutputPath(
     llvm::cl::desc("Output header file path"),
     llvm::cl::value_desc("filename"),
     llvm::cl::init("shad.cpp"),
+    llvm::cl::cat(ShaderToolCategory)
+);
+static llvm::cl::opt<std::string> VulkanKernelsPath(
+    "vulkan-kernels",
+    llvm::cl::desc("vulkcc: translate every kernel the program launches to SPIR-V and write C++ registering them to this file"),
+    llvm::cl::value_desc("filename"),
+    llvm::cl::init(""),
+    llvm::cl::cat(ShaderToolCategory)
+);
+static bool Failed = false;
+static llvm::cl::opt<std::string> RewriteLaunchesPath(
+    "rewrite-launches",
+    llvm::cl::desc("vulkcc: write the main file with kernel<<<...>>>(args) rewritten to vulkcc::launch<kernel>(...) to this file"),
+    llvm::cl::value_desc("filename"),
+    llvm::cl::init(""),
+    llvm::cl::cat(ShaderToolCategory)
+);
+static llvm::cl::opt<bool> NoShaders(
+    "no-shaders",
+    llvm::cl::desc("Do not write the material shader file (-o)"),
+    llvm::cl::init(false),
+    llvm::cl::cat(ShaderToolCategory)
+);
+static llvm::cl::opt<bool> KeepGLSL(
+    "keep-glsl",
+    llvm::cl::desc("Keep the generated compute GLSL next to the kernels file"),
+    llvm::cl::init(false),
     llvm::cl::cat(ShaderToolCategory)
 );
 
@@ -599,6 +629,18 @@ public:
 
         headerOutput += "#include \"" + this->InputPath + "\"\n\n";
 
+        if (!RewriteLaunchesPath.empty()) {
+            bool ok = true;
+            std::string text = vulkcc::rewrite_launches(ctx, ok);
+            std::ofstream(RewriteLaunchesPath) << text;
+            if (!ok) Failed = true;
+            return;
+        }
+        if (!VulkanKernelsPath.empty()) {
+            vulkcc::write_kernels(ctx, ctx.getSourceManager(), VulkanKernelsPath, KeepGLSL);
+        }
+        if (NoShaders) return;
+
         std::ofstream outFile(OutputPath);
         if (outFile.is_open()) {
             outFile << headerOutput;
@@ -640,8 +682,12 @@ private:
         //   - specifiedArgs: the args as written at the usage site (may be sugared)
         //   - canonArgs:     the canonical args used to form the canonical QualType
         TemplateName TN(ctd);
+#if LLVM_VERSION_MAJOR >= 21
         QualType specTy = ASTCtx.getTemplateSpecializationType(
             TN, specifiedArgs, canonArgs);
+#else
+        QualType specTy = ASTCtx.getTemplateSpecializationType(TN, canonArgs);
+#endif
 
         // RequireCompleteType triggers full instantiation via normal Sema machinery.
         SourceLocation loc = ctd->getLocation();
@@ -815,5 +861,11 @@ int main(int argc, const char **argv) {
     }
     CommonOptionsParser &OptionsParser = ExpectedParser.get();
     ClangTool Tool(OptionsParser.getCompilations(), OptionsParser.getSourcePathList());
-    return Tool.run(newFrontendActionFactory<ShaderFrontendAction>().get());
+#ifdef HVML_CLANG_RESOURCE_DIR
+    // builtin headers (stddef.h, ...) of the clang this tool is linked with
+    Tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
+        "-resource-dir=" HVML_CLANG_RESOURCE_DIR, ArgumentInsertPosition::END));
+#endif
+    int rc = Tool.run(newFrontendActionFactory<ShaderFrontendAction>().get());
+    return rc ? rc : (Failed ? 1 : 0);
 }

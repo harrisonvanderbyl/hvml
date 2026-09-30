@@ -16,8 +16,8 @@ __weak int main(){
     scene.setCamera({0, 0, -5.0f}, {0, 0, 1.0f}, {0, 1, 0});
 
     VectorDisplay<float16x4> display({1024,1024}, kVULKAN);
-    //display[{{}}] = float16x4{0.0f,0.0f,0.0f,0.0f};
-    //display[{{0,100,2},{0,100,2}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
+    display[{{}}] = float16x4{0.0f,0.0f,0.0f,0.0f};
+    display[{{0,100,2},{0,100,2}}] = float16x4{0.5f,0.5f,0.5f,1.0f};
 
     // Convert to GPU texture — creates VkImage on rendering device and uploads data
     std::cout << "=== Converting display to GPU ===" << std::endl;
